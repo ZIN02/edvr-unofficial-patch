@@ -27,11 +27,14 @@
   delay from normal. The PE delay-import directory was not read by REA.
 - **Observed mismatch worth knowing:** the source pins `SizeOfImage` 104,894,464
   (0x6409000); the 103,469,056 above is the file size. Different quantities, both right.
-- **Open questions:** (1) what does camera setter 0x2878DC0 do when on foot, and is
-  the "setter 5->3" native-stereo arc (stereo-cpu-sharing-2026-10-16.md, next steps)
-  reachable there; (2) delay vs normal import for OpenVR; (3) no issue yet tracks
+- **Answered 2026-10-18:** the setter 0x2878DC0 writes camera kind 5 into each
+  eye's record (immediate at RVA 0x2878F78); five `cmp` sites read the kind, two
+  of them for 5 and one for 3 (section "Camera record kind").
+- **Open questions:** (1) what the kind-5 branches in 0x5B1D80 and 0x2871D30
+  and the kind-3 branch in 0x4F3770 do, which is what a 5->3 switch changes for
+  on-foot native stereo (stereo-cpu-sharing-2026-10-16.md); (2) delay vs normal import for OpenVR; (3) no issue yet tracks
   re-deriving the build-332841 addresses after the next game patch.
-- **Next steps:** decompile 0x2878DC0 and 0x283D4C0 (REA `procedure_pseudo_code`);
+- **Next steps:** decompile the kind branches in 0x5B1D80, 0x2871D30 and 0x4F3770;
   create functions at 0x28767D0 / 0x28414E0 and re-check; record per-hook recognisable
   features (strings, callers, imports) in the tables so they can be re-found after a
   patch; add REA checks for the claimed data fields (light-grid knobs, 0x5EA3399, fade mode/amount).
@@ -102,14 +105,51 @@ reports the containing function start).
 |---|---|---|---|---|---|
 | 0x2868C30 | per-frame VR job | calls driver, then 0x594B60 | none | design-transition-flash-engine-fix-2026-09-23, canted-projection | D |
 | 0x28431D0 | kConsumerRva | camera driver (4x4 mailbox copy) | transition_flash_eye_base.cpp:42 | design-transition-flash-engine-fix-2026-09-23 | F |
-| 0x283D4C0 | composer | base matrix x eye pose | none | canted-projection:407 | D |
-| 0x2878DC0 | camera setter | per-eye pose x base; open question | none | canted-projection, terrain-culling:206, stereo-cpu-sharing | D |
+| 0x283D4C0 | composer | builds both eyes, calls the setter for eye 0 then eye 1 (see "Camera record kind") | none | canted-projection:407 | V (decompiled) |
+| 0x2878DC0 | camera setter | builds one eye's camera record, writes kind 5 (see "Camera record kind") | none | canted-projection, terrain-culling:206, stereo-cpu-sharing | V (decompiled) |
 | 0x594B60 | coordinator | uploads headset camera block (sole caller 0x286906E) | none | stereo-cpu-sharing, design-flat-camera-integration | D |
 | 0x594D90 | view loop | per-view render update | none | design-flat-camera-integration:699 | D |
 | 0x5921F0+ | kRefreshRva (0x592200) | flat camera refresh | flat_camera_inject.cpp:99 | design-flat-camera-integration, design-flat-temporal-aa-2026-09-23 | V |
 | 0x51B640 | kUploadRva | camera block upload | flat_camera_producer_probe.cpp:49 | design-flat-temporal-aa-2026-09-23 | V |
 | 0x2871D30 | kRendererRva | builds mono camera (kind 0/3) | flat_stationary_camera_capture.cpp:24 | terrain-culling:818 | S |
 | 0x5D6D20 | producer handshake | render thread waits here | none | stereo-cpu-sharing:60 | D |
+
+### Camera record kind (the "setter 5->3" arc)
+
+Observed 2026-10-18 by REA (Ghidra decompile, assembly, byte reads and a
+`.text`-wide byte search). Interpretation of what each kind means is inferred.
+
+- **Composer 0x283D4C0.** Holds the HMD service at `this+0x7D0`. Per eye (0, 1)
+  it calls vtable `+0xB0` (eye-to-head pose, takes an extra argument) and
+  `+0xB8` (projection, takes near/far), multiplies each eye pose by the base
+  matrix, then calls the setter for eye 0 and eye 1. If byte `this+0x660` is
+  set it skips the HMD calls and reuses eye poses and projections cached at
+  `this+0x670..0x768` (written when its 7th argument is non-zero).
+- **Setter 0x2878DC0** (sole caller: the composer). Calls HMD vtable `+0x90`
+  (per-eye pair of values; stored at record +0x240 and +0x260), orthonormalises
+  the pose basis, copies the projection, then copies the record out with
+  0x59F1A0 (a plain camera-record copy). Record layout seen here: basis rows
+  +0x00/+0x10/+0x20, position +0x30, flags +0x230 (`|= 0xF`), two floats
+  +0x234/+0x238 (stack args 5 and 6), **kind +0x244**, byte +0x248,
+  projection 4x4 at +0x2B0.
+- **The kind write:** RVA 0x2878F71, bytes `C7 84 24 74 02 00 00 05 00 00 00`
+  (`mov dword [rsp+0x274], 5`; record base is rsp+0x30). The immediate is at
+  RVA 0x2878F78. A 5->3 patch changes that byte.
+- **Readers of +0x244** found by searching for `cmp dword [reg+0x244], imm8`
+  (this misses other instruction forms such as loads or switch tables):
+
+| Site (RVA) | In function | Compares kind to |
+|---|---|---|
+| 0x2042B7A | 0x2042B70 | 0 |
+| 0x4F37C6 | 0x4F3770 | 2 |
+| 0x4F3AE0 | 0x4F3770 | 3 |
+| 0x5B1DD4 | 0x5B1D80 | 5 |
+| 0x2871D9A | 0x2871D30 (kRendererRva, mono camera) | 5 |
+
+So switching the eye cameras from 5 to 3 (inferred) takes them out of the
+kind-5 branches in 0x5B1D80 and 0x2871D30 and into the kind-3 branch in
+0x4F3770, which sits beside the view-row refresh 0x4F2FF0. What those branches
+do is the next thing to decompile.
 
 ### Frustum, visibility, motion / velocity, skinning
 

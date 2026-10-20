@@ -84,7 +84,7 @@ inline UiChainVerdict uiChainVerdict(const UiChain& c) {
     return v;
 }
 
-// "0x51AF6B/0x50EC69/..." (at most 12 x 10 characters).
+// "0x51B0CB/0x50EDC9/..." (at most 12 x 10 characters).
 inline void uiChainFormat(const UiChain& c, char* out, size_t n) {
     if (!out || !n) return;
     out[0] = '\0';
@@ -249,7 +249,7 @@ inline bool uiPanelDisp(uint64_t next, uint64_t target, int32_t* disp) {
 // (docs/ui-layer-2026-09-23.md, "2026-10-07: Supersampling and the panel budget"):
 //   * the UI screen record carries two sizes, +0x40 (the base: the VR manager's trunc(recommended x HMD
 //     Quality), the display, or a 2D-mode override) and +0x30 = trunc(+0x40 x scale), the scale being the
-//     SSAAMultiplier entry of the .fxcfg (FUN_14284CB70 and FUN_14288E3A0 write both; FUN_142842A70 reads
+//     SSAAMultiplier entry of the .fxcfg (FUN_14284F190 and FUN_1428909E0 write both; FUN_142845090 reads
 //     c = max(+0x30, +0x40) x k). The scene's own views are sized from +0x30 too.
 //   * so the game's c is linear in Supersampling, per axis: at Supersampling S > 1 every panel the game makes
 //     is S times wider than W_ui x k says, and EDVR's f (made from W_ui x k) must carry the same S or the
@@ -373,7 +373,7 @@ inline bool uiPanelFactor(const UiPanelInputs& in, double* f, UiPanelClamp* clam
 // ------------------------------------------------------------ the flat profile's factor (2026-10-09) --
 //
 // In the flat profile the panel formula's (c, d) are the UI screen record's width and height with k = 1
-// (FUN_142842A70 asks the VR manager for k only in the VR modes): the scene's render size R, Supersampling already in
+// (FUN_142845090 asks the VR manager for k only in the VR modes): the scene's render size R, Supersampling already in
 // it. Measured on the 2026-10-09 09:36 Epic flight (771bb99a, D 3840x2160 throughout): the same rtt-init panel was
 // created 1920x960 while R was 3840x2160 and 960x480 once R was 1920x1080 -- the panels follow R, not the display D.
 // The game divides by 1080 when c/d is not below 16/9 (the comiss/jb at both sites), by 1920 when it is; the ratio is
@@ -646,7 +646,7 @@ inline uint32_t uiPanelSize(uint32_t stage, double c, float divisor1920) {
 // could reach the panels before the factor knew. The value the game acts on is the scale entry of its render
 // context, ctx+0x3564 (docs/ui-layer-2026-09-23.md, "2026-10-07: Supersampling and the panel budget"), clamped
 // to [ctx+0x3568, ctx+0x356C] by FUN_142878E00, the setter, which is virtual slot +0x90 of the context's
-// interface class (vtable 0x52E9020; slot RVA 0x52EC270). The interface object holds the context at this+0x18;
+// interface class (vtable 0x52EC1E0; slot RVA 0x52EC270). The interface object holds the context at this+0x18;
 // the setter's sibling at +0x98 (0x2843B00) reads ctx+0x359C, the scale the last configure used. EDVR replaces
 // both slots with thunks that forward untouched and remember the context (and, at the setter, move the
 // factor before the original runs: the game's reconfigure follows the setter, never precedes it).

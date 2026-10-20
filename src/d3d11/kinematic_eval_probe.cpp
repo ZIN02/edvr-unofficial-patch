@@ -9,12 +9,12 @@ KinematicEvalProbe kinematicEvalProbe;
 
 namespace {
 const char* const kJobNames[KinematicEvalProbe::kJobCount]={
-    "Kinematic::UpdateRenderDataJob",   // body RVA 0x4324640 (run thunk 0x42DF520)
-    "Kinematic::RenderDataBatch",       // body RVA 0x4323040 (run thunk 0x42DFAF0)
-    "Kinematic::UpdatePhysicsObjectsJob",// body RVA 0x432DFA0 (run thunk 0x42DF540)
+    "Kinematic::UpdateRenderDataJob",   // body RVA 0x4324640 (run thunk 0x42E21E0)
+    "Kinematic::RenderDataBatch",       // body RVA 0x4323040 (run thunk 0x42E27B0)
+    "Kinematic::UpdatePhysicsObjectsJob",// body RVA 0x432DFA0 (run thunk 0x42E2200)
     "Kinematic::PrePhysicsAdvanceJob",  // body RVA 0x42E21F0 (run is the body)
     "Kinematic::PrePhysicsAdvanceCurveJob",// body RVA 0x42E2210 (run is the body)
-    "Kinematic::Unnamed_BA0",           // body RVA 0x4324510 (run thunk 0x42DFBA0)
+    "Kinematic::Unnamed_BA0",           // body RVA 0x4324510 (run thunk 0x42E2860)
 };
 }
 

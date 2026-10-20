@@ -121,12 +121,12 @@ struct HookEntry {
 // Job bodies behind the run thunks (recovered from the hash-verified exe,
 // SHA-256 6891f70a...; thunk jmps decoded 2026-09-19):
 constexpr uintptr_t kJobRvas[KinematicEvalProbe::kJobCount]={
-    0x4324640, // UpdateRenderDataJob   (thunk 0x42DF520)
-    0x4323040, // render-data batch     (thunk 0x42DFAF0)
-    0x432DFA0, // UpdatePhysicsObjectsJob (thunk 0x42DF540)
+    0x4324640, // UpdateRenderDataJob   (thunk 0x42E21E0)
+    0x4323040, // render-data batch     (thunk 0x42E27B0)
+    0x432DFA0, // UpdatePhysicsObjectsJob (thunk 0x42E2200)
     0x42E21F0, // PrePhysicsAdvanceJob  (run IS the body)
     0x42E2210, // PrePhysicsAdvanceCurveJob (run IS the body)
-    0x4324510, // unnamed table BA0     (thunk 0x42DFBA0)
+    0x4324510, // unnamed table BA0     (thunk 0x42E2860)
 };
 
 int64_t qpcNow() noexcept {
@@ -138,7 +138,7 @@ int64_t qpcNow() noexcept {
 // Job 2 (UpdatePhysicsObjectsJob, 0x432DFA0) bit-compare-gates its NODE
 // matrix writes and appends every changed node to a dirty queue: the job
 // descriptor's +0x18 is a pointer to the queue's atomic append counter
-// (decomp_432B2A0, param_1[3]; flushed in 0x20 batches by FUN_144899F50).
+// (decomp_432B2A0, param_1[3]; flushed in 0x20 batches by FUN_14489CA90).
 // Reading the counter at job entry and exit yields the per-run append
 // count -- the write-volume number the perf arc's L4 needs and the
 // lifecycle evidence the node capture respected (kinematic arc, flight
@@ -156,7 +156,7 @@ bool readQueueCount(uintptr_t descriptor,uint32_t* out) noexcept {
 }
 
 // The queue's node-pointer array base is descriptor +0x10 (param_1[2];
-// decomp_432B2A0 lines 257-268: FUN_144899f50(param_1[2] + idx*8, batch,
+// decomp_432B2A0 lines 257-268: FUN_14489ca90(param_1[2] + idx*8, batch,
 // count*8)). With the lifecycle decoded, the slice [entry, exit) at job-2
 // exit is this run's appended nodes, intact. Reads the newest
 // min(delta, cap) entries; the clamped excess counts as overflow. A reset
@@ -302,14 +302,14 @@ HookEntry g_directEntries[KinematicEvalProbe::kDirectProducerCount]={
 // --- The builder's per-part test (FUN_1442B6C80), the gate probe's third site
 // decomp_42B3FC0.txt: f(param_1 = the builder's six-pointer block at its
 // rbp+0x70, param_2 = {u32 LOD, u8 passed}, param_3 = the view); frustum
-// (FUN_1404F4F70 at 0x1442B4066) and screen-size/LOD on the part's own sphere.
-// Its only caller is the builder's sub-item loop (0x1442B4B91; the other
+// (FUN_1404F4F70 at 0x1442B6D26) and screen-size/LOD on the part's own sphere.
+// Its only caller is the builder's sub-item loop (0x1442B7851; the other
 // xref, 0x1462B1388, is outside any function). The observer reads the
 // builder's frame around that call, so the signature below is not only the
 // prologue: it is every instruction the frame offsets were read from, in the
 // hash-verified exe (build 334473). Any mismatch stands this hook down alone.
 constexpr uintptr_t kPartTestRva=0x42B6C80u;
-constexpr uintptr_t kPartCallReturnRva=0x42B7856u;   // after the call at 0x1442B4B91
+constexpr uintptr_t kPartCallReturnRva=0x42B7856u;   // after the call at 0x1442B7851
 // mov [rsp+10h],rbx; mov [rsp+18h],rsi; push rdi; sub rsp,50h; mov rax,[rcx]; mov rdi,r8
 constexpr uint8_t kPartPrologue[21]={0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,
                                      0x48,0x83,0xEC,0x50,0x48,0x8B,0x01,0x49,0x8B,0xF8};
@@ -385,9 +385,9 @@ __declspec(noinline) uintptr_t __fastcall evalObserved(uintptr_t descriptor,uint
     return result;
 }
 
-// Built v12: Elite's own off-screen branch of the rig eval 0x431DCE0, performed in place of its body (bytes 0x431B221..0x431B240; decomp_431AFE0.txt
+// Built v12: Elite's own off-screen branch of the rig eval 0x431DCE0, performed in place of its body (bytes 0x431DF21..0x431DF40; decomp_431AFE0.txt
 // lines 97 to 103). With collection = rig+0x348 (decomp line 78): [collection+0x629] = 0 (the byte written as r13b, which is zero on this path: r13
-// is cleared at 0x431B017 and not written again); FUN_144350A50(collection+0x300), which is mov dword [rcx+0x2A4], 0 (owner count); then, when
+// is cleared at 0x431DD17 and not written again); FUN_144350A50(collection+0x300), which is mov dword [rcx+0x2A4], 0 (owner count); then, when
 // [collection+0x2E0] (the pipe) is non-null, FUN_1442B8420(pipe), which is add rcx,0x78 and jmp 0x144350A50 (pipe+0x31C = 0). Both callees are
 // Microsoft x64 with one argument in rcx: void(__fastcall*)(uintptr_t). Returns false, having written nothing, when the collection cannot be read;
 // any fault after the first write is counted and reported as a forward (the caller forwards).
@@ -1064,7 +1064,7 @@ void ensurePoolMerge(uintptr_t base) noexcept {
         if(std::memcmp(got,prologue,sizeof(got))) {
             int32_t jump=0;std::memcpy(&jump,got+1,4);
             if(!g_poolMergeEntry.relay || got[0]!=0xE9 ||
-               jump!=reinterpret_cast<intptr_t>(g_poolMergeEntry.relay)-intptr_t(base+0x434E745) ||
+               jump!=reinterpret_cast<intptr_t>(g_poolMergeEntry.relay)-intptr_t(base+0x4351445) ||
                std::memcmp(got+5,prologue+5,3))why="merge prologue mismatch";
         } else if(g_poolMergeEntry.ready.load(std::memory_order_acquire))why="our merge patch is gone";
         // Entire untouched native body includes full-node splice, partial
@@ -1081,7 +1081,7 @@ void ensurePoolMerge(uintptr_t base) noexcept {
 }
 void ensurePoolClear(uintptr_t base) noexcept {
     // Verified build334473: void(dictionary RCX, allocatorOwner RDX),
-    // specialized 336-byte nodes using DAT_145EFDD30. Entire native body
+    // specialized 336-byte nodes using DAT_145F00D70. Entire native body
     // [36846D5,3684822) FNV below has no PE relocations; own entry separately.
     const char* why=nullptr;
     __try {

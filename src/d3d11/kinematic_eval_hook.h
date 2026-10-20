@@ -105,7 +105,7 @@ void kinematicEvalSchedulerDetach() noexcept;
 // so every per-part test the builder makes inside that call reaches the part
 // observer with its enclosing row. FUN_1442B6C80 -- the builder's per-(sub-
 // item, view) frustum + LOD test (decomp_42B3FC0.txt, called only from the
-// builder's sub-item loop at 0x1442B4B91) -- is observed AFTER its forward:
+// builder's sub-item loop at 0x1442B7851) -- is observed AFTER its forward:
 // items = its param_1 (the builder's rbp+0x70 block), out = param_2 {u32 LOD,
 // u8 passed}, view = param_3; fromBuilder = its return address is that call
 // site's. Read-only: the verdict is never written.

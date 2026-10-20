@@ -135,7 +135,7 @@ internal sealed class ModuleInfo(int id, string path, string name, ulong imageBa
 
 /// The topmost game-module RVAs of a stack, innermost first. Three is enough to
 /// name a blocking site and its two callers, which is how the hand count of the
-/// parked trace identified 0x5d6d7f under 0x5d4141 / 0x5d67a6.
+/// parked trace identified 0x5d6edf under 0x5d42a1 / 0x5d6906.
 internal readonly record struct GameTop(uint First, uint Second, uint Third, int Count);
 
 internal sealed class StackInfo

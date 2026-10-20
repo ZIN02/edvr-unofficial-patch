@@ -11,7 +11,7 @@
 //   quaternion) into BOTH pose blocks (+0x08/+0x10 and +0x124/+0x138), then
 //   for each LOD with a view mask (k <= 7) appends the whole record to the
 //   tail node of the list FUN_143699CA0(owner+0x260, rig+0x250) returns and
-//   increments owner+0x2A4 (0x144313191/0x144313195). Nodes hold 8 records:
+//   increments owner+0x2A4 (0x144315E51/0x144315E55). Nodes hold 8 records:
 //   [0] next, [1] prev (the first/last link to entry+0x28), count at +0x18,
 //   records at +0x20+i*0x150. The owner is per collection and has one
 //   writer, the job running the call; the copier 0x4C847C0 later copies
@@ -473,7 +473,7 @@ inline void observe(uintptr_t record, uintptr_t owner, int32_t before, int32_t a
                 bump(s.readFaults); continue;
             }
             // The secondary 4315AC0 initializer also fixes both scale words
-            // to verified DAT_4DDE614=1.0; shared canonical history has the
+            // to verified DAT_4DE165C=1.0; shared canonical history has the
             // same unit-scale domain. Only rigid primary records qualify. Bones
             // or variable scale need their own previous deformation source.
             if (header[0] != 0 || header[1] != 0x3F800000u || copiedScale != 0x3F800000u) {

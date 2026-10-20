@@ -92,7 +92,7 @@ void recordWriterTests(){
     check(int64_t(0x431DF12)+directDisplacement==int64_t(0x4324640),"exact direct rel32 independently resolves to 4324640");
     auto wrongTarget=ownershipWindow;wrongTarget[15]=0xF7;
     check(!edvr::ObjectRecordWriterProbe::ownershipOpcodeWindowMatchesForTest(0x431DF00,wrongTarget.data(),wrongTarget.size()),"stale direct rel32 target is rejected");
-    check(!edvr::ObjectRecordWriterProbe::ownershipOpcodeWindowMatchesForTest(0x431B1FF,ownershipWindow.data(),ownershipWindow.size()),"neighboring ownership instruction placement is rejected");
+    check(!edvr::ObjectRecordWriterProbe::ownershipOpcodeWindowMatchesForTest(0x431DEFF,ownershipWindow.data(),ownershipWindow.size()),"neighboring ownership instruction placement is rejected");
     auto wrongVirtual=ownershipWindow;wrongVirtual[30]=0x58;
     check(!edvr::ObjectRecordWriterProbe::ownershipOpcodeWindowMatchesForTest(0x431DF00,wrongVirtual.data(),wrongVirtual.size()),"wrong virtual slot is rejected");
     edvr::ObjectRecordWriterProbe p;p.armForTest(77);

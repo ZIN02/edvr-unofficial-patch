@@ -716,7 +716,7 @@ inline bool inBox(const float c[3], const OwnCell& cell) noexcept {
     return std::fabs(o[0]) <= cell.boxHalf[0] && std::fabs(o[1]) <= cell.boxHalf[1] && std::fabs(o[2]) <= cell.boxHalf[2];
 }
 
-// Built v12: the off-screen emulation's steps, in Elite's order (decomp_431AFE0.txt lines 99 to 102; bytes 0x431B221..0x431B240). Kind 1: the byte
+// Built v12: the off-screen emulation's steps, in Elite's order (decomp_431AFE0.txt lines 99 to 102; bytes 0x431DF21..0x431DF40). Kind 1: the byte
 // store [coll+0x629] = 0. Kind 2: the call of 0x4350A50 with rcx = coll+0x300 (the owner count reset). Kind 3: the call of 0x42B8420 with rcx = the
 // pipe, only when the pipe is non-null (it adds 0x78 and jumps to 0x4350A50: pipe+0x31C). Returns the number of steps written to kinds and args.
 inline int offScreenSteps(uintptr_t coll, uintptr_t pipe, int* kinds, uintptr_t* args) noexcept {

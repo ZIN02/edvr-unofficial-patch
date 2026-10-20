@@ -398,7 +398,7 @@ internal static class SelfTests
               "table_ba0 has no decompile and keeps the next known entry");
         Check(RvaTable.BoundRule(RvaTable.Classes[ClassId("table_ba0")]) == "next known entry",
               "the fallback rule is named");
-        // record_drain's 134 bytes still cover the 0x42df9a0 region the earlier
+        // record_drain's 134 bytes still cover the 0x42e2660 region the earlier
         // hand count saw under EDVR's d3d11 frames.
         Check(Matches("record_drain", 0x42DF9A0), "0x42df9a0 is inside record_drain");
         Check(!Matches("record_drain", 0x42DF9C6), "record_drain ends at 134 bytes");

@@ -361,7 +361,7 @@ void testIdentityAndPin() {
     check(std::memcmp(refreshPin, lg::kRefreshPrologue, 16) == 0, "the refresh pin is the sixteen bytes read from the exe");
 }
 
-// The routine at 0x48AAAE8, transcribed instruction by instruction with the registers as variables (edx, eax, ecx, r8d), as an independent reading to hold the core's gameCeilf to.
+// The routine at 0x48AD628, transcribed instruction by instruction with the registers as variables (edx, eax, ecx, r8d), as an independent reading to hold the core's gameCeilf to.
 float asmCeilf(float xmm0) {
     uint32_t r8d = 0, edx, eax, ecx;
     std::memcpy(&edx, &xmm0, 4);   // movss [rsp+8], xmm0 / mov edx, [rsp+8]
@@ -369,23 +369,23 @@ float asmCeilf(float xmm0) {
     eax &= 0x7FFFFFFFu;            // btr eax, 0x1f
     r8d = edx != eax ? 1u : 0u;    // cmp edx, eax / setne r8b
     auto fromBits = [](uint32_t b) { float f; std::memcpy(&f, &b, 4); return f; };
-    if (eax >= 0x4B800000u) return xmm0;               // jb not taken: 48AAB08 jbe 48AAB6E (infinity, NaN excepted) returns xmm0
-    if (eax < 0x3F800000u) {                           // 48AAB16 jae 48AAB40 not taken
-        if (eax == 0) return xmm0;                     // je 48AAB6E
-        if (r8d != 0) return fromBits(0x80000000u);    // 48AAB26
-        return 1.0f;                                   // 48AAB36: movss xmm0, [0x4DDE614]
+    if (eax >= 0x4B800000u) return xmm0;               // jb not taken: 48AD648 jbe 48AD6AE (infinity, NaN excepted) returns xmm0
+    if (eax < 0x3F800000u) {                           // 48AD656 jae 48AD680 not taken
+        if (eax == 0) return xmm0;                     // je 48AD6AE
+        if (r8d != 0) return fromBits(0x80000000u);    // 48AD666
+        return 1.0f;                                   // 48AD676: movss xmm0, [0x4DE165C]
     }
-    eax = edx;                                         // 48AAB40
+    eax = edx;                                         // 48AD680
     ecx = 0x96;
     eax >>= 0x17;                                      // shr eax, 0x17
     ecx -= eax;                                        // sub ecx, eax
     eax = 0xFFFFFFFFu;                                 // or eax, -1
     eax <<= (ecx & 31u);                               // shl eax, cl
     eax &= edx;                                        // and eax, edx
-    xmm0 = fromBits(eax);                              // 48AAB53..57
+    xmm0 = fromBits(eax);                              // 48AD693..57
     if (r8d != 0) return xmm0;                         // test r8d, r8d / jne
     if (edx == eax) return xmm0;                       // cmp edx, eax / je
-    return xmm0 + 1.0f;                                // addss xmm0, [0x4DDE614]
+    return xmm0 + 1.0f;                                // addss xmm0, [0x4DE165C]
 }
 
 void testGridCeil() {

@@ -6,11 +6,11 @@
 //   The planet draw-list builder 0x4462E80 calls 0x44587C0 (at 0x4463A83), which writes one record per render view. For a main (non-ortho) view it loads the view's eye camera
 //   aspect and vertical fov and builds the four cull planes:
 //     4458D5D  movss xmm0,[r14+0x70]   aspect  (the recommended W/H, the fov getter's out[0])
-//     4455FEA  movss xmm1,[r14+0x90]   vFOV    (atan|top| + atan|bottom|, out[1])
-//     4455FF3  movss [rsp+0x28],xmm0 ; 4455FF9  movss [rsp+0x20],xmm1 ; 4456007  call 0x144441580   (rcx,rdx,r8,r9 = four output/scratch pointers)
-//   so at the callee's entry arg 5 = vFOV at [rsp+0x28] and arg 6 = aspect at [rsp+0x30]. 0x4441580 (prologue below) halves the vFOV (mulss by the 0.5 at 0x4DDF878), takes
+//     4458D6A  movss xmm1,[r14+0x90]   vFOV    (atan|top| + atan|bottom|, out[1])
+//     4458D73  movss [rsp+0x28],xmm0 ; 4458D79  movss [rsp+0x20],xmm1 ; 4458D87  call 0x144441580   (rcx,rdx,r8,r9 = four output/scratch pointers)
+//   so at the callee's entry arg 5 = vFOV at [rsp+0x28] and arg 6 = aspect at [rsp+0x30]. 0x4441580 (prologue below) halves the vFOV (mulss by the 0.5 at 0x4DE28B8), takes
 //   a = vFOV/2, b = atan(aspect * tan a), and writes four planes through the eye: +-a about the camera's Z axis vertically, +-b horizontally. A CENTRED frustum, no margin. It is
-//   the ONLY direct caller (a .text scan finds exactly 0x4458D87). The per-(patch, view) test (0x445BA40 -> 0x445A1C0) culls a patch box against these with no epsilon. The
+//   the ONLY direct caller (a .text scan finds exactly 0x4458D87). The per-(patch, view) test (0x445BA40 -> 0x445CF40) culls a patch box against these with no epsilon. The
 //   rendered image uses the explicit kind-5 projection matrix, not these values.
 //
 // SO an eye whose frustum is asymmetric is under-covered on its wide sides: the cull reaches +-a vertically and +-b horizontally about the camera's axis, symmetric, while the

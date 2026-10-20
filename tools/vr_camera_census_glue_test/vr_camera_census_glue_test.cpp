@@ -438,7 +438,7 @@ struct Gpu {
         if (FAILED(device->CreateBuffer(&tinyDesc, &init2, &tiny))) return;
         ok = true;
     }
-    // The eye camera's rows into rows 270..273, composed by the DECOMPILE-CITED composer (FUN_140596830's model), not by the
+    // The eye camera's rows into rows 270..273, composed by the DECOMPILE-CITED composer (FUN_140596990's model), not by the
     // census's own function: the census recomputes the same rows from the camera it saw, and the two must agree.
     void setEyeRows(Model& eye) {
         float rows[16];

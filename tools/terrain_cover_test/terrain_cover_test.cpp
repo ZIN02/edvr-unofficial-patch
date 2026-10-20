@@ -270,12 +270,12 @@ static uint32_t putSite(Synth& s, uint32_t rva, uint32_t targetRva, const std::v
 static const std::vector<uint8_t> kRealGapAB = {0x0F, 0x29, 0x8D, 0xC0, 0x00, 0x00, 0x00};                // movaps [rbp+0C0h],xmm1
 static const std::vector<uint8_t> kRealGapDE = {0x44, 0x0F, 0x29, 0xA5, 0xE0, 0x00, 0x00, 0x00};          // movaps [rbp+0E0h],xmm12
 
-// The known build's layout: the builder at 0x4441580, the 0.5 at 0x4DDF878, the call site at 0x4458D5D (E8 at 0x4458D87).
+// The known build's layout: the builder at 0x4441580, the 0.5 at 0x4DE28B8, the call site at 0x4458D5D (E8 at 0x4458D87).
 static void buildKnown(Synth& s) {
-    s.commit(0x443E000, 0x2000, PAGE_EXECUTE_READWRITE);
-    s.commit(0x4455000, 0x2000, PAGE_EXECUTE_READWRITE);
-    s.commit(0x4DDF000, 0x1000, PAGE_READWRITE);
-    putCallee(s, tc::kTargetRva, 0x4DDF878);
+    s.commit(0x4441000, 0x2000, PAGE_EXECUTE_READWRITE);
+    s.commit(0x4458000, 0x2000, PAGE_EXECUTE_READWRITE);
+    s.commit(0x4DE2000, 0x1000, PAGE_READWRITE);
+    putCallee(s, tc::kTargetRva, 0x4DE28B8);
     const uint32_t call = putSite(s, tc::kSiteRva, tc::kTargetRva, kRealGapAB, kRealGapDE);
     check(call == tc::kCallRva, "C3 the synthetic call site puts its E8 where the game's is (0x4458D87)");
 }
@@ -366,18 +366,18 @@ static void caseLocate() {
               "C4 ...a wrong call site likewise");
         s.base[0x4458D5D + 5] ^= 1;
         {   // the call goes somewhere else
-            const int32_t rel = int32_t(0x443E900 - (0x4458D87 + 5));
-            std::memcpy(s.base + 0x4456008, &rel, 4);
+            const int32_t rel = int32_t(0x4441680 - (0x4458D87 + 5));
+            std::memcpy(s.base + 0x4458D88, &rel, 4);
             check(!tc::locate(s.base, 0, &loc) && std::string(loc.why).find("the call site at exe+0x4458D5D is not the one read") != std::string::npos, "C4 ...and a call to another function");
             const int32_t back = int32_t(0x4441580 - (0x4458D87 + 5));
-            std::memcpy(s.base + 0x4456008, &back, 4);
+            std::memcpy(s.base + 0x4458D88, &back, 4);
         }
         {
             const float notHalf = 2.0f;
-            std::memcpy(s.base + 0x4DDF878, &notHalf, 4);
+            std::memcpy(s.base + 0x4DE28B8, &notHalf, 4);
             check(!tc::locate(s.base, 0, &loc), "C4 the head right and its constant not 0.5 is inert");
             const float half = 0.5f;
-            std::memcpy(s.base + 0x4DDF878, &half, 4);
+            std::memcpy(s.base + 0x4DE28B8, &half, 4);
         }
         check(tc::locate(s.base, 0, &loc), "C4 the control, restored");
         s.commit(0x1000, 0x1000, PAGE_READWRITE);                 // a code section small enough to be all committed

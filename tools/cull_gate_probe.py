@@ -924,7 +924,7 @@ def report_parts(gate, obs_frame, eye_views, pclaims, drawn, seen_of, verdicts, 
 
 # --------------------------------------------------------------------------- the LOD bias (--lod-bias)
 
-SIZE_FACTOR = 0.5   # DAT_144E2F870 (0.5) x DAT_144E2F880 (1.0), .rdata of build 334473 (decomp_42B3FC0.txt:68-71)
+SIZE_FACTOR = 0.5   # DAT_144E328B0 (0.5) x DAT_144E328C0 (1.0), .rdata of build 334473 (decomp_42B3FC0.txt:68-71)
 
 
 def factors(text):

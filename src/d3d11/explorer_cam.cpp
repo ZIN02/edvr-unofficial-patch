@@ -1330,7 +1330,7 @@ std::atomic<uint32_t> g_witnessIntervalMs{1000}, g_witnessUnrooted{0}, g_witness
 std::atomic<bool> g_busyWitness{false};
 ecm::Ring<ecm::AmcWitness, 4> g_witnessRing;
 bool plausiblePointer(uint64_t p) noexcept { return p >= 0x10000u && p < 0x00007FFF00000000ull; }
-// rcx = *(AMC+0x208); rdx = *rcx; call [rdx+0x20] returns a matrix pointer whose origin is at +0x30 (FUN 0x3DD8D00 at 0x3DD61A2..0x3DD61AF, same call).
+// rcx = *(AMC+0x208); rdx = *rcx; call [rdx+0x20] returns a matrix pointer whose origin is at +0x30 (FUN 0x3DD8D00 at 0x3DD8E62..0x3DD8E6F, same call).
 // 1 = read, 0 = not available (a pointer along the chain is null or implausible: nothing was called), -1 = a fault.
 __declspec(noinline) int sehAmcOrigin(const uint8_t* amc, float* out3) noexcept {
     __try {

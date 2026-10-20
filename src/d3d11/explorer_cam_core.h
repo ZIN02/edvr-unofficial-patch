@@ -37,7 +37,7 @@ namespace ecm {
 // ---- identity: build 334473 ---------------------------------------------------------------------------------------------
 constexpr uintptr_t kFreeCameraRva = 0x1072A80;   // FreeCameraActivity's per-frame update, rcx = the activity
 constexpr uintptr_t kCollisionRva = 0x1092240;    // the camera's sweep/ray collision step, called only by that update
-constexpr uintptr_t kBoxPushRva = 0x10902B0;      // pushes the point out of the commander's box (+0.25); one caller, 0x10728B6
+constexpr uintptr_t kBoxPushRva = 0x10902B0;      // pushes the point out of the commander's box (+0.25); one caller, 0x10739B6
 constexpr uintptr_t kCameraUiRva = 0x47CA180;     // VanityCameraUIActivity's update (rcx = the object), reached by a job thunk
 constexpr uintptr_t kControllerRva = 0x2DF3F60;   // VesselCameraMountControl's update (rcx = the controller), vtable only
 constexpr uintptr_t kAvatarFadeRva = 0x3DD8D00;   // AvatarModelComponent's per-frame dither fade (rcx = the component, void): the head hiding's hook
@@ -95,7 +95,7 @@ constexpr size_t kFindJointPrologueBytes = 16;
 inline constexpr uint8_t kFindJointPrologue[kFindJointPrologueBytes] = {
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x01, 0x48, 0x8B, 0xFA};
 
-// VanityCameraDofAndZoomControls' update (rcx = the activity; Camera job table slot 16, job thunk 0x102FA80 sets rcx = rdx - 0x150 first): the zoom, aperture and focus
+// VanityCameraDofAndZoomControls' update (rcx = the activity; Camera job table slot 16, job thunk 0x1030CE0 sets rcx = rdx - 0x150 first): the zoom, aperture and focus
 // keys. Isolation clears its seven action handles (+0x250..+0x280) before the original and puts them back after it. `push rbx` (REX 40 53); `sub rsp,60h`;
 // `mov rax,[rcx+210h]`; `mov rbx,rcx`. Boundaries 2, 6, 13, 16; no rip-relative byte, so CodeHook steals 6 (the first two instructions).
 constexpr uintptr_t kZoomDofRva = 0x1079A90;
@@ -1485,8 +1485,8 @@ inline void worldToCommanderLocal(const CommanderFrame& c, const float point[3],
 // ---- Phase 2: hiding the head parts of the local third-person avatar ----------------------------------------------------------------
 // The avatar (AvatarModelComponent, "AMC") keeps 54 parts at AMC+0x11B0, 0x680 bytes each (the part enum is the index; the names are the table at
 // +0x5E9F820). A part has up to four instances (variants k = 0..3 at entry+0x10+8k) and, per instance, a VIEW MASK qword at entry+0x5F0+8k that the game's
-// visibility job zeroes and ORs every frame and the submit job (the one that calls the dither fade, 0x3DD8D00, at 0x3DA1E3B) reads right after the fade:
-// an instance whose mask is zero is skipped (cmp qword ptr [r14],0 at 0x3DA20DE). So a zero written after the fade returns removes the instance from every
+// visibility job zeroes and ORs every frame and the submit job (the one that calls the dither fade, 0x3DD8D00, at 0x3DA4AFB) reads right after the fade:
+// an instance whose mask is zero is skipped (cmp qword ptr [r14],0 at 0x3DA4D9E). So a zero written after the fade returns removes the instance from every
 // view for that frame, race-free (the same thread), and nothing is restored: the game rewrites the masks next frame. (NOTES_p2.txt.)
 constexpr uintptr_t kPartNameTableRva = 0x5E9F820;
 constexpr uint32_t kPartCount = 54;

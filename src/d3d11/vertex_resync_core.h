@@ -10,14 +10,14 @@
 //     DESIRED   list+0x60 + 8*slot  wrapper (an f3d buffer object, refcounted)      list+0xE0 + 4*slot  offset      list+0x120 + 4*slot  stride override
 //     APPLIED   list+0x408 + 8*slot native ID3D11Buffer*   list+0x488 + 4*slot stride   list+0x4C8 + 4*slot offset            (the cache of what was last BOUND)
 //
-//   SetVertexBuffer (0x1404E9D70; READ) compares ONLY the desired state -- [list+8*slot+0x60], [list+4*slot+0xE0], [list+4*slot+0x120] against the arguments -- and
-//   returns at 0x1404E9DAF when they are equal. When they differ it writes the desired state and the applied cache together: applied buffer = [wrapper+0x140] (the
+//   SetVertexBuffer (0x1404E9E70; READ) compares ONLY the desired state -- [list+8*slot+0x60], [list+4*slot+0xE0], [list+4*slot+0x120] against the arguments -- and
+//   returns at 0x1404E9EAF when they are equal. When they differ it writes the desired state and the applied cache together: applied buffer = [wrapper+0x140] (the
 //   native buffer), applied offset = the offset, applied stride = 0, and sets bit 0x20 of the dirty word at list+0x1E8.
 //
 //   FlushIA (0x140522BB0; READ), called before a draw with rcx = the pipeline state, r8 = list+0x60 (DESIRED), r9 = list+0x2A0 (so r9+0x168 = APPLIED buffers,
 //   r9+0x228 = offsets, r9+0x1E8 = strides), computes each slot's stride from the desired state, and when the draw's layout has FEWER slots than the previous draw's it
-//   zeroes applied buffer, offset and stride for the slots from the new count up to the old (0x140522B7C..0x140522BA0). It never touches the desired state. It then
-//   binds from the APPLIED arrays (the call at 0x140522BF5 is IASetVertexBuffers with [r9+0x168], strides, offsets).
+//   zeroes applied buffer, offset and stride for the slots from the new count up to the old (0x140522CDC..0x140522D00). It never touches the desired state. It then
+//   binds from the APPLIED arrays (the call at 0x140522D55 is IASetVertexBuffers with [r9+0x168], strides, offsets).
 //
 //   The failing sequence (INFERRED from those, and consistent with 38 of 38 field frames): the first eye's deferred-lighting resolve binds buffer Q (desired = applied
 //   = Q); two zero-slot full-screen draws follow, whose FlushIA zeroes APPLIED[0] and binds (NULL, 0, 0) while DESIRED[0] stays Q; the second eye's resolve calls

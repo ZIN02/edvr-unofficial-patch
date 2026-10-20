@@ -41,7 +41,7 @@ bool frustumCall(CullGateProbe::FrustumFn fn, uintptr_t view, const float* point
 
 // The builder's transformed centre, exactly as decomp_42B4420.txt:196-237
 // forms it from the pose context: c = pose+0x80 (float4), q = pose+0x10,
-// t = pose+0x20. The XOR with the sign mask (DAT_144e2f8e0) is a negation.
+// t = pose+0x20. The XOR with the sign mask (DAT_144e32920) is a negation.
 void builderCentre(const float q[4], const float t[4], const float c[4], float out[4]) noexcept {
     const float w2 = q[3] + q[3];
     const float dot = q[0] * c[0] + q[1] * c[1] + q[2] * c[2];

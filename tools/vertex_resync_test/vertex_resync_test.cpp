@@ -4,7 +4,7 @@
 //   --dry-run    the same run except the one check that writes a log file in the temp folder (V5.m-p), for the gate's --dry-run convention
 //   --self-test  every check; the optional argument is the repository root, where the glue is read as text (the mutation tool hands it a temp root holding an edited copy)
 //
-// The pure half runs on a fake command list laid out at the real offsets (a model of SetVertexBuffer 0x1404E9D70 and of FlushIA's slot loop 0x140522BB0, written from the
+// The pure half runs on a fake command list laid out at the real offsets (a model of SetVertexBuffer 0x1404E9E70 and of FlushIA's slot loop 0x140522BB0, written from the
 // disassembly in analysis\decomp\scanner_vb_dump_*). The hook half is the production hook.cpp compiled with EDVR_VERTEX_RESYNC_TEST: the real CodeHook patches a synthetic
 // function that begins with the real 16-byte prologue of FlushIA, the real relay runs, the real SEH-guarded repair runs before the original. The repair has no key: there is
 // no off to test. Cases ("V<case>.<what>"; mutants.py names the case that must catch each mutation):
@@ -108,7 +108,7 @@ struct FakeList {
     }
     uint8_t* wrapperPtr(int i) { return i < 0 ? nullptr : wrappers[i].bytes; }
 
-    // SetVertexBuffer (0x1404E9D70): compares ONLY the desired state; on a change writes desired and applied together and sets dirty bit 0x20.
+    // SetVertexBuffer (0x1404E9E70): compares ONLY the desired state; on a change writes desired and applied together and sets dirty bit 0x20.
     void setVertexBuffer(uint32_t slot, uint8_t* wrapper, uint32_t offset, uint32_t over = 0xFFFFFFFFu) {
         const uint64_t w = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(wrapper));
         if (vr::load64(list + 0x60 + 8 * slot) == w && vr::load32(list + 0xE0 + 4 * slot) == offset && vr::load32(list + 0x120 + 4 * slot) == over) return;   // skipped

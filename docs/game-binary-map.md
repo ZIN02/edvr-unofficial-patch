@@ -218,12 +218,18 @@ hookedPresent). Game feature for re-finding: the `f3dDevice::PrePresent` string
 
 ## Re-deriving after a patch
 
-1. Open the new exe once in REA (`open_binary`) and keep the session. Cold import took
-   2,342 s, Java peak about 2.47 GB; set `GHIDRA_HEADLESS_MAXMEM=16G` (`list_names`
-   ran out of memory at the 2 GB default). Do not reopen per query.
+0. **Before Steam updates:** `python tools\archive_game_exe.py` copies the installed
+   exe to `analysis\EliteDangerous64-<build>.exe` (git-ignored). Without the old
+   build on disk there is nothing to map from.
+1. **Map:** `python tools\build_diff.py map --old analysis\EliteDangerous64-<old>.exe
+   --new <new exe> --seed` (the 334473 retarget, `docs\build-334473.md`). Its
+   IDENTICAL and RELOC-ONLY rows are mechanical; review CHANGED and AMBIGUOUS ones.
 2. Check identity first: new PE stamp and SizeOfImage mean every gate refuses, which is
    safe. Update the gates only after the addresses are re-derived.
-3. For each row, find the function by its recognisable feature, then `procedure_info`
+3. **For CHANGED or AMBIGUOUS rows**, open the new exe once in REA (`open_binary`)
+   and keep the session: cold import took 2,342 s, Java peak about 2.47 GB, and
+   `GHIDRA_HEADLESS_MAXMEM=16G` avoids the 2 GB default's out-of-memory. Find the
+   function by its recognisable feature, then `procedure_info`
    / `resolve_containing_procedure`: strings (`search_strings`: joint names,
    `HMDRenderTargetMultiplier`, `LODDistanceScale`, `Supersampling`, `LibOVRRT`),
    `xrefs` to those strings, `procedure_callers` / `procedure_callees` from a known

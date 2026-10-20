@@ -3,10 +3,11 @@
 ## Status
 
 - **Result:** all 173 EDVR addresses re-found in build 334473: 75 exact (identical 64 entry bytes or 16-byte value), 98 moved+changed (unique masked match plus confirming structure), 0 ambiguous, 0 not found.
-- **Gates to update:** PE TimeDateStamp 1791840573 (0x6ACD513D) and SizeOfImage 104,906,752 (0x640C000); see the identity table below.
+- **Already shipped:** main retargeted to 334473 in `869fd706` (gates, pins, fingerprints; flown, see `docs\build-334473.md`). This table is an independent cross-check and the doc-only addresses main does not pin. New PE TimeDateStamp 1791840573 (0x6ACD513D), SizeOfImage 104,906,752 (0x640C000).
+- **Agrees with that retarget:** all 152 rows that `src\` pins appear among main's 334473 constants, 60 of them matched by constant name. The other 21 rows (camera chain, kind readers, draw-list sites, the PrePresent string) are doc-only, with no `src\` counterpart to compare. Two independent methods (`tools\build_diff.py map` and the masked matching here), no disagreement.
 - **Spot-checked independently in REA (2026-10-20):** FlushIA 0x522BB0 matches the 16-byte pin in vertex_resync_core.h; the camera-kind write is still the single `C7 84 24 74 02 00 00 05 00 00 00` in .text, at 0x287B5A1 in setter 0x287B3F0, whose sole caller is composer 0x283FAE0; PE stamp and SizeOfImage re-read from the file header.
-- **Not verified:** no flight. Hooks whose own pins are shorter than 64 bytes may still match unchanged (e.g. the 6-byte pad-reader prologue); not every pin length was compared. The Oculus profile FNV fingerprints likely need regenerating because most fingerprinted functions are moved+changed (inferred from byte differences, not tested).
-- **Index:** game-binary-map.md (build 332841) explains what each row is.
+- **Not verified here:** no flight from this table; the 21 doc-only rows rest on this matching alone.
+- **Index:** game-binary-map.md (build 332841) explains what each row is. Next update: game-binary-map.md "Re-deriving after a patch".
 
 Generated 2026-10-20 by read-only static analysis (REA MCP, Ghidra 12.1.4, plus byte matching on the on-disk image). RVAs; VA = 0x140000000 + RVA.
 

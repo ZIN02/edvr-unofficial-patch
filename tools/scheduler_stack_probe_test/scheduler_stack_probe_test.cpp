@@ -138,7 +138,7 @@ void caseCaptureFaultKeepsPrefix() {
 // Golden FNV-1a-64 vectors (reference values computed offline; the empty
 // list is the offset basis, the FNV spec's own check).
 void caseFnvGolden() {
-    const uint64_t three[] = {0x1462B4A0ull, 0x144324640ull, 0x1436A1000ull};
+    const uint64_t three[] = {0x1462B4A0ull, 0x144321940ull, 0x1436A1000ull};
     check(SchedulerStackProbe::fnv1a64(three, 3) == 0xDA6A4E19B4964CA1ull,
           "fnv: three-word golden vector");
     const uint64_t one[] = {0x1462B4A0ull};

@@ -63,7 +63,7 @@ void caseCaptureCollectsInRangeWithGaps() {
     uint64_t image[64]{};
     image[0] = kLo + 0x100;          // immediate caller (the stub)
     image[1] = 0xDEADBEEFull;        // local, not a return address
-    image[2] = kBase + 0x4321940ull; // scheduler candidate (.text, in range)
+    image[2] = kBase + 0x4324640ull; // scheduler candidate (.text, in range)
     image[3] = 0x1234ull;
     image[4] = 0x1235ull;
     image[5] = kHi - 0x10;           // deepest frame
@@ -138,7 +138,7 @@ void caseCaptureFaultKeepsPrefix() {
 // Golden FNV-1a-64 vectors (reference values computed offline; the empty
 // list is the offset basis, the FNV spec's own check).
 void caseFnvGolden() {
-    const uint64_t three[] = {0x1462B4A0ull, 0x144321940ull, 0x1436A1000ull};
+    const uint64_t three[] = {0x1462B4A0ull, 0x144324640ull, 0x1436A1000ull};
     check(SchedulerStackProbe::fnv1a64(three, 3) == 0xDA6A4E19B4964CA1ull,
           "fnv: three-word golden vector");
     const uint64_t one[] = {0x1462B4A0ull};

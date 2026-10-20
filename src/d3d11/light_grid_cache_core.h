@@ -3,19 +3,19 @@
 // the real offsets, with a fake builder standing in for the game's. light_grid_cache_hook.cpp is the glue that finds the function, patches its entry, reads the call's inputs
 // under SEH and hands them here.
 //
-// THE FUNCTION. EliteDangerous64.exe (build 332841, PE stamp 1788384820, size 104894464) RVA 0x58B150, the owner of the .pdata chunks 0x58B150, 0x58B474, 0x58B530, 0x58BA2F
+// THE FUNCTION. EliteDangerous64.exe (build 334473, PE stamp 1791840573, size 104906752) RVA 0x58B2B0, the owner of the .pdata chunks 0x58B2B0, 0x58B474, 0x58B530, 0x58BA2F
 // and 0x58BDD7; one direct caller, 0x590368. It builds the fragment-culling cluster grid: rcx the cluster context (this, at owner+0x20), rdx (a2) the renderer holder
 // (*a2 the renderer), r8 (a3) a sub-block of the caller's, r9 (a4) the view block, then width and height as 32-bit stack arguments.
 //
 // WHAT THE GAME'S OWN MEMO PROVES, AND WHAT IT LEAVES OUT (read from the disassembly; RVAs are the exe's):
 //   The key is this+0x00..0x77: four 16-byte rows, near and far, then six 64-bit values: the grid x, the grid y, the slice count, the width, the height, the tile.
-//   58B3D4..58B465 compare it (cmpeqps on the rows, ucomiss on the floats, cmp on the qwords); 58B467 jumps to the epilogue 58BDD7 when the global byte at RVA 0x5F27612 is
+//   58B3D4..58B465 compare it (cmpeqps on the rows, ucomiss on the floats, cmp on the qwords); 58B467 jumps to the epilogue 58BDD7 when the global byte at RVA 0x5F2A652 is
 //   clear. Otherwise 58BD6B..58BDD1 store the new key. The rows, near and far come from one of two places (58B273): the view block's own (a4+0x1B0.., +0x234, +0x238) when the
-//   byte at 0x5E70F7E is 0, or, when it is set (it is 1 in the exe's data and nothing in .text writes it: the usual case), from a local copy of the block with the near and far
-//   replaced by the floats at 0x5E70F94 and 0x5E70F98 and the rows recomputed by 0x4F2FF0 (see kOverrideNearRva). Either way the rows are a function of the view block
+//   byte at 0x5E73F7E is 0, or, when it is set (it is 1 in the exe's data and nothing in .text writes it: the usual case), from a local copy of the block with the near and far
+//   replaced by the floats at 0x5E73F94 and 0x5E73F98 and the rows recomputed by 0x4F3150 (see kOverrideNearRva). Either way the rows are a function of the view block
 //   and those globals, and the glue reads them the way the build does.
-//   The grid x and y are CEIL((float)width / (float)tile) and the same for the height (58B353..58B3E0, ceilf at 0x48AAAE8; gameCeilf transcribes it), the tile is the global u32 at 0x5E70F80 (120 in the
-//   exe's data; read at 58B33E and again at 58B4D0), the slice count the global u32 at 0x5E70F90 (32; 58B3A5): a 17 x 17 x 32 grid is 9248 clusters and 9280 elements of 32
+//   The grid x and y are CEIL((float)width / (float)tile) and the same for the height (58B353..58B3E0, ceilf at 0x48AAAE8; gameCeilf transcribes it), the tile is the global u32 at 0x5E73F80 (120 in the
+//   exe's data; read at 58B33E and again at 58B4D0), the slice count the global u32 at 0x5E73F90 (32; 58B3A5): a 17 x 17 x 32 grid is 9248 clusters and 9280 elements of 32
 //   bytes, the 296,960 bytes the flight measured. The build's loops read ONE thing the key does not hold: the view block's own near plane, at 58B5E4 (a4+0x234, used for the
 //   first depth slice; on the plain path it IS the key's near, on the override path it is not), so the cache's key is the game's key plus that value. The two calls inside the
 //   loops, 0x5E9ED0 and 0x55F620, make no call and read no writable global (capstone scan of both bodies), and the writable globals the whole function reads are exactly the
@@ -27,7 +27,7 @@
 //   that finds the byte set.
 //
 // THE DESIGN: STATES ARE MOVED, NEVER COPIED. The state of a build is three regions of the context: the key (0x00..0x77), the vectors at 0x80 and 0xA0 (0x40 bytes) and the
-// vector at 0x110 with the four GPU pointers (0x40 bytes): kStateBytes in all. Each vector is a 32-byte header {capacity, floor, size, data} (the resize routines 0x5954A0 and
+// vector at 0x110 with the four GPU pointers (0x40 bytes): kStateBytes in all. Each vector is a 32-byte header {capacity, floor, size, data} (the resize routines 0x595600 and
 // 0x5955E0 read and write exactly those). A slot holds a whole state. A HIT swaps the context's state with the slot's: the context now owns the slot's tables and GPU objects,
 // the slot owns what the context had (a state that is valid for ITS key, because it was). A MISS first swaps the context with the least recently used slot, so the context's old
 // state is kept, and then lets the game rebuild in place over the state it was handed (exactly what the game does to its own, only into recycled memory). No allocation, no
@@ -46,9 +46,9 @@
 namespace edvr::lgc {
 
 // ---- identity: the pair every build-keyed hook here checks, and the sixteen bytes of the entry ---------------------------------------------------------------------
-constexpr uint32_t kExpectedTimestamp = 1788384820u;
-constexpr uint32_t kExpectedImageSize = 104894464u;
-constexpr uintptr_t kBuilderRva = 0x58B150u;
+constexpr uint32_t kExpectedTimestamp = 1791840573u;
+constexpr uint32_t kExpectedImageSize = 104906752u;
+constexpr uintptr_t kBuilderRva = 0x58B2B0u;
 constexpr size_t kPrologueBytes = 16;
 // mov rax,rsp; push rbp; push rbx; push rsi; push rdi; push r12; push r14; push r15; lea rbp,[rax-0x4D8]. CodeHook moves the first five bytes (no relative operand).
 constexpr uint8_t kPrologue[kPrologueBytes] = {0x48, 0x8B, 0xC4, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xA8};
@@ -63,25 +63,25 @@ inline Install installDecision(bool identityRead, uint32_t stamp, uint32_t size,
 }
 
 // ---- globals the build reads (RVAs from the module base) and the view block's offsets --------------------------------------------------------------------------------
-constexpr uintptr_t kOverridePathRva = 0x5E70F7Eu;     // byte: set sends the build down the override path (rows from a copy of the view block)
-constexpr uintptr_t kTileRva = 0x5E70F80u;          // u32 tile size in pixels
-constexpr uintptr_t kSlicesRva = 0x5E70F90u;        // u32 depth slice count
-constexpr uintptr_t kForceRebuildRva = 0x5F27612u;  // byte: set disables the game's own memo
+constexpr uintptr_t kOverridePathRva = 0x5E73F7Eu;     // byte: set sends the build down the override path (rows from a copy of the view block)
+constexpr uintptr_t kTileRva = 0x5E73F80u;          // u32 tile size in pixels
+constexpr uintptr_t kSlicesRva = 0x5E73F90u;        // u32 depth slice count
+constexpr uintptr_t kForceRebuildRva = 0x5F2A652u;  // byte: set disables the game's own memo
 constexpr size_t kViewRows = 0x1B0, kViewFlags = 0x230, kViewNear = 0x234, kViewFar = 0x238;
 constexpr uint8_t kViewDirtyBit = 4;
 // The function the builder calls on the view block when the dirty bit is set (58B2F4): it recomputes the four rows at +0x1B0..0x1EF from the block's projection, whichever of
 // its modes the block is in, and clears the bit (4F3745). Its only stores are those rows and that bit (a capstone listing of all of its stores), it calls only CRT math, and it
 // reads no writable global. The glue runs it ahead of reading the rows when the bit is set: the block the builder then sees is the block it would have made itself.
-constexpr uintptr_t kRefreshRva = 0x4F2FF0u;
+constexpr uintptr_t kRefreshRva = 0x4F3150u;
 constexpr uint8_t kRefreshPrologue[kPrologueBytes] = {0x48, 0x8B, 0xC4, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, 0x0F, 0x29, 0x70, 0xE8, 0x48};
 inline bool refreshPinMatches(const uint8_t* got, size_t n) noexcept { return got != nullptr && n >= kPrologueBytes && std::memcmp(got, kRefreshPrologue, kPrologueBytes) == 0; }
-// THE OVERRIDE PATH. The global byte at 0x5E70F7E is 1 in the exe's own data (and nothing in the code writes it: a capstone sweep of .text finds only reads), so the build's
-// usual path is this one (58B275..58B2E8): it copies the view block into a local with the game's copy constructor (0x57A460, 58B27F), ORs 0xD into the copy's flags (+0x230), puts
-// the two float globals 0x5E70F94 (1.0 in the file) and 0x5E70F98 (10000.0) in the copy's near and far (+0x234, +0x238), runs 0x4F2FF0 on the copy (58B2B2) and keys on the copy's
+// THE OVERRIDE PATH. The global byte at 0x5E73F7E is 1 in the exe's own data (and nothing in the code writes it: a capstone sweep of .text finds only reads), so the build's
+// usual path is this one (58B275..58B2E8): it copies the view block into a local with the game's copy constructor (0x57A5C0, 58B27F), ORs 0xD into the copy's flags (+0x230), puts
+// the two float globals 0x5E73F94 (1.0 in the file) and 0x5E73F98 (10000.0) in the copy's near and far (+0x234, +0x238), runs 0x4F3150 on the copy (58B2B2) and keys on the copy's
 // four rows and its near and far. The real block is only read, never written. The glue does the same on a local of its own to learn the rows before it decides; the object is 0x2F0 bytes
 // (the copy constructor's last store is at +0x2EF).
-constexpr uintptr_t kOverrideNearRva = 0x5E70F94u, kOverrideFarRva = 0x5E70F98u;
-constexpr uintptr_t kCopyRva = 0x57A460u;
+constexpr uintptr_t kOverrideNearRva = 0x5E73F94u, kOverrideFarRva = 0x5E73F98u;
+constexpr uintptr_t kCopyRva = 0x57A5C0u;
 constexpr uint8_t kCopyPrologue[kPrologueBytes] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x0F, 0x10, 0x02, 0x48, 0x8B, 0xF9};
 inline bool copyPinMatches(const uint8_t* got, size_t n) noexcept { return got != nullptr && n >= kPrologueBytes && std::memcmp(got, kCopyPrologue, kPrologueBytes) == 0; }
 constexpr size_t kViewObjectBytes = 0x2F0;
@@ -143,7 +143,7 @@ inline bool statePristine(const uint8_t* state) noexcept {
 
 // THE EMPTY STATE a fresh slot starts from: key zero, three vectors with capacity 0, size 0 and no data, no GPU object. It cannot be captured from a context (the flight met
 // contexts already built, and a built state owns buffers that must never be in two places), so it is made. It is valid because the game's own vector code is written for it:
-// every grow path (0x598740, 0x5988F0, 0x598F10 under 0x5954A0 and 0x5955E0) reallocates through 0x55B720 / 0x53A590, and 0x55B720 takes a null old block (58B735: test rcx, je to
+// every grow path (0x598740, 0x5988F0, 0x598F10 under 0x595600 and 0x5955E0) reallocates through 0x55B720 / 0x53A590, and 0x55B720 takes a null old block (58B735: test rcx, je to
 // a fresh allocation), 0x55B810 (the release) returns at once for a null block (55B813), the shrink path (0x598CC0) is entered only when the size falls below half the capacity, and
 // the build tests each GPU pointer for null before it releases it (58BA42, 58BA7F, 58BABA, 58BAF6). The one word the vectors keep besides capacity, size and data is the second
 // header word (+8, read only by the shrink path); it is copied from the context's own vector so a nonzero floor the game set stays.
@@ -178,10 +178,10 @@ struct CallInputs {
     uint32_t nearBits = 0, farBits = 0;   // the key's near and far (the view's own, or the override cvars')
     uint32_t extraNearBits = 0;      // a4+0x234: the build reads it again for the first depth slice, whichever near the key holds
     bool rowsOk = true;              // false: the glue could not derive the rows (a pinned function missing or faulting)
-    uint8_t overridePath = 0;        // global 0x5E70F7E: the build takes its rows from a copy with the override near and far (stats only)
+    uint8_t overridePath = 0;        // global 0x5E73F7E: the build takes its rows from a copy with the override near and far (stats only)
     uint8_t viewFlags = 0;           // a4+0x230
-    uint8_t forceRebuild = 0;        // global 0x5F27612
-    uint32_t tile = 0, slices = 0;   // globals 0x5E70F80 and 0x5E70F90
+    uint8_t forceRebuild = 0;        // global 0x5F2A652
+    uint32_t tile = 0, slices = 0;   // globals 0x5E73F80 and 0x5E73F90
     uint32_t width = 0, height = 0;  // the stack arguments
     uint64_t renderer = 0;           // *a2
     JitterSnap jitter;               // EDVR's current jitter (the probe only)

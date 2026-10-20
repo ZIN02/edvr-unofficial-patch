@@ -3506,7 +3506,7 @@ void* temporalInner(void* srcTex, int eye, const float* bounds,
         // from a usable scene row, else the game's infinite-far scene
         // encoding. The camera rows can arrive without a projection row;
         // the runtime's finite far plane is not a valid fallback for it.
-        // The scene row on build 332841 says A = 0,
+        // The scene row on build 334473 says A = 0,
         // B = 0.025 -- no far plane -- where the runtime's 0.025..50000 m
         // decoded 10 km as 8.3 km, 3 km as 2.8 km, and the body's grid
         // missed the station beyond a few hundred metres (19:52).
@@ -5370,7 +5370,7 @@ void temporalPassNoteSceneWrite(const void* res, const void* data, uint32_t byte
     // The projection's z row sits at row 198 of the same block (float
     // offset 792), read the column-vector way the x and y rows' off-centre
     // terms confirm: clip z = A * view z + B with the view z as clip w, so
-    // the depth the game writes is A + B / z. On build 332841 it reads
+    // the depth the game writes is A + B / z. On build 334473 it reads
     // A = 0, B = 0.025 -- reversed-Z with NO far plane, depth = 0.025 / z.
     // The 0.025..50000 m the game asks the runtime for is the runtime's
     // projection, not this one, and decoding with those planes read 10 km

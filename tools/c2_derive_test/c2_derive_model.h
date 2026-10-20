@@ -68,7 +68,7 @@ inline void finalizeViewRows(Cam& c) {
 inline float* projSlot(Cam& c, int i) { return &c.F(0x1B0 + 4 * i); }
 inline const float* projSlot(const Cam& c, int i) { return &c.F(0x1B0 + 4 * i); }
 
-// Projection builder: FUN_1404f2ff0 (camera_cache_helpers.txt:255-493).
+// Projection builder: FUN_1404f3150 (camera_cache_helpers.txt:255-493).
 inline void buildProjection(Cam& c) {
     const float fVar19 = (c.F(0x23C) + 1.0f) * c.F(0x234); // (compoundNear+1)*near
     const uint32_t kind = c.U(0x244);
@@ -298,7 +298,7 @@ inline void inverseView34(const float v[12], float inv[16]) {
 
 // ---------------------------------------------------------------------------
 // Ray CB composer: FUN_1405964c0 (camera_ray_consumer.txt:96-188), with the
-// constant blocks resolved: the 1450c8090..0xbc block is the identity 4x4, so
+// constant blocks resolved: the 1450cb0d0..0xbc block is the identity 4x4, so
 // the four pre-vectors are the snapshot rows and the origin delta as a point:
 //   V0..V2 = snapshot rows (basis), V3 = delta x basis + (0,0,0,1)
 // and the CB is the 4x4 product [V0..V3] x inverseView(current view rows),

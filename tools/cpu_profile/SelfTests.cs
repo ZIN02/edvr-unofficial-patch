@@ -366,7 +366,7 @@ internal static class SelfTests
     private static void RvaClassTable()
     {
         Check(RvaTable.Classes.Length == 15, "every RVA class is defined");
-        Check(RvaTable.Classes[ClassId("census_bracket")].Bound == 0x42B4420 + 0x1000,
+        Check(RvaTable.Classes[ClassId("census_bracket")].Bound == 0x42B70E0 + 0x1000,
               "the census bracket takes its assumed 0x1000 window");
         Check(!RvaTable.Classes[ClassId("census_bracket")].Pipeline,
               "the census bracket is matched but is not part of the pipeline");
@@ -376,17 +376,17 @@ internal static class SelfTests
               "census bracket window edges");
         // A function whose decompile note carries a size ends at entry+size; the
         // 0x2000 guess is only a fallback, and only table_ba0 still needs one.
-        Check(RvaTable.Classes[ClassId("update_render_data_job")].Bound == 0x4321940 + 503,
+        Check(RvaTable.Classes[ClassId("update_render_data_job")].Bound == 0x4324640 + 503,
               "update_render_data_job ends at its decompile size");
-        Check(RvaTable.Classes[ClassId("render_data_batch")].Bound == 0x4320340 + 565,
+        Check(RvaTable.Classes[ClassId("render_data_batch")].Bound == 0x4323040 + 565,
               "render_data_batch ends at its decompile size");
-        Check(RvaTable.Classes[ClassId("update_physics_objects_job")].Bound == 0x432B2A0 + 62,
+        Check(RvaTable.Classes[ClassId("update_physics_objects_job")].Bound == 0x432DFA0 + 62,
               "update_physics_objects_job ends at its decompile size");
-        Check(RvaTable.Classes[ClassId("eval_430efe0")].Bound == 0x430EFE0 + 1006,
+        Check(RvaTable.Classes[ClassId("eval_4311ca0")].Bound == 0x4311CA0 + 1006,
               "eval ends at its decompile size");
-        Check(RvaTable.Classes[ClassId("reset_repopulate")].Bound == 0x36A0F50 + 687,
+        Check(RvaTable.Classes[ClassId("reset_repopulate")].Bound == 0x36A3C50 + 687,
               "reset_repopulate ends at its decompile size");
-        Check(RvaTable.Classes[ClassId("record_drain")].Bound == 0x42DF940 + 134,
+        Check(RvaTable.Classes[ClassId("record_drain")].Bound == 0x42E2600 + 134,
               "record_drain ends at its decompile size");
         Check(RvaTable.Classes[ClassId("lod_evaluator_4331300")].Bound == 0x4331300 + 9,
               "the LOD evaluator is a nine-byte jmp thunk");
@@ -394,7 +394,7 @@ internal static class SelfTests
               "the LOD thunk matches nine bytes and no more");
         Check(RvaTable.BoundRule(RvaTable.Classes[ClassId("record_drain")]) == "decompile size (134 bytes)",
               "the decompile size is named in the bound rule");
-        Check(RvaTable.Classes[ClassId("table_ba0")].Bound == 0x4321940,
+        Check(RvaTable.Classes[ClassId("table_ba0")].Bound == 0x4324640,
               "table_ba0 has no decompile and keeps the next known entry");
         Check(RvaTable.BoundRule(RvaTable.Classes[ClassId("table_ba0")]) == "next known entry",
               "the fallback rule is named");
@@ -403,16 +403,16 @@ internal static class SelfTests
         Check(Matches("record_drain", 0x42DF9A0), "0x42df9a0 is inside record_drain");
         Check(!Matches("record_drain", 0x42DF9C6), "record_drain ends at 134 bytes");
         Check(!Matches("thunk_42df540", 0x42DF9A0), "0x42df9a0 is not the earlier thunk");
-        Check(RvaTable.Classes[ClassId("thunk_42df540")].Bound == 0x42DF550, "a thunk takes 16 bytes");
-        Check(Matches("thunk_42df540", 0x42DF54F) && !Matches("thunk_42df540", 0x42DF550),
+        Check(RvaTable.Classes[ClassId("thunk_42df540")].Bound == 0x42E2210, "a thunk takes 16 bytes");
+        Check(Matches("thunk_42df540", 0x42DF54F) && !Matches("thunk_42df540", 0x42E2210),
               "thunk window edges");
         Check(Matches("reset_repopulate", 0x36A1000) && !Matches("reset_repopulate", 0x36A11FF),
               "reset_repopulate window edges");
         Check(!RvaTable.Classes[ClassId("reset_repopulate")].Pipeline,
               "reset_repopulate is matched but is not part of the pipeline");
         Check(RvaTable.Classes[ClassId("record_drain")].Pipeline, "record_drain is part of the pipeline");
-        Check(Matches("call_site_431b21f", 0x431B21F) && Matches("call_site_431b21f", 0x431B22E) &&
-              !Matches("call_site_431b21f", 0x431B22F), "call site matches only the 16 bytes after it");
+        Check(Matches("call_site_431df1f", 0x431DF1F) && Matches("call_site_431df1f", 0x431B22E) &&
+              !Matches("call_site_431df1f", 0x431B22F), "call site matches only the 16 bytes after it");
         Check(Matches("scheduler_range", 0x5D6D7F) && Matches("scheduler_range", 0x5D6B20) &&
               !Matches("scheduler_range", 0x5D6ABD) && !Matches("scheduler_range", 0x5D7100),
               "scheduler range edges");
@@ -573,11 +573,11 @@ internal static class SelfTests
         var pipeline = stacks.AddForTest(new StackInfo
         {
             ModuleIds = [exe, exe],
-            Addresses = [GameBase + 0x42DF9A0, GameBase + 0x431B21F],
-            ClassIds = [ClassId("record_drain"), ClassId("call_site_431b21f")],
+            Addresses = [GameBase + 0x42DF9A0, GameBase + 0x431DF1F],
+            ClassIds = [ClassId("record_drain"), ClassId("call_site_431df1f")],
             Label = StackLabel.Pipeline,
             Pipeline = true,
-            GameTops = new GameTop(0x42DF9A0, 0x431B21F, 0, 2),
+            GameTops = new GameTop(0x42DF9A0, 0x431DF1F, 0, 2),
             Depth = 2,
             TopModuleId = exe,
         });
@@ -630,7 +630,7 @@ internal static class SelfTests
             Depth = 5,
             TopModuleId = nvidia,
         });
-        Check(stacks.Signature(stacks[pipeline]) == "0x42df9a0 < 0x431b21f", "a game stack signs as its RVAs");
+        Check(stacks.Signature(stacks[pipeline]) == "0x42df9a0 < 0x431df1f", "a game stack signs as its RVAs");
         Check(stacks.Signature(stacks[submit]) ==
               "nvwgf2umx.dll < unresolved < d3d11.dll [system32] < d3d11.dll [edvr] < 0x42b4500",
               "a mixed stack signs as modules and RVAs");
@@ -807,7 +807,7 @@ internal static class SelfTests
         Check(caller.Samples == 3 && caller.PipelineSamples == 1, "caller samples");
         Check(worker.Samples == 2 && worker.PipelineSamples == 2, "worker samples");
         Check(caller.ClassSamples![ClassId("record_drain")] == 1, "per-class sample counts per thread");
-        Check(caller.ClassSamples![ClassId("call_site_431b21f")] == 1, "a stack counts in every class it hits");
+        Check(caller.ClassSamples![ClassId("call_site_431df1f")] == 1, "a stack counts in every class it hits");
         Near(cycle.CallerPipelineRunningUs, 1000, "caller pipeline running time");
         Near(cycle.ThreadPipelineRunningUs, 3000, "thread-summed pipeline running time");
         Near(cycle.CriticalPathShare, (1000.0 + 1000.0) / 3000.0, "critical path share");

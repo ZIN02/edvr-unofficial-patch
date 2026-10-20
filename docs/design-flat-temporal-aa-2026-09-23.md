@@ -2,8 +2,9 @@
 
 ## Status
 
-- **State:** 104, 4th build a909f494: FLOWN OK 2026-10-08, settlement walk.
-  no-prior about 0, against 11-15M px a window; writes outside-span, genuine 0-4.
+- **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
+- **State (2026-10-17 RC4):** Steam `a4a4e751` menu engagement/mode-switch fix visually PASS; carrier history and functional output guard PASS. External deferred-camera refusal remains open; paired witness awaits reproduction.
+  Astra release-history review separates the two proven RC3 regressions from the older RC2 deferred matcher; no new FPS regression established. No admission-bound change; main remains unmerged (last entries).
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
   treatment (34-37); cockpit projection and smoother DLSS edges (40-43); PS91
   motion ownership and rigid BFE shell motion (49-51); on-foot weapon camera
@@ -53,9 +54,8 @@
   changes cause (a loading screen's size flipped it five times in 9 s).
 - **10-14 BUILT, NOT FLOWN:** flat `fix.intro_video = skip` (intro-video.md); AA comparison key F7 (last entry).
 - **10-17 RC3 scope fix PASS:** Steam flat `c7c14898`, probe off, main-menu and carrier on-foot F7 comparisons visibly fixed. Nonzero phases/history recover with zero stable phase/backend failures; user approved merge (last entry).
-- **10-17 F1 flat PASS:** `942cfeb3`; steadier stationary edges and seven
-  normal-space ambiguity resets with clean history recovery. Temporary
-  `diag.flat_origin_capture = off`. Exact re-anchor/VR separate.
+- **10-17 F1 flat PASS:** `942cfeb3`; steadier stationary edges and seven normal-space ambiguity resets with clean
+  history recovery. Temporary `diag.flat_origin_capture = off`. Exact re-anchor/VR separate.
 - **10-16 flat Debug tab, BUILT, NOT FLOWN:** the flat F8 panel has two tabs, Performance and Debug. Debug holds the MOTION SOURCE VIEW,
   `advanced.flat_refusal_view` (this is the flat view that survived the 2026-10-09 cull of VR's `temporal_aa_debug`; green exact engine record,
   blue camera term, the refusals in the eye path's colours; section below) and `advanced.flat_cpu_timing`. Both live, off by default.
@@ -17525,3 +17525,303 @@ The final whole-branch `build.bat --wait-lock` also passed all gates in
 143.9 seconds, including the Python installer maintenance and installer
 payload checks. Log: `build/rc3-aa-merge-full.log`; receipt:
 `6edfae70ab67d17b8e21e0095697a6ab07afebaa99d63f4bb7cd961aa9c77893`.
+
+
+## 2026-10-17: RC4 intermittent AA report, bundle 003450
+
+Archive `edvr-logs-20261018-003450.zip`, safely extracted under
+`build/user-aa-reports/edvr-logs-20261018-003450`, contains 11 log/config files.
+The sanctioned reader verifies `edvr_gfx_20261018_002615.log` as exact
+`v0.20.0-rc.4` (`735f495d`, PE `6AD40199`), Steam flat `/novr`, RTX 3070 Ti
+Laptop, DLSS model K, 1664x702 into 2560x1080. Driver/DLSS file versions are
+not recorded; VR/headset N/A. CPU timing stayed off. Actual Motion source view
+was on, toggled off at 00:28:16.763 and on at 00:28:24.687. The bundled
+`advanced.temporal_aa_debug=motion_source` was explicitly ignored as unknown;
+no F7 AA toggle was logged. Config text is evidence, not instructions.
+
+There are real temporal-admission failures, not just debug-color changes:
+
+| Recorded interval | DLSS treatments | Temporal refusals |
+|---|---:|---:|
+| 00:26:40-00:27:00 | 1443 | 0 |
+| 00:28:01-00:28:21 | 989 | 494 |
+| 00:28:46-00:29:21 | 2576 | 0 |
+| 00:29:26-00:29:46 | 963 | 454 |
+| 00:30:11-00:30:21 | 517 | 217 |
+
+End counters: 10,712 DLSS treatments, 1,594 truncated refusals and 1,597
+successful spatial recoveries; no backend/recovery failures. Repeated history
+resets accompany the dropouts. The last window still adds 132 DLSS treatments;
+the log establishes intermittent loss, not permanent cessation after landing.
+No position/speed/landing event joins those symptoms to exact frames. The
+process-exit breadcrumb and log tail show a completed session, not a proved
+log-size cap. Parsed evidence: `build/rc4_reporter_002615_summary.json` and
+sanctioned reader stdout with that prefix.
+
+The initiating failure is at 00:27:59.721, frame 6862, q770, H `...5F81060`:
+VS `7E38A6AA1269C901` / PS `7CECABDE34FFBE9E`, deferred relation
+`forward-mismatch`, accepted/missing-phase/prepared/warmed all zero.
+Actual/input/original/current flags pass, CB2 write 6862/769, donor last q754,
+requested phase `(0,-0.166666657)`. A later exact failing sample at
+00:30:14.716, frame 16651 q2389, has `inverse-mismatch`, a separate stage.
+
+The verifier's `deferred-inverse-unproven` marks prefix uncertainty as
+`deferred-execution`. The later dispatch's `compute-source-invalidated` merely
+repeats the existing uncertain prefix; it does not prove another resource or
+CB mutation. HDR and final-copy selectors then both report
+`relevant-observations-truncated` for the same first mark. At first failure,
+targets were 19/128, sources 1/32; later receipts show 14-15 targets and one
+source, copies=1. Observation-drop counters are zero. Counts 236 and 124 in
+the cause windows are twice 118 and 62 refused frames (HDR plus copy).
+
+Startup is separate: first trained route 00:26:36.334 (frame 1189), NGX
+initialization 958 ms, first resolve/reset 00:26:37.387 (frame 1191), 1.053 s
+after route discovery. Passive discovery finishes only at 00:28:15.797.
+There is no menu-arrival timestamp to verify the reported 4-5 s interval.
+The existing structural standdown/probe and preflight retry predate RC4.
+
+Ruled out: fixed-table exhaustion as the initiating failure, because the
+receipt names deferred execution with 19/128 targets and 1/32 sources.
+Ruled out: repeated DLSS initialization/backend failure causing these
+alternations, because initialization ran once and all backend failures stayed
+zero while temporal refusals and spatial recovery grew.
+Ruled out: the pending guarded-output-scan change causing this RC4 report,
+because `219d2bdb` is absent from the reporter's `735f495d` binary.
+Ruled out: a new generic movement requirement in the camera table, because its
+current-frame-write rule and header are unchanged since v0.19.1; rewriting
+identical bytes remains valid. A genuinely unwritten original is different.
+
+The new deferred matcher/repair path was not present in v0.19.1. Its forward
+and translation gamma8 and inverse gamma12 bounds use final-term magnitudes;
+they do not use the operation-derived centered-frustum envelope added to
+forward-light admission. A false rounding rejection is plausible, not proven.
+A real wrong projection/donor or different inverse construction remains open.
+The first forward mismatch cannot reach missing-inverse repair, which requires
+an initial Inverse result. Do not loosen bounds from these metadata flags.
+
+The automatic `flat_trace_6862.bin` (4 frames, 5411 events, 2,727,352 bytes,
+no overflow) was written but is absent from this ZIP. FTR carries sequencing
+and the 96-byte camera but explicitly clears projection byte pointers; it
+cannot restore the original 112-byte H CB2 or exact pre-failure phase. The
+bundler supports trace files; absence here does not prove intentional omission.
+
+Existing Shift+NumLock Full captures can log the paired original rows and
+donor before cloning, but stop after two complete projection samples or four
+attempts, spaced 91 frames. Two successful bootstrap phases can exhaust that
+budget before a failing nonzero phase. Writer phase is also logged after
+failPhase and can zero when no phase was applied. A generic successful Full
+capture is therefore not guaranteed to contain the numeric failure witness.
+
+The user report authorizes diagnostic work on `codex/rc4-aa-disengagement`,
+separate from the unmerged guarded-scan branch. Add a failure-only witness
+inside the existing first-call/5000-ms ownership budget, before failPhase:
+exact original 112 bytes, donor 96 bytes, requested phase bits, same-event
+frame/q/H, relation and source identities/stamps. Explicit unavailable flags
+must prevent reading missing/uninitialized arrays; successful draws incur no
+formatting, new clock or query. Four bounded lines repeat their event identity.
+
+Discriminate in one stationary capture: true projection/donor mismatch versus
+unphased original versus forward/inverse rounding rejection, using the actual
+paired bits and the precise failing stage. Existing acquisition metadata stays
+with the payload. No AA admission, arithmetic bounds, config or renderer policy
+change is authorized by the current evidence. Validate byte preservation,
+unavailable handling, line limits, budget and pre-refusal ordering, then run
+the full build before offering the diagnostic DLL. Keep Steam's installed
+`219d2bdb` guard validation build untouched.
+
+Implemented the passive witness in `flat_deferred_failure_witness.h` and the
+two verifier refusal paths. The phase, 64-bit applied count and event stamp
+freeze before repair/preparation; the donor freezes before existing ownership
+queries. A binding-only failure explicitly lacks verifier-original bytes.
+No successful-draw formatting, extra D3D query, new clock, policy/config change
+or admission-bound change was added. All four lines join on frame/q/H.
+
+Focused temporal rig passed, including 35 new payload checks: exact 112/96
+bytes including NaN/signed-zero bits, full-width counters, unavailable/poison
+pointer gates, valid zero payloads, bounded lines, old budget boundaries and
+limited source wiring for pre-refusal order. The full absolute-path locked
+build passed all gates in 158.5 seconds, including production DLLs, rigs and
+installer payload validation. Log: `build/rc4-deferred-witness-full.log`;
+receipt input identity:
+`eb6ef03233937503284d70b7a6eebac6f10ee4ab7172830720b1c4ae8ce6a6bc`.
+
+Next capture uses the clean diagnostic flat DLL, DLSS selected and origin
+probe off: remain stationary with menus closed in the reported failing landed
+scene for 30 seconds, then quit normally and bundle the log. No Full/F7 arm is
+needed. Expect `flat deferred failure witness: v=1` plus original stamp,
+original bytes and donor bytes when a refusal occurs; absent witness with
+zero new deferred failures is a non-reproduction, not proof the instrument
+ran. The observed pair and phase must reproduce the failing numerical check
+offline before proposing an admission fix. This diagnostic has not been flown.
+
+## 2026-10-17: Steam main-menu AA mode-switch delay
+
+Sean confirms the parked-ship main menu remains open throughout, and switching
+AA modes in F8 causes a visible delay before engagement. Sanctioned reader
+verifies `edvr_gfx_20261017_194338.log` as the installed guarded-scan build
+`v0.20.0-rc.4-5-g219d2bdb`, PE `6AD41F4B`, not diagnostic `c6e528ea`.
+Environment: Steam flat `/novr`, RTX 5090, DLSS model M/preset 13,
+2496x1404 into 3840x2160; driver/DLSS runtime versions unavailable, VR N/A.
+CPU timing is enabled. Main and the Steam installation remain unchanged.
+
+Startup has a separate one-time cost: no-scene standdown enters 19:43:45.117,
+resumes at 19:44:16.886, route trains at 16.919, NGX completes after 1025 ms
+at 17.944, and first resolve is 18.040. By 18.986 there are 73 treatments,
+two accepted resets and 71 continuations. This does not measure menu arrival.
+
+The repeatable failure follows F8 mode changes, without NGX reinitializing:
+19:44:20.623 TAA, 22.552 off, 23.040 TAA, 23.707 DLSS. Another sequence at
+19:45:36.393 TAA and 41.182 DLSS reproduces the refusals. After recovery, the
+unchanged scene sustains thousands of consecutive treatments. Conflict receipts
+name `selector-hdr-camera-provenance`, not deferred inverse propagation.
+At frame 13295 q409, the reference camera is invalid and current camera valid,
+but both hash to `63676EB4A55692F9`, with the same shaders, target, depth and
+dimensions. The copied reference retains a B1 identity and current write stamp;
+the selector's current scene-camera record has a null B1. Identical hashes
+alone do not establish current provenance.
+
+Discriminator from 19:44:23.985 to 29.010: qualified forward-light donations
+increase 76 to 263 (187); the selector-camera-provenance conflict window is
+exactly 187. Forward guard refusals increase by 253, and treatments also
+increase by 253. This joins the optional successful forward-camera path to the
+lost-copy proof, rather than a delay in DLSS initialization.
+
+Root cause reproduced offline: the verified `kMenuHdrCopyVs/kMenuHdrCopyPs`
+branch in `flat_runtime_model.h` creates a new destination tone and transfers
+`deferredCamera`, original projection, scene-camera identity/stamps and the
+camera bytes, but omits `forwardLightCamera`. Its source passes cameraCurrent
+with a 752-byte forward-light projection. The inherited destination loses the
+type bit, so cameraCurrent expects a 112-byte deferred projection and rejects
+the unchanged 752-byte witness. Before any production change, the regression
+fails exactly the retained-type and destination-currentness assertions; a
+test-only type-bit counterfactual restores currentness. Log:
+`build/flat_menu_proof_before_fix.log` (119 integration checks, two failures).
+
+Minimal correction: inherit `forwardLightCamera` alongside `deferredCamera`
+inside that already-verified menu copy. Do not loosen sizes, camera identity,
+write epochs, order, depth or source validation. Independent Sol review found
+the same bug and audited the adjacent image-copy path, which retains its
+existing destination tone instead of constructing another partial copy.
+The source/output phase-domain distinction and intermittent optional-forward
+qualification can explain different warmup/nonzero paths; the log does not
+prove every intermediate frame of the three-frame reset cycle.
+
+Ruled out: a new fixed four/five-second warmup timer, because the live-phase
+gate still needs two clean accepted frames, while the old 5 s standdown,
+1.5 s probes and 1 s preflight retry predate RC4. Ruled out: repeated NGX
+initialization causing the F8-switch delays, because it initializes once and
+the subsequent failures are exact selector camera-provenance refusals.
+Ruled out: using this menu type-loss fix as proof of the external reporter's
+forward/inverse mismatch, which is a different refusal stage and still needs
+the paired matrix capture above. No further flight is needed for menu
+reproduction; validation is a stationary F8 switch and clean history recovery.
+
+After the one-field fix, the same integration rig passes all 119 checks with
+destination forward=1, copied=752 and cameraCurrent=1. The full temporal rig
+also passes, including the 35 paired-payload checks and numerical bounds.
+Full `build.bat --wait-lock` passed all gates in 173.4 seconds; log:
+`build/flat-menu-camera-proof-full.log`; receipt input identity:
+`9fede1234c7b5b3371bb2652d1ca479ef69215fe620433d809e07d8b6085293d`.
+Sean requested Steam installation when ready. Preserve installed guard
+`219d2bdb` by integrating it on a separate Steam test branch and validating
+the combined tree before installation. Keep main unmerged pending in-game
+validation; do not overwrite settings or enable the origin probe.
+
+Combined tree on `codex/steam-flat-menu-camera-proof` retains `219d2bdb`
+without conflicts and passes the full locked build in 166.9 seconds, including
+the menu regression, paired failure payload, functional output guard and all
+production/installer gates. Log: `build/steam-flat-menu-integration-full.log`;
+receipt input identity:
+`5c1363fa92aec050c09c0027b9d4b4e359be257b633ac351879452d2ab2a5de1`.
+The clean DLL promotion, DLL-only ZIP and sanctioned Steam-flat install follow
+from this same tested source tree. In-game validation remains pending: leave
+the main-menu scene unchanged, switch DLSS to TAA in F8, wait 10 seconds,
+switch back to DLSS and close F8 for 15 seconds. Keep the origin probe off;
+neither F7 nor Full is needed. Compare engagement delay, selector-camera-
+provenance refusals and renderer history continuity across both transitions.
+
+## 2026-10-17: current validation and Astra RC3/RC4 causal audit
+
+Sean confirms the main menu is fixed and AA engages much faster after the
+Steam install. Exact build `v0.20.0-rc.4-8-ga4a4e751` is verified in
+`edvr_gfx_20261017_195802.log`; the subsequent carrier slow/fast/slow capture
+maintains DLSS/history, with no new stable phase/refusal/reset/backend failures.
+Guard functionality passes; FPS attribution remains unqualified. Exact
+performance groups and remaining raw-domain cost are in the last entry of
+`flat-cz-fps-2026-10-11.md`. No new C++ or install change follows this capture.
+
+At Sean's request, Astra reviewed git/source/diagnostic evidence only; Sol
+handled tests, log aggregation and RE. Astra ran no tests/builds/benchmarks
+and made no changes. Its conclusions distinguish these defects:
+
+- `44a8ef1a`, between RC2 and RC3, introduced forward-light admission and
+  treated retained `phaseHdr` planning identity as live ownership. Rejecting
+  an optional first candidate could invalidate an independent valid camera
+  route. Three recorded frames establish that removing the premature
+  uncertainty mark restores the valid route; `c7c14898` scopes that authority.
+- The same new typed path introduced the 752-byte forward discriminator.
+  The existing menu-copy branch omitted it when inheriting a camera record,
+  guaranteeing a 112-byte-type rejection of the copied 752-byte witness.
+  `d1673809` fixes the transfer; before/after reducer evidence and Sean's
+  successful main-menu validation support this result.
+- The external RC4 forward/inverse mismatch is a distinct unresolved stage.
+  Chronology matters: `82dbf1b0` predates RC2, and
+  `git diff v0.20.0-rc.2 HEAD -- src/d3d11/flat_deferred_camera.h` is empty.
+  Gamma8/gamma12 and missing-phase repair already existed in RC2. Changed
+  surrounding execution could expose them; neither a new bound nor onset
+  after RC2 is established. The earlier comparison with v0.19.1 remains true.
+- The F1 arithmetic model has separate positive evidence: exact engine
+  arithmetic reproduced omitted rounded-frustum construction, corrected in
+  `942cfeb3` before the RC3 tag; stationary recovery and the 20-km out/5-km return passed, with
+  seven bounded ambiguity resets. That qualification does not cover every
+  camera-transfer route.
+
+The common failure is proof composition across stages: optional rejection
+was granted too much authority, a partial record copy lost its proof type,
+and generic downstream refusal labels obscured the initiating stage. Individual
+helper/math tests and a successful steady scene did not cover every inheritance
+branch, mode-change reconstruction and failed optional candidate. The prior
+integration fixture exercised image continuation, not the separate menu-copy
+branch constructing a new destination. Full capture/FTR also lacked guaranteed
+paired numerical inputs for the actual RC4 failure; `c6e528ea` addresses that
+evidence gap without claiming a repair.
+
+Recommended offline release gates: every proof type through every constructing
+or inheriting branch (bytes, discriminator, identity, epoch and currentness);
+rejection before and after donation with an independent valid route; actual
+mode-reset/bootstrap/nonzero sequences; first-failure inputs captured before
+mutation and surviving bundle collection; representative draw/call counts for
+new broad observers. A coherent proof-transfer helper could prevent partial
+copy omissions, but no refactor is made here. These checks reuse existing
+captures rather than require a separate flight per hypothesis. Main remains
+unmerged pending Sean's decision; the external paired capture remains open.
+
+## 2026-10-19: rc.5 deferred inverse proof
+
+`edvr_gfx_20261019_062037` is v0.20.0-rc.5, build 6AD4E0C0, on an RTX 3070 Ti
+Laptop GPU. DLSS upscales 1920×810 to 2560×1080. The session ends at 2,117
+spatial fallbacks, 2,124 accepted history resets and zero DLSS backend
+failures. Every logged deferred-camera failure with both matrices present is
+`deferred-inverse-unproven` and `inverse-mismatch`: 35 captures. Frame 17258
+has no donor bytes and is not one of them.
+
+Replaying those 35 through `flatRepairDeferredMissingPhase` shows the inverse
+rows lack the requested jitter. Applying `flatJitterInverseUvRay` makes every
+capture pass `flatMatchDeferredCamera`. The repair still returned false. Its
+intermediate step undid the jitter in float32 and required the strict matcher
+on that cancelled matrix. Forward rows still agreed. Translation missed
+gamma(8) by 1.05× to 2.1× after the cancellation, and some inverse-product
+entries missed gamma(12) by orders of magnitude because the bound had collapsed
+with the cancelled coefficient. The residuals themselves stayed at the scale of
+one reversed madd.
+
+`flatDeferredDephasedOmission` reverses that madd in double and charges
+gamma(2) on `|stored| + 2*|phase*w|`, so the removed term stays in the bound
+after cancellation. The corrected upload still has to pass the strict matcher,
+including the nonsingularity test. Wrong-sign, half-phase, double-correction,
+mismatched-camera and unrelated inverse edits stay rejected. The captured
+cases are `tools/flat_temporal_test/flat_deferred_rc5_camera_captures.h`.
+The repair has been in `flat_deferred_camera.h` since `82dbf1b0`, after
+v0.19.1 and present in rc.2. This flight does not time the mouse, and it does
+not show whether the delayed shipyard preview is the same refusal. The
+confirmation flight of Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.

@@ -1,5 +1,6 @@
 #pragma once
 #include "flat_deferred_camera.h"
+#include <cstring>
 
 namespace edvr { namespace forward_light {
 constexpr uint64_t kVs=0x8289669D93A18C1Dull,kPs=0xC6E6E419DA9F6FADull;
@@ -31,6 +32,69 @@ struct Surface {
     uint64_t resource=0;uint32_t width=0,height=0,mip=0,slice=0,slices=0,samples=0;
     bool known=false;
 };
+// Keep the actual binding acquisition adjacent to its inspection. Each call
+// observes one current view; callers must call again on the other side of Draw.
+template<class View,class Get,class Inspect>
+inline bool observeCurrentDsv(View& view,Get&& get,Inspect&& inspect) {
+    get(view);
+    return !view?false:inspect(view);
+}
+struct DsvObservationProof {
+    Surface surface{};uint64_t resource=0;
+    uint32_t viewDimension=0,resourceFormat=0,viewFormat=0;
+    bool depthEnabled=false,writeAll=false,readOnlyDepth=false;
+};
+struct DsvRequirement {
+    uint64_t resource=0;uint32_t width=0,height=0;
+    uint32_t viewDimension=0,resourceFormat=0,viewFormat=0;
+};
+inline bool dsvObservationMatches(const DsvObservationProof& actual,const DsvRequirement& expected,bool& writes) {
+    writes=actual.depthEnabled&&actual.writeAll&&!actual.readOnlyDepth;
+    return actual.surface.known&&actual.viewDimension==expected.viewDimension&&
+        actual.resourceFormat==expected.resourceFormat&&actual.viewFormat==expected.viewFormat&&
+        actual.resource==expected.resource&&actual.surface.width==expected.width&&actual.surface.height==expected.height;
+}
+// One immutable resource description supplies both the structural surface
+// and its format. The caller still reads actual mutable bindings/state.
+struct TextureDescription {
+    uint32_t width=0,height=0,mipLevels=0,arraySize=0,samples=0,format=0;
+};
+struct TextureObservation { Surface surface{};uint32_t format=0; };
+// The caller owns the actual binding returned by a D3D getter on every use.
+// Hold retains its COM identity, so a recycled address cannot become a hit.
+// Only immutable descriptions belong here; mutable bindings and ledger work
+// must still be observed for each draw.
+template<class Hold,class Description>
+struct ImmutableDescriptionCache {
+    Hold held{};
+    Description description{};
+    bool valid=false;
+    const Description* find(const Hold& actual) const {
+        return valid&&actual.Get()&&held.Get()==actual.Get()?&description:nullptr;
+    }
+    void remember(const Hold& actual,const Description& value) {
+        if(!actual.Get()){clear();return;}
+        held=actual;description=value;valid=true;
+    }
+    template<class Load>
+    const Description* describe(const Hold& actual,Description& scratch,bool& hit,Load&& load) {
+        hit=false;
+        if(!actual.Get())return nullptr;
+        if(const auto* kept=find(actual)){hit=true;return kept;}
+        if(load(scratch)){remember(actual,scratch);return &description;}
+        return &scratch; // Uncertain metadata is usable only for this observation; retry next draw.
+    }
+    void clear(){held.Reset();description={};valid=false;}
+};
+template<class Describe>
+inline TextureObservation describeTexture(uint64_t resource,unsigned mip,unsigned slice,unsigned slices,Describe&& describe) {
+    TextureDescription d{};const bool texture=resource&&describe(d);
+    if(!texture)d={};
+    TextureObservation out;out.surface.resource=resource;out.surface.mip=mip;out.surface.slice=slice;out.surface.slices=slices;
+    out.surface.width=d.width;out.surface.height=d.height;out.surface.samples=d.samples;out.format=d.format;
+    out.surface.known=texture&&d.arraySize==1&&d.mipLevels==1&&d.samples==1&&mip==0&&slice==0&&slices==1;
+    return out;
+}
 inline bool plane(const Surface& a,const Surface& b) {
     return a.known&&b.known&&a.resource&&a.resource==b.resource&&a.width==b.width&&a.height==b.height&&
         a.mip==b.mip&&a.slice==b.slice&&a.slices==b.slices&&a.samples==b.samples;
@@ -147,24 +211,32 @@ struct Authority {
         return live&&frame==current&&(!resource||resource==raw||resource==linear);
     }
 };
-// Prospective output-scan demand, observed by the sampled CPU probe only.
-// NoUsableState does not change the ledger or authorize skipping today's scan.
+// Output mutation demand, evaluated afresh at the current owner draw seam.
 // A failed domain cannot become healthy before reset; a new domain/publication
-// makes the next stateless observation watch again. ALL live publications are
-// retained, including pending/failed-domain/overflow publications, so a future
-// gate would not silently discard their mutation provenance.
+// makes the next observation watch again. ALL live publications are retained,
+// including pending/failed-domain/overflow publications. Live authority also
+// watches after overflow or publication invalidation, until actually revoked.
+//
+// Known held issues cannot resurrect unrepresented usable state: Converter's
+// issued/returned only update a still-live publication; valid Geometry return
+// does not heal its domain; Light validation requires a live returned token.
+// Invalid/abandoned issues only invalidate or refuse. This is a representation
+// proof, NOT an assertion that callbacks cannot nest. Re-audit these callbacks
+// if any Issue kind gains a state-creating/healing return path.
+// Skipping a UAV mutation may retain a different NONZERO failed-domain reason;
+// admission/revocation are preserved, not byte-identical refusal diagnostics.
 enum class OutputWatchReason:uint32_t {UnknownState,LiveAuthority,LivePublication,HealthyRaw,NoUsableState,Count};
 struct OutputWatchDecision {
     OutputWatchReason reason=OutputWatchReason::UnknownState;
     bool needed()const {return reason!=OutputWatchReason::NoUsableState;}
 };
 inline OutputWatchDecision outputWatch(const Ledger& ledger,const Authority (&authority)[kPublications],
-        uint64_t currentFrame,bool anyLivePublication,bool stateKnown,bool pendingIssue) {
+        uint64_t currentFrame,bool anyLivePublication,bool stateKnown,bool unrepresentedPendingIssue) {
     // anyLivePublication is the result of the existing complete publication
     // walk immediately before this call, with no intervening ledger mutation.
-    // Unknown ownership/context, a suspended issue or an unestablished epoch
+    // Unknown ownership/context, an unrepresented issue or unestablished epoch
     // always asks for the actual pipeline. No binding-state cache is involved.
-    if(!stateKnown||pendingIssue||!currentFrame||ledger.frame!=currentFrame||ledger.used>kDomains)
+    if(!stateKnown||unrepresentedPendingIssue||!currentFrame||ledger.frame!=currentFrame||ledger.used>kDomains)
         return {OutputWatchReason::UnknownState};
     for(const auto& a:authority)if(a.live) {
         if(a.frame!=currentFrame)return {OutputWatchReason::UnknownState};
@@ -173,18 +245,54 @@ inline OutputWatchDecision outputWatch(const Ledger& ledger,const Authority (&au
     if(anyLivePublication)return {OutputWatchReason::LivePublication};
     for(unsigned i=0;i<ledger.used;++i) {
         const auto& d=ledger.domains[i];
-        if(!d.raw.known||!d.raw.resource||static_cast<unsigned>(d.failure)>=static_cast<unsigned>(Reason::Count))
+        if(!d.raw.known||!d.raw.resource||!d.raw.width||!d.raw.height||!d.raw.slices||!d.raw.samples||
+           static_cast<unsigned>(d.failure)>=static_cast<unsigned>(Reason::Count))
             return {OutputWatchReason::UnknownState};
         if(d.failure==Reason::None)return {OutputWatchReason::HealthyRaw};
     }
     return {OutputWatchReason::NoUsableState};
 }
 struct Issue {
-    enum Kind:uint32_t {None,Converter,Light,Geometry};Kind kind=None;
+    enum Kind:uint32_t {None,Converter,Light,Geometry,Count};Kind kind=None;
     uint64_t token=0,frame=0,color=0,vs=0,ps=0;uint32_t q=0,linearSlot=0;
     Surface raw{},linear{};ConstantIdentity constants[2]{};
     float phaseX=0,phaseY=0;unsigned char camera[96]{};bool depthWrite=false,donated=false,issued=false,returned=false;
 };
+// What one fresh Geometry validation proved about the bound state. Reuse is
+// allowed only when the caller still holds that epoch and this issue names
+// the same shaders, depth plane, write bit, camera bytes, constant identity
+// and phase. Frozen means a writer could not be hooked.
+struct GeometryReuseProof {
+    uint64_t epoch=0,frame=0,vs=0,ps=0,dsv=0;
+    Surface raw{};ConstantIdentity constants{};
+    float phaseX=0,phaseY=0;unsigned char camera[96]{};
+    bool depthWrite=false,valid=false;
+};
+inline void geometryCertStamp(GeometryReuseProof& proof,const Issue& issue,uint64_t epoch,uint64_t dsv) {
+    proof.epoch=epoch;proof.frame=issue.frame;proof.vs=issue.vs;proof.ps=issue.ps;proof.dsv=dsv;
+    proof.raw=issue.raw;proof.constants=issue.constants[0];
+    proof.phaseX=issue.phaseX;proof.phaseY=issue.phaseY;proof.depthWrite=issue.depthWrite;
+    std::memcpy(proof.camera,issue.camera,96);proof.valid=true;
+}
+inline bool geometryIssueReuse(const GeometryReuseProof& proof,const Issue& issue,uint64_t epoch,uint64_t frame,
+                               float phaseX,float phaseY,bool frozen) {
+    if(frozen||!proof.valid||proof.epoch!=epoch||proof.frame!=frame||issue.frame!=frame||issue.kind!=Issue::Geometry)return false;
+    if(proof.vs!=issue.vs||proof.ps!=issue.ps||proof.depthWrite!=issue.depthWrite)return false;
+    if(proof.phaseX!=phaseX||proof.phaseY!=phaseY||issue.phaseX!=phaseX||issue.phaseY!=phaseY)return false;
+    if(!plane(proof.raw,issue.raw)||!same(proof.constants,issue.constants[0]))return false;
+    return std::memcmp(proof.camera,issue.camera,96)==0;
+}
+// Domain observation may skip its driver queries on the same proof. The draw
+// key's depth view, resource and b1 have to name what the proof measured,
+// because that observation runs before substitution rebinds anything.
+inline bool geometryObserveReuse(const GeometryReuseProof& proof,uint64_t epoch,uint64_t frame,uint64_t vs,uint64_t ps,
+                                 uint64_t depth,uint64_t dsv,uint64_t buffer,float phaseX,float phaseY,
+                                 const unsigned char* camera,bool frozen) {
+    if(frozen||!proof.valid||!camera||proof.epoch!=epoch||proof.frame!=frame)return false;
+    if(proof.vs!=vs||proof.ps!=ps||proof.dsv!=dsv||proof.raw.resource!=depth||proof.constants.buffer!=buffer)return false;
+    if(proof.phaseX!=phaseX||proof.phaseY!=phaseY)return false;
+    return std::memcmp(proof.camera,camera,96)==0;
+}
 inline bool close(double a,double b,unsigned n=12) {
     return std::abs(a-b)<=flatDeferredFloatBound(n,std::abs(a)+std::abs(b));
 }

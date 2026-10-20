@@ -147,6 +147,13 @@ static bool notesMention(const Plan& plan, const char* needle) {
     return false;
 }
 
+static bool problemMentions(const Plan& plan, const char* needle) {
+    for (const std::string& p : plan.problems) {
+        if (p.find(needle) != std::string::npos) return true;
+    }
+    return false;
+}
+
 // The edvr.ini text a plan would write, pulled back out of its steps.
 static std::string plannedIni(const Plan& plan) {
     for (const Step& s : plan.steps) {
@@ -1846,10 +1853,19 @@ static void testPlanner() {
         s.eliteKind = EliteExeKind::OdysseyUnknown;
         s.eliteFileVersion = L"999999";
         plan = planInstall(s, options, payload);
-        check(plan.blocked && plan.steps.empty(), "an unknown Odyssey revision is refused");
-        check(notesMention(plan, "not one this EDVR build is qualified for"),
-              "and the refusal says what is wrong");
-        check(notesMention(plan, "999999"), "and names the revision the game reports");
+        check(!plan.blocked && !plan.steps.empty(), "an unknown Odyssey revision installs");
+        check(problemMentions(plan, "is not the one this EDVR build was checked against"),
+              "with a warning that says why");
+        check(problemMentions(plan, "fixes tied to the game build stand down"),
+              "and says what stands down");
+        check(problemMentions(plan, "999999"), "and names the revision the game reports");
+        {   // The plan proceeds exactly as it does for the pinned revision.
+            Survey q = s;
+            q.eliteKind = EliteExeKind::OdysseyQualified;
+            Plan qualified = planInstall(q, options, payload);
+            check(!qualified.blocked && plan.steps.size() == qualified.steps.size(),
+                  "with the same steps as the pinned revision");
+        }
 
         s.eliteKind = EliteExeKind::Unreadable;
         plan = planInstall(s, options, payload);

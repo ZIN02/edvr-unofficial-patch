@@ -85,8 +85,6 @@ int main(int argc, char** argv) {
               unknown.installed == 0 && unknown.installFailures == 1 &&
               unknown.profileFailureStage == 2,
           "unknown profile refuses installation without touching an IAT");
-    check(!edvr::oculusRouteProcessAttachAllowed(),
-          "identified Elite profile failure refuses process attach");
 
     g_reportSinkCalls.store(0, std::memory_order_relaxed);
     edvr::oculusRouteTestSetReportSink(reportSink);

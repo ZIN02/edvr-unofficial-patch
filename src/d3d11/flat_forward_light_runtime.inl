@@ -1,5 +1,15 @@
 // Production flat-only exact-light adapter; independent of every diagnostic arm.
 // Existing owner-context observers only. No GPU reads, game calls or bindings.
+// One Geometry proof for this owner. Cleared at every forward reset. The epoch
+// header is included by flat_runtime.cpp, outside this anonymous namespace.
+forward_light::GeometryReuseProof& geometryCert() {
+    static forward_light::GeometryReuseProof proof;
+    return proof;
+}
+void geometryCertClear() {
+    geometryCert()={};
+    flatIssueEpochRevoke();
+}
 void forwardRefusal(State&,forward_light::Reason,const void* =nullptr);
 void forwardPhaseLifecycle(State&);
 void forwardRevoke(State& s,uint64_t resource,forward_light::Reason reason) {
@@ -18,7 +28,9 @@ void forwardMutation(State& s,uint64_t resource,bool forgetSources=true) {
 }
 void forwardReset(State& s,uint64_t frame=0,bool captureLifecycle=true) {
     if(captureLifecycle)forwardPhaseLifecycle(s);
+    geometryCertClear();
     auto& f=s.forwardLight;forwardRevoke(s,0,forward_light::Reason::Ownership);f.ledger.reset(frame);
+    f.dsvDescription.clear();f.depthDescription.clear();
     for(auto& observed:f.phaseObservedDonor)observed={};
     for(auto& a:f.authority)a={};for(auto& h:f.authorityHdr)h.Reset();
     for(auto& h:f.domainHolds)h={};for(auto& h:f.publicationHolds)h={};
@@ -29,35 +41,79 @@ void forwardFrame(State& s) {
     f.phaseReceipt.phase(s.prefix.frame,s.phase.currentX,s.phase.currentY,s.phaseWidth,s.phaseHeight);
     f.ownerKnown=true;f.upstream=upstream;
 }
-forward_light::Surface forwardTexture(ID3D11Resource* resource,unsigned mip,unsigned slice,unsigned slices) {
-    forward_light::Surface out;out.resource=reinterpret_cast<uintptr_t>(resource);out.mip=mip;out.slice=slice;out.slices=slices;
-    Ptr<ID3D11Texture2D> texture;if(resource)resource->QueryInterface(IID_PPV_ARGS(&texture));
-    D3D11_TEXTURE2D_DESC desc{};if(texture)texture->GetDesc(&desc);
-    out.width=desc.Width;out.height=desc.Height;out.samples=desc.SampleDesc.Count;
-    out.known=texture&&desc.ArraySize==1&&desc.MipLevels==1&&desc.SampleDesc.Count==1&&mip==0&&slice==0&&slices==1;
-    return out;
+forward_light::Surface forwardTexture(ID3D11Resource* resource,unsigned mip,unsigned slice,unsigned slices,uint32_t* format=nullptr) {
+    const auto observed=forward_light::describeTexture(reinterpret_cast<uintptr_t>(resource),mip,slice,slices,
+        [&](forward_light::TextureDescription& out) {
+            Ptr<ID3D11Texture2D> texture;resource->QueryInterface(IID_PPV_ARGS(&texture));
+            if(!texture)return false;
+            D3D11_TEXTURE2D_DESC d{};texture->GetDesc(&d);
+            out={d.Width,d.Height,d.MipLevels,d.ArraySize,d.SampleDesc.Count,static_cast<uint32_t>(d.Format)};
+            return true;
+        });
+    if(format)*format=observed.format;
+    return observed.surface;
 }
 bool forwardSrv(State& s,unsigned slot,bool raw,forward_light::Surface& out,
                 Ptr<ID3D11ShaderResourceView>& view,Ptr<ID3D11Resource>& resource) {
     s.context->PSGetShaderResources(slot,1,&view);if(!view)return false;view->GetResource(&resource);if(!resource)return false;
-    D3D11_SHADER_RESOURCE_VIEW_DESC v{};view->GetDesc(&v);Ptr<ID3D11Texture2D> texture;resource.As(&texture);
-    D3D11_TEXTURE2D_DESC d{};if(texture)texture->GetDesc(&d);
-    out=forwardTexture(resource.Get(),v.Texture2D.MostDetailedMip,0,1);
+    D3D11_SHADER_RESOURCE_VIEW_DESC v{};view->GetDesc(&v);uint32_t format=0;
+    out=forwardTexture(resource.Get(),v.Texture2D.MostDetailedMip,0,1,&format);
     return out.known&&v.ViewDimension==D3D11_SRV_DIMENSION_TEXTURE2D&&v.Texture2D.MipLevels==1&&
-        (raw?(d.Format==DXGI_FORMAT_R32G8X24_TYPELESS&&v.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS):
-             (d.Format==DXGI_FORMAT_R32_TYPELESS&&v.Format==DXGI_FORMAT_R32_FLOAT));
+        (raw?(format==DXGI_FORMAT_R32G8X24_TYPELESS&&v.Format==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS):
+             (format==DXGI_FORMAT_R32_TYPELESS&&v.Format==DXGI_FORMAT_R32_FLOAT));
+}
+bool forwardDsvActual(State& s,const FlatContractObservation& k,forward_light::Surface& out,
+                      Ptr<ID3D11DepthStencilView>& dsv,Ptr<ID3D11Resource>& resource,bool& writes) {
+    // Actual mutable bindings are queried on every draw. The one-entry caches
+    // retain COM identities only for descriptions that cannot change while a
+    // view/state is alive; a different binding immediately takes the miss path.
+    flatcpu::CopyCounter counts;
+    counts.add(flatcpu::kCopyRawDsvGet);
+    return forward_light::observeCurrentDsv(dsv,[&](auto& current) {
+        s.context->OMGetRenderTargets(0,nullptr,&current);
+    },[&](const auto&) {
+    auto& cache=s.forwardLight.dsvDescription;
+    ForwardDsvDescription fresh{};
+    bool dsvHit=false;
+    const ForwardDsvDescription* described=cache.describe(dsv,fresh,dsvHit,[&](ForwardDsvDescription& value) {
+        dsv->GetResource(&value.resource);
+        dsv->GetDesc(&value.view);
+        value.surface=forwardTexture(value.resource.Get(),value.view.Texture2D.MipSlice,0,1,&value.format);
+        return value.resource&&value.surface.known;
+    });
+    counts.add(dsvHit?flatcpu::kCopyRawDsvHit:flatcpu::kCopyRawDsvMiss);
+    const ForwardDsvDescription& actual=*described;
+    resource=actual.resource;out=actual.surface;
+    const auto& v=actual.view;
+    const uint32_t format=actual.format;
+    Ptr<ID3D11DepthStencilState> state;UINT ref=0;
+    counts.add(flatcpu::kCopyRawDepthGet);
+    s.context->OMGetDepthStencilState(&state,&ref);
+    D3D11_DEPTH_STENCIL_DESC z{};z.DepthEnable=TRUE;z.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;
+    if(state) {
+        auto& depthCache=s.forwardLight.depthDescription;
+        D3D11_DEPTH_STENCIL_DESC freshDepth{};
+        bool depthHit=false;
+        const auto* describedDepth=depthCache.describe(state,freshDepth,depthHit,[&](D3D11_DEPTH_STENCIL_DESC& value) {
+            state->GetDesc(&value);return true;
+        });
+        counts.add(depthHit?flatcpu::kCopyRawDepthHit:flatcpu::kCopyRawDepthMiss);
+        z=*describedDepth;
+    } else {counts.add(flatcpu::kCopyRawDepthDefault);s.forwardLight.depthDescription.clear();}
+    const forward_light::DsvObservationProof actualProof{out,reinterpret_cast<uintptr_t>(resource.Get()),
+        static_cast<uint32_t>(v.ViewDimension),format,static_cast<uint32_t>(v.Format),
+        z.DepthEnable!=FALSE,z.DepthWriteMask==D3D11_DEPTH_WRITE_MASK_ALL,(v.Flags&D3D11_DSV_READ_ONLY_DEPTH)!=0};
+    const forward_light::DsvRequirement expected{reinterpret_cast<uintptr_t>(k.depth),k.depthWidth,k.depthHeight,
+        D3D11_DSV_DIMENSION_TEXTURE2D,DXGI_FORMAT_R32G8X24_TYPELESS,DXGI_FORMAT_D32_FLOAT_S8X24_UINT};
+    return forward_light::dsvObservationMatches(actualProof,expected,writes);
+    });
 }
 bool forwardDsv(State& s,const FlatContractObservation& k,forward_light::Surface& out,
                 Ptr<ID3D11DepthStencilView>& dsv,Ptr<ID3D11Resource>& resource,bool& writes) {
-    s.context->OMGetRenderTargets(0,nullptr,&dsv);if(!dsv)return false;dsv->GetResource(&resource);
-    D3D11_DEPTH_STENCIL_VIEW_DESC v{};dsv->GetDesc(&v);out=forwardTexture(resource.Get(),v.Texture2D.MipSlice,0,1);
-    Ptr<ID3D11Texture2D> texture;resource.As(&texture);D3D11_TEXTURE2D_DESC d{};if(texture)texture->GetDesc(&d);
-    Ptr<ID3D11DepthStencilState> state;UINT ref=0;s.context->OMGetDepthStencilState(&state,&ref);
-    D3D11_DEPTH_STENCIL_DESC z{};z.DepthEnable=TRUE;z.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ALL;if(state)state->GetDesc(&z);
-    writes=z.DepthEnable&&z.DepthWriteMask==D3D11_DEPTH_WRITE_MASK_ALL&&!(v.Flags&D3D11_DSV_READ_ONLY_DEPTH);
-    return out.known&&v.ViewDimension==D3D11_DSV_DIMENSION_TEXTURE2D&&d.Format==DXGI_FORMAT_R32G8X24_TYPELESS&&
-        v.Format==DXGI_FORMAT_D32_FLOAT_S8X24_UINT&&dsv.Get()==k.dsv&&resource.Get()==k.depth&&
-        out.width==k.depthWidth&&out.height==k.depthHeight;
+    // Ordinary draw observation still compares the current DSV to the draw's
+    // binding identity. Issue validation has no earlier issued-view identity:
+    // its former key.dsv was a redundant immediate query of the same context.
+    return forwardDsvActual(s,k,out,dsv,resource,writes)&&dsv.Get()==k.dsv;
 }
 bool forwardViewport(State& s,unsigned width,unsigned height) {
     UINT n=D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
@@ -100,10 +156,39 @@ bool forwardActualPair(State& s,uint64_t vs,uint64_t ps) {
     Ptr<ID3D11Predicate> predicate;BOOL value=FALSE;s.context->GetPredication(&predicate,&value);
     return !gs&&!hs&&!ds&&!predicate&&lookupShaderHash(v.Get())==vs&&lookupShaderHash(p.Get())==ps;
 }
+bool forwardObserveFromCert(State& s,const FlatRuntimeDraw& d,forward_light::Issue& issue) {
+    using namespace forward_light;auto& f=s.forwardLight;const auto& k=d.key;
+    const Role role=d.supported?Role::Origin:typedRole(k.vs,k.ps);
+    if(role==Role::Unknown)return false;
+    const auto& cert=geometryCert();
+    if(!geometryObserveReuse(cert,flatIssueEpochLoad(),s.prefix.frame,k.vs,k.ps,reinterpret_cast<uintptr_t>(k.depth),
+        reinterpret_cast<uintptr_t>(k.dsv),reinterpret_cast<uintptr_t>(k.b1),s.phase.currentX,s.phase.currentY,d.camera,flatIssueEpochFrozen()))
+        return false;
+    const Surface raw=cert.raw;const bool writes=cert.depthWrite;
+    if(writes)forwardMutation(s,raw.resource,false);
+    const bool current=flatRuntimeCameraCurrent(d,s.prefix.sequence+1,s.prefix.frame)&&cert.constants.writeQ<k.writeSeq;
+    Source source{cert.constants.buffer,cert.constants.generation,cert.constants.bank,cert.constants.writeGeneration,
+        k.writeEpoch,k.writeSeq,cert.constants.first,cert.constants.count};
+    f.ledger.observe(raw,role,writes,current,source,current?d.camera:nullptr,s.prefix.sequence+1);
+    if(auto* domain=f.ledger.domain(raw)){const auto index=static_cast<unsigned>(domain-f.ledger.domains);
+        if(current){issue.kind=Issue::Geometry;issue.frame=s.prefix.frame;issue.q=s.prefix.sequence+1;
+            issue.raw=raw;issue.vs=k.vs;issue.ps=k.ps;issue.depthWrite=writes;
+            issue.phaseX=s.phase.currentX;issue.phaseY=s.phase.currentY;std::memcpy(issue.camera,d.camera,96);
+            issue.constants[0]=cert.constants;
+            if(!f.phaseReceipt.frozen)f.phaseObservedDonor[index]=issue.constants[0];}
+    }
+    if(auto* domain=f.ledger.domain(raw))if(domain->failure!=Reason::None)forwardRevoke(s,raw.resource,domain->failure);
+    if(f.ledger.overflow)forwardRevoke(s,0,Reason::Overflow);
+    return true;
+}
 forward_light::Issue forwardObserveDomain(State& s,const FlatRuntimeDraw& d) {
     using namespace forward_light;Issue issue;auto& f=s.forwardLight;const auto& k=d.key;
     if(!k.depth||flatContractKind(false,k.depth,k.depth,k.depthWidth,k.depthHeight,26,s.prefix.width,s.prefix.height,false)!=kFlatContractScreen)return issue;
     flatcpu::Scope domainCost(flatcpu::kCopyDomain);
+    // Pool and supported producers skip the shader Gets. Reuse their depth and
+    // camera observation while the proof's epoch still names this binding.
+    if((d.supported||d.poolFamilyVs)&&forwardObserveFromCert(s,d,issue)){flatIssueEpochCountObserveReuse();return issue;}
+    flatIssueEpochCountObserveFresh();
     FlatComputeInternalScope internal;Surface raw;Ptr<ID3D11DepthStencilView> dsv;Ptr<ID3D11Resource> resource;bool writes=false;
     if(!forwardDsv(s,k,raw,dsv,resource,writes)){f.ledger.overflow=true;forwardRevoke(s,0,Reason::Lineage);return issue;}
     if(writes)forwardMutation(s,raw.resource,false); // depth draw invalidates old conversion, not coherent earlier geometry
@@ -132,26 +217,28 @@ forward_light::Issue forwardObserveDomain(State& s,const FlatRuntimeDraw& d) {
 }
 // Every actual bound target can mutate a retained raw/linear identity, not
 // just RT0. The existing dispatch and explicit-write seams cover other writes.
-void forwardDrawWrites(State& s) {
+void forwardDrawWrites(State& s,ID3D11DeviceContext* actualDrawContext) {
     flatcpu::CopyCounter counts;counts.add(flatcpu::kCopyWatch);
     auto& ledger=s.forwardLight.ledger;bool anyLivePublication=false;
     for(const auto& p:ledger.publications)anyLivePublication|=p.live;
     const bool watching=ledger.used!=0||anyLivePublication;
     if(!watching){counts.add(flatcpu::kCopyWatchSkip);return;}
     flatcpu::Scope outputCost(flatcpu::kCopyOutputs);
-    bool inactiveCandidate=false;
-    if(counts.active()) {
-        // Advisory sampled shadow at the pre-issue owner seam. No held-issue
-        // tracker is inferred here; any future real skip needs its own proof.
-        const bool known=s.forwardLight.ownerKnown&&s.forwardLight.upstream&&s.device&&s.context&&
-            !foreignWork.load(std::memory_order_acquire);
-        const auto decision=forward_light::outputWatch(ledger,s.forwardLight.authority,s.prefix.frame,anyLivePublication,known,false);
-        counts.add(flatcpu::kCopyShadowChecks);
-        if(decision.reason==forward_light::OutputWatchReason::UnknownState)counts.add(flatcpu::kCopyShadowUnknown);
-        inactiveCandidate=!decision.needed();
-        if(inactiveCandidate)counts.add(flatcpu::kCopyInactiveCandidate);
+    // Re-evaluate actual demand on every watched draw, even with CPU timing
+    // off. Unknown state always takes the old full scan. Current Issue kinds
+    // cannot resurrect failed domains/dead publications: represented live
+    // dependencies already force scanning (see outputWatch and its tests).
+    const bool known=owner()&&actualDrawContext&&actualDrawContext==s.context.Get()&&
+        s.forwardLight.ownerKnown&&s.forwardLight.upstream&&s.device&&s.context&&
+        ledger.frame==s.prefix.frame&&!s.prefix.uncertain&&!foreignWork.load(std::memory_order_acquire);
+    const auto decision=forward_light::outputWatch(ledger,s.forwardLight.authority,s.prefix.frame,anyLivePublication,known,false);
+    counts.add(flatcpu::kCopyGuardChecks);counts.add(flatcpu::kCopyShadowChecks);
+    if(decision.reason==forward_light::OutputWatchReason::UnknownState)counts.add(flatcpu::kCopyShadowUnknown);
+    if(decision.reason==forward_light::OutputWatchReason::NoUsableState) {
+        counts.add(flatcpu::kCopyInactiveCandidate);counts.add(flatcpu::kCopyGuardSkipped);
+        return; // No forward dependency can observe these mutations; no D3D query.
     }
-    flatcpu::Scope inactiveCost(flatcpu::kCopyInactiveOutputs,inactiveCandidate);
+    counts.add(flatcpu::kCopyGuardFallback);
     FlatComputeInternalScope internal;
     ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
     ID3D11UnorderedAccessView* uavs[D3D11_1_UAV_SLOT_COUNT]{};
@@ -192,10 +279,10 @@ bool forwardConverterState(State& s,unsigned width,unsigned height) {
 }
 // Publish bound raw-input/linear-output association only after CPU Draw return.
 // This does not certify pixel coverage or metric equivalence; resolve uses raw DSV.
-forward_light::Issue forwardBefore(State& s,FlatRuntimeDraw& d,char kind,unsigned count,unsigned start,unsigned instances,unsigned startInstance) {
+forward_light::Issue forwardBefore(State& s,ID3D11DeviceContext* actualDrawContext,FlatRuntimeDraw& d,char kind,unsigned count,unsigned start,unsigned instances,unsigned startInstance) {
     using namespace forward_light;forwardFrame(s);Issue issue;auto& f=s.forwardLight;const auto& k=d.key;
     if(!f.upstream)return issue;
-    forwardDrawWrites(s);
+    forwardDrawWrites(s,actualDrawContext);
     if(k.color)forwardMutation(s,reinterpret_cast<uintptr_t>(k.color),false);
     issue=forwardObserveDomain(s,d);
     if(k.vs!=kDepthVs||k.ps!=kDepthPs)return issue;
@@ -291,19 +378,41 @@ bool forwardIssueValid(State& s,const forward_light::Issue& issue) {
     using namespace forward_light;if(issue.frame!=s.prefix.frame||!owner()||s.prefix.uncertain||foreignWork.load(std::memory_order_acquire)||
        !phaseReceipt(flatCameraInjectUpstreamOwns(),s.phase.currentX,s.phase.currentY,s.phase.applied))return false;
     if(issue.kind==Issue::Geometry) {
-        if(!engineVelocityFlatSourceShaders(s.context.Get(),issue.vs,issue.ps))return false;
-    }else if(!forwardActualPair(s,issue.vs,issue.ps))return false;
-    if(issue.kind==Issue::Geometry) {
+        if(geometryIssueReuse(geometryCert(),issue,flatIssueEpochLoad(),s.prefix.frame,s.phase.currentX,s.phase.currentY,flatIssueEpochFrozen())) {
+            flatIssueEpochCountReuse();
+            return true;
+        }
+        const uint64_t epoch=flatIssueEpochLoad();
+        {
+            flatcpu::Scope shaderCost(flatcpu::kIssueShader);
+            if(!engineVelocityFlatSourceShaders(s.context.Get(),issue.vs,issue.ps)){flatIssueEpochCountFresh();return false;}
+        }
         Ptr<ID3D11DepthStencilView> dsv;Ptr<ID3D11Resource> depth;Surface observed;bool writes=false;
         FlatContractObservation key;key.depth=reinterpret_cast<void*>(issue.raw.resource);
-        key.depthWidth=issue.raw.width;key.depthHeight=issue.raw.height;s.context->OMGetRenderTargets(0,nullptr,&dsv);key.dsv=dsv.Get();
-        if(!forwardDsv(s,key,observed,dsv,depth,writes)||writes!=issue.depthWrite||!plane(observed,issue.raw)||
-           issue.phaseX!=s.phase.currentX||issue.phaseY!=s.phase.currentY)return false;
-        lightaudit::Cb cb;lightBoundCb(s,s.context.Get(),0,1,270,96,cb);
-        const ConstantIdentity id{cb.buffer,cb.before.generation,cb.before.mutation,cb.before.writeGeneration,cb.before.bank,
-            cb.before.writeFrame,cb.first,cb.count,cb.width,cb.before.writeQ,96,static_cast<uint32_t>(flatCameraHash(cb.payload))};
-        return cb.status==lightaudit::Full&&cb.fresh==lightaudit::Current&&same(id,issue.constants[0])&&!std::memcmp(cb.payload,issue.camera,96);
-    }
+        key.depthWidth=issue.raw.width;key.depthHeight=issue.raw.height;
+        {
+            flatcpu::Scope depthCost(flatcpu::kIssueDsv);
+            flatcpu::CopyCounter counts;counts.add(flatcpu::kCopyIssueGeometryDsvGet);
+            if(!forwardDsvActual(s,key,observed,dsv,depth,writes)||writes!=issue.depthWrite||!plane(observed,issue.raw)||
+               issue.phaseX!=s.phase.currentX||issue.phaseY!=s.phase.currentY){flatIssueEpochCountFresh();return false;}
+        }
+        bool proven=false;uintptr_t provenDsv=0;
+        {
+            flatcpu::Scope constantsCost(flatcpu::kIssueConstants);
+            lightaudit::Cb cb;lightBoundCb(s,s.context.Get(),0,1,270,96,cb,0,true);
+            const ConstantIdentity id{cb.buffer,cb.before.generation,cb.before.mutation,cb.before.writeGeneration,cb.before.bank,
+                cb.before.writeFrame,cb.first,cb.count,cb.width,cb.before.writeQ,96,static_cast<uint32_t>(flatCameraHash(cb.payload))};
+            proven=cb.status==lightaudit::Full&&cb.fresh==lightaudit::Current&&same(id,issue.constants[0])&&!std::memcmp(cb.payload,issue.camera,96);
+            if(proven)provenDsv=reinterpret_cast<uintptr_t>(dsv.Get());
+        }
+        flatIssueEpochCountFresh();
+        // A setter during the reads leaves the epoch moved. Do not publish that torn result.
+        if(proven&&!flatIssueEpochFrozen()&&flatIssueEpochLoad()==epoch) {
+            geometryCertStamp(geometryCert(),issue,epoch,provenDsv);
+            flatIssueEpochPublishBuffer(issue.constants[0].buffer);
+        }
+        return proven;
+    }else if(!forwardActualPair(s,issue.vs,issue.ps))return false;
     Ptr<ID3D11ShaderResourceView> input;Ptr<ID3D11Resource> resource;Surface observed;
     if(!forwardSrv(s,issue.kind==Issue::Converter?0:issue.linearSlot,issue.kind==Issue::Converter,observed,input,resource)||
        !plane(observed,issue.kind==Issue::Converter?issue.raw:issue.linear))return false;
@@ -317,9 +426,10 @@ bool forwardIssueValid(State& s,const forward_light::Issue& issue) {
     if(!publication||publication->token!=issue.token)return false;
     Ptr<ID3D11DepthStencilView> dsv;Ptr<ID3D11Resource> depth;FlatContractObservation key;
     key.depth=reinterpret_cast<void*>(issue.raw.resource);key.depthWidth=issue.raw.width;key.depthHeight=issue.raw.height;
-    // Re-read actual DSV identity and its subresource, not a retained token only.
-    s.context->OMGetRenderTargets(0,nullptr,&dsv);key.dsv=dsv.Get();bool writes=false;
-    if(!forwardDsv(s,key,observed,dsv,depth,writes)||writes||!plane(observed,issue.raw))return false;
+    // Re-read actual DSV and its subresource once for this post- or pre-Draw
+    // validation. No binding is reused across the game's actual draw.
+    bool writes=false;flatcpu::CopyCounter counts;counts.add(flatcpu::kCopyIssueLightDsvGet);
+    if(!forwardDsvActual(s,key,observed,dsv,depth,writes)||writes||!plane(observed,issue.raw))return false;
     Ptr<ID3D11RenderTargetView> rtv;Ptr<ID3D11Resource> color;s.context->OMGetRenderTargets(1,&rtv,nullptr);if(rtv)rtv->GetResource(&color);
     if(reinterpret_cast<uintptr_t>(color.Get())!=issue.color||!forwardViewport(s,issue.raw.width,issue.raw.height))return false;
     for(unsigned stage=0;stage<2;++stage){ForwardConstants cb;if(forwardConstants(s,stage,issue.constants[stage].bytes,cb)!=Reason::None||!same(cb.id,issue.constants[stage]))return false;}
@@ -362,4 +472,14 @@ void forwardReport(State& s) {
         count(R::Ownership),count(R::Overflow),count(R::UnknownWriter),count(R::StaleDonor),count(R::Ambiguous),count(R::MissingProducer),count(R::PendingProducer),
         count(R::MutatedProducer),count(R::Lineage),count(R::Binding),count(R::Range),count(R::OriginalMissing),count(R::OriginalStale),count(R::OriginalChanged),
         count(R::Forward),count(R::Origin),count(R::View),count(R::Phase),count(R::Issue),count(R::Abandoned));
+    static uint64_t reuseFrame=0;
+    const bool haveBaseline=reuseFrame!=0;
+    const uint64_t frames=haveBaseline&&s.prefix.frame>reuseFrame?s.prefix.frame-reuseFrame:0;
+    reuseFrame=s.prefix.frame;
+    const FlatIssueEpochWindow reuse=flatIssueEpochTakeWindow();
+    if(!haveBaseline)return; // the first report would divide by the absolute frame number
+    const auto per=[&](uint64_t n){return frames?static_cast<double>(n)/static_cast<double>(frames):0.0;};
+    Log::get().note("flat geometry issue reuse: reused=%.0f/frame fresh=%.0f/frame observe-reused=%.0f/frame observe-fresh=%.0f/frame depth-sets=%.0f/frame stage-sets=%.0f/frame rt-sets=%.0f/frame cb1-sets=%.0f/frame cb-writes=%.0f/frame revokes=%.0f/frame frames=%llu frozen=%u; reused skipped the shader/DSV/CB queries, fresh ran them, zero reused with frozen=0 means the certificate never matched, revokes count epoch clears such as the frame reset",
+        per(reuse.reuse),per(reuse.fresh),per(reuse.observeReuse),per(reuse.observeFresh),per(reuse.depthSets),per(reuse.stageSets),
+        per(reuse.rtSets),per(reuse.cb1Sets),per(reuse.cbWrites),per(reuse.revokes),(unsigned long long)frames,reuse.frozen);
 }

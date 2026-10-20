@@ -408,11 +408,13 @@ def _native_preflight(root, target, receipt_path):
 
 
 def validate_elite_game(path):
-    """Validate the qualified executable before staging either profile.
+    """Validate the executable before staging either profile.
 
-    On rejection, say which case this is in the same words the installer's
-    own gate uses: Horizons is told no EDVR build supports it, and only an
-    Odyssey revision is pointed at another build.
+    Returns the profile for the pinned revision. Horizons and an unreadable
+    executable raise ValueError with the same words the installer's own gate
+    uses. An Odyssey revision this build was not checked against does not
+    raise: it prints a warning to stderr and returns None, the same as the
+    installer's gate, which installs it with the warning.
     """
     try:
         from elite_oculus import validate_elite_oculus, version_strings
@@ -436,9 +438,12 @@ def validate_elite_game(path):
                          "EDVR supports Odyssey only; no EDVR build supports this game.")
     version = strings.get("FileVersion")
     which = " (version %s)" % version if version else ""
-    raise ValueError("This Elite Dangerous: Odyssey revision%s is not one this EDVR "
-                     "build is qualified for. Install an EDVR build qualified for "
-                     "this game revision." % which)
+    print("[edvr] warning: This Elite Dangerous: Odyssey revision%s is not the one this EDVR "
+          "build was checked against. EDVR will install and the game will start; fixes tied to "
+          "the game build stand down and the gfx log names each one, and the Oculus PC runtime "
+          "may bypass EDVR's OpenXR runtime until an EDVR update for this revision." % which,
+          file=sys.stderr)
+    return None
 
 
 def _native_receipt(root, target, paths, backups, before_hashes,
@@ -3676,9 +3681,11 @@ def self_test():
                 print("native mismatch changed files")
                 ok = False
 
-            # An unrecognized executable profile is equally a preflight
-            # refusal, so migration cannot claim success while Elite would
-            # still choose LibOVR.
+            # A refused executable profile (Horizons or an unreadable exe; an
+            # unknown Odyssey revision now only warns) is a preflight refusal
+            # here, so migration cannot claim success while Elite would still
+            # choose LibOVR. The gate is stubbed to refuse, so this checks the
+            # caller's handling of a refusal.
             old_profile_gate = globals()["validate_elite_game"]
             def reject_profile(path):
                 raise ValueError("unknown Elite executable revision")
@@ -3990,20 +3997,30 @@ def self_test():
                 print("Elite profile validator was not restored")
                 ok = False
         # The elite gate's refusal names the case: Horizons is told no EDVR build
-        # supports it; an unknown Odyssey revision is told what it reports and
-        # which kind of build to get.
+        # supports it. An Odyssey revision this build was not checked against is
+        # not refused: the gate warns on stderr, names what the game reports,
+        # and returns None so the install proceeds.
+        import contextlib
+        import io
         import elite_oculus as _elite_gate
         odyssey_exe = os.path.join(tmp, "gate-odyssey.exe")
         with open(odyssey_exe, "wb") as f:
-            f.write(_elite_gate._fixture())
+            f.write(_elite_gate._fixture(file_version="999999"))
+        warned = io.StringIO()
         try:
-            validate_elite_game(odyssey_exe)
-            print("unqualified Odyssey fixture passed the elite gate")
-            ok = False
+            with contextlib.redirect_stderr(warned):
+                odyssey_profile = validate_elite_game(odyssey_exe)
         except ValueError as exc:
-            if "not one this EDVR build is qualified for" not in str(exc) or \
-               "332841" not in str(exc):
-                print("unknown Odyssey revision got the wrong message: %s" % exc)
+            print("unknown Odyssey revision was refused: %s" % exc)
+            ok = False
+        else:
+            text = warned.getvalue()
+            if odyssey_profile is not None or \
+               not text.startswith("[edvr] warning: ") or \
+               "This Elite Dangerous: Odyssey revision (version 999999) is not the one " \
+               "this EDVR build was checked against." not in text or \
+               "EDVR will install and the game will start" not in text:
+                print("unknown Odyssey revision did not warn and return None: %r" % text)
                 ok = False
         legacy_exe = os.path.join(tmp, "gate-legacy.exe")
         with open(legacy_exe, "wb") as f:

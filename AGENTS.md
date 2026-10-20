@@ -78,6 +78,7 @@ corrupted. Do not regenerate the one-liner — extend the script.
 | Reflow release notes or docs | `python tools\reflow_notes.py` | reflowing by hand or by regex |
 | Credit contributors in release notes | `python tools\release_credits.py --from <previous-tag> --thanks` | writing the credits from memory or ad-hoc `gh` queries |
 | Make a worktree that can build | `python tools\worktree.py add <path>` | `git worktree add` alone (no deps) |
+| Keep the game exe before Steam updates it (then `build_diff.py map`; docs\game-binary-map.md "Re-deriving after a patch") | `python tools\archive_game_exe.py` | `Copy-Item` of the exe, or committing it |
 
 Every release's notes carry a `## Thanks` section built from
 `release_credits.py --thanks` and finished by hand. It names only the authors

@@ -9,6 +9,8 @@
 - **Not verified here:** no flight from this table; the 21 doc-only rows rest on this matching alone.
 - **Index:** game-binary-map.md (build 332841) explains what each row is. Next update: game-binary-map.md "Re-deriving after a patch".
 
+## Builds and addresses
+
 Generated 2026-10-20 by read-only static analysis (REA MCP, Ghidra 12.1.4, plus byte matching on the on-disk image). RVAs; VA = 0x140000000 + RVA.
 
 | | Old (332841) | New (334473) |

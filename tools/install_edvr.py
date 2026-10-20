@@ -4005,7 +4005,7 @@ def self_test():
         import elite_oculus as _elite_gate
         odyssey_exe = os.path.join(tmp, "gate-odyssey.exe")
         with open(odyssey_exe, "wb") as f:
-            f.write(_elite_gate._fixture())
+            f.write(_elite_gate._fixture(file_version="999999"))
         warned = io.StringIO()
         try:
             with contextlib.redirect_stderr(warned):
@@ -4017,7 +4017,7 @@ def self_test():
             text = warned.getvalue()
             if odyssey_profile is not None or \
                not text.startswith("[edvr] warning: ") or \
-               "This Elite Dangerous: Odyssey revision (version 332841) is not the one " \
+               "This Elite Dangerous: Odyssey revision (version 999999) is not the one " \
                "this EDVR build was checked against." not in text or \
                "EDVR will install and the game will start" not in text:
                 print("unknown Odyssey revision did not warn and return None: %r" % text)

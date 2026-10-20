@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline "did the game's render-relevant code change between builds" detector.
 
-    python tools/build_diff.py capture --exe analysis/EliteDangerous64.exe ^
+    python tools/build_diff.py capture --exe analysis/EliteDangerous64-334473.exe ^
         --out tools/build_diff_targets.json
     python tools/build_diff.py diff --exe "C:\\path\\to\\EliteDangerous64.exe"
 
@@ -24,10 +24,20 @@ pre-flight that says whether the next test flight is measuring the same
 engine the analysis docs describe.  No executable is launched or
 modified; only the --out file is written.
 
+Historical map example (332841 to 334473), with explicit old RVAs:
+
     python tools/build_diff.py map --old analysis/EliteDangerous64.exe ^
         --new analysis/EliteDangerous64-334473.exe --rva 0x430EFE0 ^
-        --rva 0x4DDEFB0 [--rvas-file F] [--seed] [--json OUT] ^
+        --rva 0x4DDEFB0 [--rvas-file F] [--json OUT] ^
         [--all-functions OUT.csv] [--cache MAP.json]
+
+--seed maps the current baseline's targets (--targets, default
+tools/build_diff_targets.json, build 334473), so --old must be that build;
+map refuses --seed when --old's timestamp and image size differ.  For the
+next game update:
+
+    python tools/build_diff.py map --old analysis/EliteDangerous64-334473.exe ^
+        --new <next exe> --seed
 
 diff cannot follow a target once sections move, which every update does.
 map carries old-build RVAs (hook sites, data) onto the new build.  It
@@ -1693,12 +1703,33 @@ def write_function_map(bm, path):
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _check_seed_baseline(old_path, targets_path):
+    """Refuse --seed unless --old is the build the seed RVAs belong to.
+
+    TARGET_SEED is the target list of the baseline in targets_path, so its
+    RVAs are only old-build addresses when --old has that baseline's PE
+    timestamp and image size (the pair diff compares).
+    """
+    base = json.loads(Path(targets_path).read_text(encoding="utf-8"))["baseline"]
+    timestamp, image_size = read_identity(Image(Path(old_path).read_bytes()))
+    if (timestamp, image_size) == (base["timestamp"], base["image_size"]):
+        return
+    name = base.get("exe")
+    raise ValueError(
+        "--seed refused: the seed RVAs belong to baseline %s (timestamp 0x%X, "
+        "image size 0x%X), but --old %s has timestamp 0x%X, image size 0x%X; "
+        "pass that build as --old, or give explicit --rva values for this build"
+        % (name or "(unnamed)", base["timestamp"], base["image_size"],
+           Path(old_path).name, timestamp, image_size))
+
+
 def map_rvas(args):
     """The `map` subcommand body: build the map, print/write what was asked."""
     rvas = list(args.rva or [])
     if args.rvas_file:
         rvas += read_rvas(args.rvas_file)
     if args.seed:
+        _check_seed_baseline(args.old, args.targets)
         rvas += [t["rva"] for t in TARGET_SEED]
     if not rvas and not args.all_functions:
         raise ValueError("map needs --rva, --rvas-file, --seed or --all-functions")
@@ -1955,6 +1986,33 @@ def _self_test_map(check, td):
         check(main(["map", "--old", str(old_path), "--new", str(new_path)]) == 2)
     check("map needs --rva" in err.getvalue())
 
+    # --seed belongs to the baseline in --targets: refused when --old has
+    # another PE identity (same bytes, timestamp at NT header +8), accepted
+    # when --old is that baseline.  Without --seed the guard does not run.
+    restamped_path = td / "restamped_map.exe"
+    restamped = bytearray(old_data)
+    restamped[0x88:0x8C] = (0x22222222).to_bytes(4, "little")
+    restamped_path.write_bytes(bytes(restamped))
+    baseline_path = td / "seed_baseline.json"
+    capture(old_path, baseline_path, _fixture_targets())
+    seed_out, seed_err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(seed_out), contextlib.redirect_stderr(seed_err):
+        code = main(["map", "--old", str(restamped_path), "--new", str(new_path),
+                     "--seed", "--targets", str(baseline_path)])
+    lines = seed_err.getvalue().splitlines()
+    check(code == 2 and seed_out.getvalue() == "" and len(lines) == 1)
+    check(lines[0].startswith("build_diff: --seed refused") and "old_map.exe" in lines[0]
+          and "0x11111111" in lines[0] and "0x22222222" in lines[0])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = main(["map", "--old", str(old_path), "--new", str(new_path),
+                     "--seed", "--targets", str(baseline_path)])
+    check(code == 0 and "units: " in buf.getvalue())
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = main(["map", "--old", str(restamped_path), "--new", str(new_path),
+                     "--rva", hex(old["B"]), "--targets", str(baseline_path)])
+    check(code == 0)
+
 
 def self_test():
     checks = 0
@@ -2113,7 +2171,11 @@ def main(argv=None):
     mp.add_argument("--rvas-file", default=None,
                     help="file of old RVAs, one per line, # comments")
     mp.add_argument("--seed", action="store_true",
-                    help="also map every built-in render-pipeline target")
+                    help="also map every built-in render-pipeline target; --old "
+                         "must be the --targets baseline build (refused otherwise)")
+    mp.add_argument("--targets", default=str(DEFAULT_TARGETS),
+                    help="baseline JSON that --seed checks --old against "
+                         "(default: %s)" % DEFAULT_TARGETS)
     mp.add_argument("--json", default=None, help="write the results as JSON")
     mp.add_argument("--all-functions", default=None, metavar="CSV",
                     help="write the full old->new unit map as CSV")

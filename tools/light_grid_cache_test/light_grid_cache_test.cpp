@@ -437,7 +437,7 @@ void testGridCeil() {
         sameAsCeil = sameAsCeil && (a == std::ceil(x) || (a == 0.0f && std::ceil(x) == 0.0f));
         ++compared;
     }
-    check(compared > 100000 && same, "gameCeilf equals the transcription of 0x48AAAE8 on every quotient and 400000 bit patterns, bit for bit");
+    check(compared > 100000 && same, "gameCeilf equals the transcription of 0x48AD628 on every quotient and 400000 bit patterns, bit for bit");
     check(sameAsCeil, "and both equal ceilf (the routine is ceilf)");
     check(lg::gameCeilf(0.5f) == 1.0f && lg::gameCeilf(16.0f) == 16.0f && lg::gameCeilf(16.0001f) == 17.0f && lg::gameCeilf(-0.5f) == 0.0f && lg::gameCeilf(0.0f) == 0.0f,
           "spot values: 0.5 gives 1, 16 gives 16, 16.0001 gives 17, -0.5 gives -0, 0 gives 0");

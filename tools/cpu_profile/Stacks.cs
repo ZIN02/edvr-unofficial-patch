@@ -53,19 +53,19 @@ internal static class RvaTable
         ("record_drain", 0x42E2600, 134, RvaKind.Body, true),
         ("reset_repopulate", 0x36A3C50, 687, RvaKind.Body, false),
         ("census_bracket", 0x42B70E0, 0x1000, RvaKind.Census, false),
-        ("thunk_42df520", 0x42DF520, 0, RvaKind.Thunk, true),
-        ("thunk_42df540", 0x42DF540, 0, RvaKind.Thunk, true),
-        ("thunk_42dfaf0", 0x42DFAF0, 0, RvaKind.Thunk, true),
-        ("thunk_42dfba0", 0x42DFBA0, 0, RvaKind.Thunk, true),
+        ("thunk_42e21e0", 0x42E21E0, 0, RvaKind.Thunk, true),
+        ("thunk_42e2200", 0x42E2200, 0, RvaKind.Thunk, true),
+        ("thunk_42e27b0", 0x42E27B0, 0, RvaKind.Thunk, true),
+        ("thunk_42e2860", 0x42E2860, 0, RvaKind.Thunk, true),
         ("call_site_431df1f", 0x431DF1F, 0, RvaKind.CallSite, true),
         ("eval_4311ca0", 0x4311CA0, 1006, RvaKind.Eval, true),
         // Nine bytes: a jmp thunk, so this class will rarely match a sampled
         // frame. Kept because the name is the evaluator the arc is chasing.
-        ("lod_evaluator_4331300", 0x4331300, 9, RvaKind.Lod, true),
+        ("lod_evaluator_4334000", 0x4334000, 9, RvaKind.Lod, true),
     ];
 
-    public const uint SchedulerStart = 0x5D6B20;
-    public const uint SchedulerEnd = 0x5D7100;
+    public const uint SchedulerStart = 0x5D6C80;
+    public const uint SchedulerEnd = 0x5D7260;
 
     public static readonly RvaClass[] Classes = Build();
     public static readonly int CensusClassId = Array.FindIndex(Classes, c => c.Kind == RvaKind.Census);

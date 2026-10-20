@@ -3129,8 +3129,8 @@ void cimgThunk(size_t entryRva, size_t callRva) {   // `call r8` at callRva (ret
     p[n++] = 0x41; p[n++] = 0xFF; p[n++] = 0xD0;
     p[n++] = 0x48; p[n++] = 0x83; p[n++] = 0xC4; p[n++] = 0x28; p[n++] = 0xC3;
 }
-// FUN 0x19B4000 for ONE humanoid, in machine code at its real address: block 1 (third-person avatar) calls r8 (FindJoint) at +0x19B12D2, returning to +0x19B4095
-// (site 1); block 2 (first-person avatar) calls it at +0x19B1356, returning to +0x19B4119 (site 2). One frame, no push between. rcx = the third-person interface
+// FUN 0x19B4000 for ONE humanoid, in machine code at its real address: block 1 (third-person avatar) calls r8 (FindJoint) at +0x19B4092, returning to +0x19B4095
+// (site 1); block 2 (first-person avatar) calls it at +0x19B4116, returning to +0x19B4119 (site 2). One frame, no push between. rcx = the third-person interface
 // (0 skips block 1), rdx = the name, r8 = FindJoint, r9 = the first-person interface (0 skips block 2: an NPC has none).
 // g_cimgBetween, when set, is called between the two attaches of a local invocation (the rig's way to run another thread's attach INSIDE the invocation).
 void (*g_cimgBetween)() = nullptr;

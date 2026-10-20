@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <intrin.h>
 
@@ -48,6 +49,8 @@ std::atomic<void**> g_iatSlot{nullptr};
 std::atomic<void*> g_original{nullptr};
 std::atomic<uintptr_t> g_executableBase{0};
 std::atomic<uintptr_t> g_callerReturnRva{0};
+// Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+std::atomic<int64_t> g_installQpc{0};
 
 std::atomic<uint32_t> g_installAttempts{0};
 std::atomic<uint32_t> g_installFailures{0};
@@ -107,6 +110,42 @@ std::atomic<uint32_t> g_testProfileConfigured{0};
 std::atomic<OculusRouteTestAfterCas> g_testAfterCas{nullptr};
 std::atomic<OculusRouteTestBeforeCas> g_testBeforeCas{nullptr};
 std::atomic<OculusRouteTestReportSink> g_testReportSink{nullptr};
+#endif
+
+#if !defined(EDVR_OCULUS_ROUTE_TEST)
+// Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+// The watch thread writes only these atomics.  Log lines are written by
+// slotWatchReport(), from oculusRouteReport(), outside the loader lock.
+constexpr uint32_t kSlotWatchNoRoute = 1;
+constexpr uint32_t kSlotWatchNoThread = 2;
+constexpr int64_t kSlotWatchSeconds = 120;
+constexpr size_t kSlotNameChars = 512;
+constexpr size_t kSlotDescChars = 768;
+
+std::atomic<uint32_t> g_slotWatchEntered{0};
+std::atomic<uint32_t> g_slotWatchStartDone{0};
+std::atomic<uint32_t> g_slotWatchStarted{0};
+std::atomic<uint32_t> g_slotWatchFailure{0};
+std::atomic<uint32_t> g_slotWatchThreadError{0};
+std::atomic<int64_t> g_slotWatchFreq{0};
+std::atomic<int64_t> g_slotWatchStartQpc{0};
+std::atomic<void*> g_slotWatchInitial{nullptr};
+std::atomic<uint32_t> g_slotWatchChanges{0};
+std::atomic<int64_t> g_slotWatchFirstChangeQpc{0};
+std::atomic<void*> g_slotWatchFirstChangeValue{nullptr};
+std::atomic<int64_t> g_slotWatchLatestChangeQpc{0};
+std::atomic<void*> g_slotWatchLatestChangeValue{nullptr};
+std::atomic<int64_t> g_slotLibOvrQpc{0};
+std::atomic<void*> g_slotLibOvrValue{nullptr};
+std::atomic<int64_t> g_slotOpenVrQpc{0};
+std::atomic<void*> g_slotOpenVrValue{nullptr};
+std::atomic<uint32_t> g_slotWatchFinished{0};
+std::atomic<int64_t> g_slotWatchEndQpc{0};
+std::atomic<uint32_t> g_slotLoggedStart{0};
+std::atomic<uint32_t> g_slotLoggedChange{0};
+std::atomic<uint32_t> g_slotLoggedLibOvr{0};
+std::atomic<uint32_t> g_slotLoggedOpenVr{0};
+std::atomic<uint32_t> g_slotLoggedEnd{0};
 #endif
 
 bool validateProfile(void* executable, OculusProfileMatch* match) {
@@ -321,6 +360,189 @@ HMODULE WINAPI oculusRouteLoadLibraryW(LPCWSTR path) {
     return routeDispatch(path, reinterpret_cast<uintptr_t>(_ReturnAddress()));
 }
 
+#if !defined(EDVR_OCULUS_ROUTE_TEST)
+// Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+int64_t slotWatchQpc() {
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+
+// A plain word read.  volatile keeps each read of the IAT slot in the watch loop.
+void* readSlot(void** slot) {
+    return *static_cast<void* volatile*>(slot);
+}
+
+double qpcMs(int64_t from, int64_t to, int64_t freq) {
+    if (freq <= 0) return 0.0;
+    return static_cast<double>(to - from) * 1000.0 / static_cast<double>(freq);
+}
+
+bool claimOnce(std::atomic<uint32_t>& flag) {
+    return flag.load(std::memory_order_relaxed) == 0 &&
+           flag.exchange(1, std::memory_order_acq_rel) == 0;
+}
+
+// Base and basename of the module containing address.  The no-refcount lookup
+// loads nothing.
+bool moduleOwning(const void* address, uintptr_t* base, char* name, size_t nameSize) {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &module)) {
+        return false;
+    }
+    *base = reinterpret_cast<uintptr_t>(module);
+    wchar_t path[1024] = {};
+    const DWORD length = GetModuleFileNameW(module, path, 1024);
+    const wchar_t* leaf = L"unknown module";
+    if (length != 0 && length < 1024) {
+        leaf = path;
+        for (const wchar_t* p = path; *p; ++p) {
+            if (*p == L'\\' || *p == L'/') leaf = p + 1;
+        }
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, leaf, -1, name, static_cast<int>(nameSize),
+                            nullptr, nullptr) == 0) {
+        std::snprintf(name, nameSize, "unknown module");
+    }
+    return true;
+}
+
+// Names a LoadLibraryW slot value for the log.  Nothing is loaded.
+void describeSlot(void* value, char* out, size_t outSize) {
+    if (value == reinterpret_cast<void*>(&oculusRouteLoadLibraryW)) {
+        std::snprintf(out, outSize, "EDVR's route");
+        return;
+    }
+    const uintptr_t address = reinterpret_cast<uintptr_t>(value);
+    char module[kSlotNameChars];
+    uintptr_t base = 0;
+    const bool found = address != 0 && moduleOwning(value, &base, module, sizeof(module));
+    void* const original = g_original.load(std::memory_order_acquire);
+    if (original && value == original) {
+        std::snprintf(out, outSize, "the original LoadLibraryW EDVR saved at install (%s)",
+                      found ? module : "no loaded module");
+    } else if (found) {
+        std::snprintf(out, outSize, "0x%llX in %s+0x%llX",
+                      static_cast<unsigned long long>(address), module,
+                      static_cast<unsigned long long>(address - base));
+    } else {
+        std::snprintf(out, outSize, "0x%llX in no loaded module",
+                      static_cast<unsigned long long>(address));
+    }
+}
+
+// Samples the slot every 1 ms for 120 s and checks the two runtime modules
+// every 10 ms.  It logs nothing: slotWatchReport() reads the atomics.
+DWORD WINAPI slotWatchThreadMain(LPVOID) {
+    const int64_t freq = g_slotWatchFreq.load(std::memory_order_acquire);
+    const int64_t start = g_slotWatchStartQpc.load(std::memory_order_acquire);
+    const int64_t end = start + freq * kSlotWatchSeconds;
+    const int64_t moduleStep = freq / 100;
+    void** const slot = g_iatSlot.load(std::memory_order_acquire);
+    void* previous = g_slotWatchInitial.load(std::memory_order_acquire);
+    uint32_t changes = 0;
+    int64_t nextModuleCheck = start;
+    int64_t now = start;
+    for (;;) {
+        Sleep(1);
+        now = slotWatchQpc();
+        void* const value = readSlot(slot);
+        if (value != previous) {
+            previous = value;
+            if (changes == 0) {
+                g_slotWatchFirstChangeQpc.store(now, std::memory_order_relaxed);
+                g_slotWatchFirstChangeValue.store(value, std::memory_order_relaxed);
+            }
+            g_slotWatchLatestChangeQpc.store(now, std::memory_order_relaxed);
+            g_slotWatchLatestChangeValue.store(value, std::memory_order_relaxed);
+            ++changes;
+            g_slotWatchChanges.store(changes, std::memory_order_release);
+        }
+        if (now >= nextModuleCheck) {
+            nextModuleCheck = now + moduleStep;
+            if (g_slotLibOvrQpc.load(std::memory_order_relaxed) == 0 &&
+                GetModuleHandleW(L"LibOVRRT64_1.dll")) {
+                g_slotLibOvrValue.store(value, std::memory_order_relaxed);
+                g_slotLibOvrQpc.store(now, std::memory_order_release);
+            }
+            if (g_slotOpenVrQpc.load(std::memory_order_relaxed) == 0 &&
+                GetModuleHandleW(L"openvr_api.dll")) {
+                g_slotOpenVrValue.store(value, std::memory_order_relaxed);
+                g_slotOpenVrQpc.store(now, std::memory_order_release);
+            }
+        }
+        if (now >= end) break;
+    }
+    g_slotWatchEndQpc.store(now, std::memory_order_relaxed);
+    g_slotWatchFinished.store(1, std::memory_order_release);
+    return 0;
+}
+
+// Emits the slot-watch lines, each once, from oculusRouteReport().  Nothing
+// here runs under the loader lock.
+void slotWatchReport() {
+    if (!g_slotWatchStartDone.load(std::memory_order_acquire)) return;
+    const bool started = g_slotWatchStarted.load(std::memory_order_acquire) != 0;
+    const int64_t freq = g_slotWatchFreq.load(std::memory_order_relaxed);
+    const int64_t startQpc = g_slotWatchStartQpc.load(std::memory_order_relaxed);
+    if (claimOnce(g_slotLoggedStart)) {
+        if (started) {
+            char desc[kSlotDescChars];
+            describeSlot(g_slotWatchInitial.load(std::memory_order_relaxed), desc, sizeof(desc));
+            const uintptr_t slot = reinterpret_cast<uintptr_t>(g_iatSlot.load(std::memory_order_acquire));
+            const uintptr_t executable = g_executableBase.load(std::memory_order_acquire);
+            Log::get().note("oculus route slot: at log open (%.1f ms after the route installed) the LoadLibraryW import slot exe+0x%X holds %s; watching it every 1 ms for 120 s.",
+                            qpcMs(g_installQpc.load(std::memory_order_acquire), startQpc, freq),
+                            static_cast<unsigned>(slot - executable), desc);
+        } else if (g_slotWatchFailure.load(std::memory_order_relaxed) == kSlotWatchNoRoute) {
+            Log::get().note("oculus route slot: watch not started: route not installed.");
+        } else {
+            Log::get().note("oculus route slot: watch not started: thread could not start (CreateThread error %u).",
+                            g_slotWatchThreadError.load(std::memory_order_relaxed));
+        }
+    }
+    if (!started) return;
+
+    const uint32_t changes = g_slotWatchChanges.load(std::memory_order_acquire);
+    if (changes != 0 && claimOnce(g_slotLoggedChange)) {
+        char desc[kSlotDescChars];
+        describeSlot(g_slotWatchFirstChangeValue.load(std::memory_order_relaxed), desc, sizeof(desc));
+        Log::get().note("oculus route slot: changed %.1f ms after log open: it now holds %s (%u change(s) so far).",
+                        qpcMs(startQpc, g_slotWatchFirstChangeQpc.load(std::memory_order_relaxed), freq),
+                        desc, changes);
+    }
+
+    const int64_t libOvrQpc = g_slotLibOvrQpc.load(std::memory_order_acquire);
+    if (libOvrQpc != 0 && claimOnce(g_slotLoggedLibOvr)) {
+        char desc[kSlotDescChars];
+        describeSlot(g_slotLibOvrValue.load(std::memory_order_relaxed), desc, sizeof(desc));
+        Log::get().note("oculus route slot: LibOVRRT64_1.dll appeared %.1f ms after log open; the slot then held %s.",
+                        qpcMs(startQpc, libOvrQpc, freq), desc);
+    }
+    const int64_t openVrQpc = g_slotOpenVrQpc.load(std::memory_order_acquire);
+    if (openVrQpc != 0 && claimOnce(g_slotLoggedOpenVr)) {
+        char desc[kSlotDescChars];
+        describeSlot(g_slotOpenVrValue.load(std::memory_order_relaxed), desc, sizeof(desc));
+        Log::get().note("oculus route slot: openvr_api.dll appeared %.1f ms after log open; the slot then held %s.",
+                        qpcMs(startQpc, openVrQpc, freq), desc);
+    }
+
+    if (g_slotWatchFinished.load(std::memory_order_acquire) && claimOnce(g_slotLoggedEnd)) {
+        // The slot as the watch last saw it: the latest change, or the value at log open.
+        const uint32_t total = g_slotWatchChanges.load(std::memory_order_acquire);
+        void* const holds = total != 0 ? g_slotWatchLatestChangeValue.load(std::memory_order_relaxed)
+                                       : g_slotWatchInitial.load(std::memory_order_relaxed);
+        char desc[kSlotDescChars];
+        describeSlot(holds, desc, sizeof(desc));
+        Log::get().note("oculus route slot: watch ended after %.1f ms: %u change(s); the slot holds %s.",
+                        qpcMs(startQpc, g_slotWatchEndQpc.load(std::memory_order_relaxed), freq),
+                        total, desc);
+    }
+}
+#endif
+
 }  // namespace
 
 void oculusRouteInstallEarly(bool nativeBuild) {
@@ -430,6 +652,11 @@ void oculusRouteInstallEarly(bool nativeBuild) {
     }
 #endif
     g_uninstallOwned.store(1, std::memory_order_release);
+    // Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+    // One QPC read under the loader lock; nothing else is added there.
+    LARGE_INTEGER installedAt{};
+    QueryPerformanceCounter(&installedAt);
+    g_installQpc.store(installedAt.QuadPart, std::memory_order_release);
     g_installed.store(1, std::memory_order_release);
     setDecision(kDecisionNone);
     releaseInstall();
@@ -487,6 +714,34 @@ OculusRouteStatus oculusRouteStatusSnapshot() {
     return s;
 }
 
+#if !defined(EDVR_OCULUS_ROUTE_TEST)
+// Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+void oculusRouteSlotWatchStart() {
+    if (g_slotWatchEntered.exchange(1, std::memory_order_acq_rel)) return;
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    g_slotWatchFreq.store(frequency.QuadPart, std::memory_order_relaxed);
+    g_slotWatchStartQpc.store(slotWatchQpc(), std::memory_order_relaxed);
+    void** const slot = g_iatSlot.load(std::memory_order_acquire);
+    if (!g_installed.load(std::memory_order_acquire) || !slot) {
+        g_slotWatchFailure.store(kSlotWatchNoRoute, std::memory_order_relaxed);
+    } else {
+        // Both values are published before CreateThread, which orders them for the thread.
+        g_slotWatchInitial.store(readSlot(slot), std::memory_order_relaxed);
+        const HANDLE thread = CreateThread(nullptr, 0, slotWatchThreadMain, nullptr, 0, nullptr);
+        if (!thread) {
+            g_slotWatchThreadError.store(GetLastError(), std::memory_order_relaxed);
+            g_slotWatchFailure.store(kSlotWatchNoThread, std::memory_order_relaxed);
+        } else {
+            CloseHandle(thread);
+            g_slotWatchStarted.store(1, std::memory_order_relaxed);
+        }
+    }
+    // Last, so slotWatchReport() never sees a half-recorded start.
+    g_slotWatchStartDone.store(1, std::memory_order_release);
+}
+#endif
+
 void oculusRouteReport() {
     // The first call is the handoff from loader-safe startup accounting to
     // normal logging.  Set this before taking the snapshot so a concurrent
@@ -498,6 +753,8 @@ void oculusRouteReport() {
     if (!testSink && !Log::get().isOpen()) return;
 #else
     if (!Log::get().isOpen()) return;
+    // Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+    slotWatchReport();
 #endif
     if (g_reporting.exchange(1, std::memory_order_acq_rel)) return;
     g_reportReady.store(1, std::memory_order_release);

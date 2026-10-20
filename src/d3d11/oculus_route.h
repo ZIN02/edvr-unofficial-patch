@@ -90,6 +90,12 @@ static_assert(offsetof(OculusRouteStatus, iatSlot) == 112,
 
 OculusRouteStatus oculusRouteStatusSnapshot();
 
+// For an import hook that takes the route's place in Elite's LoadLibraryW slot.
+// It applies the route's policy with the executable's own return address and
+// forwards every call the route does not refuse to `forward`.
+HMODULE oculusRouteDispatchFrom(LPCWSTR path, uintptr_t returnAddress,
+                                HMODULE (WINAPI* forward)(LPCWSTR));
+
 // Test-only seams.  They exercise the same wrapper dispatch body while
 // injecting a known original target and profile identity, so tests never
 // patch a real executable or load a headset runtime.

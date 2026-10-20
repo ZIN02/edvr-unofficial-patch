@@ -2,9 +2,9 @@
 
 ## Status
 
-- **A newer game build exists (reported 2026-10-20).** Everything here is for
-  332841; re-derive with "Re-deriving after a patch" before trusting any row
-  on the new build.
+- **Game build 334473 (4.4.2.0) shipped 2026-10-20.** Rows here are 332841.
+  Every address is re-derived for 334473 in game-binary-remap-334473.md
+  (173 of 173 matched, new PE stamp and SizeOfImage included).
 - **Build covered:** 332841 only. FileVersion 332841, ProductVersion 4.4.1.1, file
   103,469,056 bytes, SHA-256
   `E6BE8BBE04E6A7AE226D4318945AF7F367DE13DC5A007A261964D9BA8144E988`. Every address

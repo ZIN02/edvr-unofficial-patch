@@ -303,9 +303,11 @@ inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& 
     if (e && e->conflict != FlatWitnessConflict::None) { ++e->writers; e->last = q; return; }
     const bool full = flat_mono_detail::fullViewport(k, k.width, k.height);
     const bool current = flatRuntimeCameraCurrent(d, q, p.frame);
-    if (!e) {
-        if (p.witnessesUsed == kFlatRuntimeWitnesses) { p.witnessOverflow = true; return; }
-        e = &p.witnesses[p.witnessesUsed++];
+    if (!e || !e->writers) {   // a new entry, or one a colour write restarted (flatRuntimeWitnessWritten)
+        if (!e) {
+            if (p.witnessesUsed == kFlatRuntimeWitnesses) { p.witnessOverflow = true; return; }
+            e = &p.witnesses[p.witnessesUsed++];
+        }
         e->depth = k.depth; e->color = k.color; e->rtv = k.rtv; e->dsv = k.dsv; e->b1 = k.b1;
         e->cameraHash = k.cameraHash; e->writeEpoch = e->lastWriteEpoch = k.writeEpoch;
         e->writeSeq = e->lastWriteSeq = k.writeSeq; e->first = e->last = q; e->writers = 1;
@@ -433,6 +435,7 @@ inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
     if(p.witnessOverflow){out.why=FlatDeferredDonorWhy::Overflow;return out;}
     if(!e){out.why=FlatDeferredDonorWhy::NoEntry;return out;}
     if(e->conflict!=FlatWitnessConflict::None){out.why=FlatDeferredDonorWhy::Conflict;return out;}
+    if(!e->writers){out.why=FlatDeferredDonorWhy::NoEntry;return out;}   // a colour write restarted it, no writer since
     if(e->color==k.color){out.why=FlatDeferredDonorWhy::SameColor;return out;}
     if(!e->rtv || e->dsv!=k.dsv || e->depthFormat!=k.depthFormat || e->width!=k.width || e->height!=k.height ||
        e->depthWidth!=k.width || e->depthHeight!=k.height){out.why=FlatDeferredDonorWhy::Layout;return out;}
@@ -538,12 +541,22 @@ inline FlatRuntimeTarget* flatRuntimeTarget(FlatRuntimePrefix& p, const void* re
     }
     auto& t = p.targets[p.targetsUsed++]; t.resource = resource; return &t;
 }
-// A write to a witnessed depth or colour is content its writers did not draw: the entry no longer speaks for it.
+// A write to a witnessed colour replaces what its writers drew there (a deferred renderer clears the
+// G-buffer after a depth prepass that bound it with colour writes off): the entry restarts empty, and
+// only writers after the write speak for the colour. A write to the witnessed depth is content no
+// writer drew, and a later colour write does not undo it: that conflict stays.
 inline void flatRuntimeWitnessWritten(FlatRuntimePrefix& p, const void* resource) {
     for (uint32_t i = 0; i < p.witnessesUsed; ++i) {
         auto& w = p.witnesses[i];
-        if ((w.depth == resource || w.color == resource) && w.conflict == FlatWitnessConflict::None)
+        if (w.color == resource) {
+            const void* const depth = w.depth;
+            const bool depthWritten = w.conflict == FlatWitnessConflict::Written;
+            w = FlatRuntimeCameraWitness{};
+            w.depth = depth; w.color = resource;
+            if (depthWritten) w.conflict = FlatWitnessConflict::Written;
+        } else if (w.depth == resource && w.conflict == FlatWitnessConflict::None) {
             w.conflict = FlatWitnessConflict::Written;
+        }
     }
 }
 inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource) {

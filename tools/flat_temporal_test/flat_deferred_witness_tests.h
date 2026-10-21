@@ -284,20 +284,38 @@ inline unsigned run() {
         flatRuntimeWritten(*w.p, token(0x7777));
         expect(w.donor(w.lighting()).role == Role::Witness, "a write to an unrelated resource changes nothing");
         flatRuntimeWritten(*w.p, token(0x1100));
-        expect(w.entry(token(0x1100))->conflict == FlatWitnessConflict::Written && w.donor(w.lighting()).role == Role::Witness,
-               "a write to another colour is no second camera");
+        expect(w.entry(token(0x1100))->writers == 0 && w.entry(token(0x1100))->conflict == FlatWitnessConflict::None &&
+               w.donor(w.lighting()).role == Role::Witness, "a write to another colour restarts that entry and is no second camera");
         flatRuntimeWritten(*w.p, w.gbuf);
-        expect(!w.donor(w.lighting()) && w.donor(w.lighting()).why == Why::Conflict && w.donor(w.lighting()).conflict == FlatWitnessConflict::Written, "a write to SRV0: none");
+        expect(!w.donor(w.lighting()) && w.donor(w.lighting()).why == Why::NoEntry && w.entry(w.gbuf)->writers == 0,
+               "a write to SRV0 after its writers: none until a writer follows");
+        w.see(w.writer());
+        expect(w.donor(w.lighting()).role == Role::Witness && w.entry(w.gbuf)->writers == 1, "a writer after the write speaks for SRV0 again");
+        Scene lo;   // the loadout order: a prepass binding the G-buffer, a clear of it, then the G-buffer fill
+        lo.see(lo.writer(nullptr, 0xF516BF0201303B87ull));
+        lo.see(lo.writer(nullptr, 0x0123456789ABCDEFull, .5f));   // a second camera, drawn before the clear
+        expect(!lo.donor(lo.lighting()) && lo.entry(lo.gbuf)->conflict == FlatWitnessConflict::Camera, "before the clear, two cameras: none");
+        flatRuntimeWritten(*lo.p, lo.gbuf);
+        lo.see(lo.writer());
+        lo.see(lo.writer(nullptr, 0x8B589D25B2A0ADDCull));
+        expect(lo.donor(lo.lighting()).role == Role::Witness && lo.entry(lo.gbuf)->writers == 2,
+               "a cleared G-buffer is spoken for by the writers after the clear alone");
+        lo.see(lo.writer(nullptr, 0x0123456789ABCDEFull, .5f));
+        expect(!lo.donor(lo.lighting()) && lo.entry(lo.gbuf)->conflict == FlatWitnessConflict::Camera, "a second camera after the clear: none");
         Scene z;
         z.see(z.writer());
         flatRuntimeWritten(*z.p, z.depth);
         expect(!z.donor(z.lighting()) && z.donor(z.lighting()).conflict == FlatWitnessConflict::Written, "a write to the depth: none");
+        flatRuntimeWritten(*z.p, z.gbuf);
+        z.see(z.writer());
+        expect(!z.donor(z.lighting()) && z.entry(z.gbuf)->conflict == FlatWitnessConflict::Written,
+               "a colour write after a depth write does not undo it");
         Scene y;   // a compute pass writing the G-buffer through a UAV
         y.see(y.writer());
         flatRuntimeDispatchObserveWritten(*y.p, token(0x7777));
         expect(y.donor(y.lighting()).role == Role::Witness, "a UAV write to an unrelated resource changes nothing");
         flatRuntimeDispatchObserveWritten(*y.p, y.gbuf);
-        expect(!y.donor(y.lighting()) && y.donor(y.lighting()).conflict == FlatWitnessConflict::Written, "a UAV write to SRV0: none");
+        expect(!y.donor(y.lighting()) && y.donor(y.lighting()).why == Why::NoEntry, "a UAV write to SRV0 after its writers: none");
     }
     // ---- table overflow fails closed -------------------------------------------------------------------------------------------------
     {

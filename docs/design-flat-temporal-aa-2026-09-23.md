@@ -17997,3 +17997,30 @@ the inverse and whole-camera repairs, and the upload certification
 decide as before. The build also logs the witness's writer count,
 distinct camera count and relation, so a refusal is explained from the
 log.
+
+### Flown 15:51 (`dc2735ef`): witness found, refused by its own write rule
+
+Sean: no change on the screen. `edvr_gfx_20261021_155121` matches the
+build. Every `flat deferred witness:` line has `entry=1 writers=96..98
+distinct-cameras=1 conflict=explicit-write donor-role=none
+why=witness-conflict`. The witness found the G-buffer writers, all with one
+camera, then refused them.
+
+Cause, from the 14:48 census:
+1. The depth is cleared at q=67.
+2. A depth prepass (F516BF02, 25 draws, q=68..92) binds the G-buffer `@33`
+   with its colour write mask 0. That opens the witness entry.
+3. The game clears `@33` at q=94.
+4. The real G-buffer draws begin at q=98.
+
+The build marked any explicit write to a witnessed colour as a permanent
+conflict. That rule was added beyond the spec and is stricter than the pool
+rule, which ignores colour writes.
+
+Ruled out: a second camera on the loadout depth as the blocker, because
+`distinct-cameras=1` and no `veto=` in any line.
+
+Fix (built, not flown): a write to a witnessed colour restarts its
+entry, so only writers after the last write speak for it. A write with no
+writer after it leaves no witness (`why=no-witness-entry`). A write to
+the depth stays a conflict, and a later colour write does not undo it.

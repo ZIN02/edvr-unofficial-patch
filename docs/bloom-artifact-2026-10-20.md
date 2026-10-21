@@ -2,9 +2,10 @@
 
 ## Status
 
-- **State (2026-10-20 21:20): the stripes are confirmed as undithered
-  8-bit banding (lossless shots); nothing built.** Base Elite with EDVR's AA off: the flat System Map and loading
-  screens, on builds 332841 and 334473. The chain was dumped on the 20:49
+- **State (2026-10-20 21:30): the artifact is undithered 8-bit banding of
+  Elite's own bloom, at Bloom Medium, High and Ultra; nothing built.** Base
+  Elite with EDVR's AA off: the flat System Map and loading screens, on
+  builds 332841 and 334473. The chain was dumped on the 20:49
   flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
   lets flat read `advanced.glare_shader_dump`. See "The chain's bytecode".
 - **The halo is not offset.** The star's halo sits within 1 px of its
@@ -17,17 +18,15 @@
 - **4.4.2.0 did not introduce it.** A 332841 loading screen shows the same
   banded glow, and the named bloom shaders have the same hashes on both
   builds.
-- **Open hypotheses, ranked:**
+- **Hypotheses:**
   1. **Confirmed:** output quantization. The tone pass writes 8-bit with no
      dither, so a wide, dim glow on black falls in clean one-code bands,
      up to 99 px wide at codes 1 and 2 (see "Lossless loading screens").
-  2. Tent offsets wider than a texel. If Ultra's `FilterRadius 3` and
-     `FilterRadiusWide 4` scale the tents' cb2 offsets, each up pass adds
-     nine copies of the coarser level up to 3-4 texels apart (150-200
-     output px at 39x24), so far halos turn lumpy and squarish. Weak
-     support: the far star halo is 5-20% brighter on the diagonals than on
-     the axes beyond 90 px. Confirm with a Bloom A/B (below) or with the
-     upsample draws' cb2[3..12].
+  2. Ruled out: tent taps spread by FilterRadius. The three lossless shots
+     (Medium, High, Ultra) show no texel-grid lumps at 8-10x gain, and
+     Medium, which has no FilterRadius, bands like the others. The far star
+     halo's diagonal excess (5-20%) is the ordinary squarish shape of a
+     tent pyramid, not a defect.
 - **Ruled out:**
   - Half-texel offset accumulating toward a corner: the halo fits at
     (+0.5, +0.5) px.
@@ -40,16 +39,15 @@
     code 60.
   - Temporal threshold instability: the artifact is in still frames.
   - The 4.4.2.0 update: see above.
-- **Next:** which Bloom tier the 21:15:15 and 21:16:01 shots used (only
-  21:16:39 is known, Ultra), to judge 2. At 8-10x gain no texel-grid lumps
-  show in any of the three.
-- **Fix (gated on that capture):**
-  - for 1, dither the tone write by swapping the known tone pixel shaders;
-  - for 2, swap `8826CACC` for a dense tent of the same footprint.
-  Bloom stays everywhere. See "Fix proposal".
-- **Environment:** flat, 1920x1200 output, SSAA 0.65 (HDR 1248x780,
-  first bloom level 624x390), BloomQuality 3 (Ultra), DoF 2, Elite AA off.
-  The 332841 loading screen ran at HDR 1920x1200. Not tested: VR, where
+- **Next:** build fix A and fly the same loading screen, lossless, AA off
+  (see "Flight evidence before building").
+- **Fix:** A, dither the tone write by swapping the known tone pixel
+  shaders. Bloom stays everywhere. B (a dense tent) is not needed. See "Fix
+  proposal".
+- **Environment:** flat, 1920x1200 output, DoF 2, Elite AA off. The map
+  flight ran at SSAA 0.65 (HDR 1248x780, first bloom level 624x390) and
+  Bloom Ultra. The lossless loading screens and the 332841 one ran at HDR
+  1920x1200. Not tested: VR, where
   Elite's VR presets ship BloomQuality 0.
 
 ---
@@ -331,7 +329,8 @@ Build `98ba10fa` (rebased on `aed71854`), AA off, SSAA 1.0 from launch
 uncompressed copies, each taken right after a reload from the main menu
 (journal `LoadGame` 03:15:13, 03:15:57, 03:16:35 UTC). Elite wrote
 `Custom.4.4.fxcfg` once, at 21:16:20 (BloomQuality 3), so only the last
-shot's tier is known.
+shot's tier is known. Sean gave the others: 21:15:15 Medium, 21:16:39
+Ultra, so 21:16:01 is High.
 
 - **The output is not dithered.** Every R code from 0 to 20 occurs, so the
   JPEGs' even-only plateaus (0, 2, 4) were JPEG DC quantization. 76-88% of

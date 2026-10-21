@@ -6,6 +6,12 @@
   game FPS claim. Complete cache deferred pending full invalidation proof. P-B
   early receipt discard verified; full build PASS, 170.6 s. Entry below.
 
+- **2026-10-21 render thread on the P cores, ruled out at a station (flat,
+  Panther Lake handheld, Proton):** pinned with `taskset`, no build. The GPU
+  is power-limited (`pl2`) and `Render` idle about half of each frame; the
+  frame rate did not move above the scene's drift. A CPU-bound spot is
+  untested. Entry at the end.
+
 - **State: Feature 2 (variable-rate shading) retired 2026-09-29 (code removed,
   184eee7f).** foveation.cpp, `experimental.foveation` and the seven
   `advanced.foveation_*` keys are gone. The Feature 2 and Feature 3 text below
@@ -1875,3 +1881,60 @@ Local evidence is in the primary checkout's ignored
 `build/rc3-latest-review/forward_outputs_hardware_audit.txt`, its benchmark
 source and six raw result files. The audit starts with its current Status and
 records remaining cache contracts and fixture requirements.
+
+## 2026-10-21 render thread on the P cores (Linux handheld, flat)
+
+**Question:** on a CPU with two P cores, would putting Elite's render thread on
+them raise the frame rate? No build and no EDVR change: the test pins threads
+from outside the game.
+
+**Environment:** Intel Arc G3 Extreme (Panther Lake), no SMT: CPU 0-1 are P
+cores at 4.7 GHz, 2-9 E cores at 3.6 GHz, 10-13 LP-E cores at 3.1 GHz in their
+own cluster. Arc B390 iGPU. Proton Experimental with DXVK. Scheduler sched_ext
+`scx_lavd --performance --pinned-slice-us 500`. Flat profile (`/novr`), log
+v0.20.1-13-gdb52d367, parked at a station.
+
+**Method:** each thread's time on CPU (`/proc/<pid>/task/<tid>/schedstat`) and
+the CPU it last ran on (`stat` field 39), sampled every 20 ms over 88-90 s;
+`taskset -p -c 0,1 <tid>` to pin and `-c 0-13` to undo; frame rate from `engine
+motion: draw side over 30 s, N frames`. Elite and DXVK name their threads, so
+Linux tools show `Render`, `RunLoop`, `Worker 1`-`6` and `dxvk-cs` by name.
+
+**Placement as LAVD left it:** `Render` 52% of a core, 13-15% of its running
+samples on a P core, 83-84% on an E core, 0-1% on LP-E. `RunLoop` 33-36%.
+`dxvk-cs` 16%, 32-36% on LP-E. Workers 13% each, 30-50% on LP-E. Process total
+about 210% of one CPU of 14.
+
+| Leg | Pinned to CPU 0-1 | Frames per 30 s (clean windows) |
+|---|---|---|
+| A | none | 1288, 1216, 1053 |
+| B | `Render` | 1225, 1283, 1195 |
+| C | `Render` and `dxvk-cs` | 1400, 1571 |
+| A' | none | 1381, 1402 |
+
+Windows that straddle a change are left out. Pinned, `Render` ran on a P core
+in 100% of samples and its share fell to 42-44% of a core, but per frame it was
+about 11 ms either way (10.7 pinned, 11.1-12.7 unpinned). Under the power limit
+below, CPU 1 was sampled at 2.35 GHz, so the P core's speed advantage was
+small. The frame rate drifted with the scene from 1053 to 1571 frames a window
+while parked, and no pinned leg separates from the baselines on either side: B
+sits inside A, and C's 1400 matches A' at 1381-1402.
+
+**Why:** `Render` is busy about 11 ms of a 19-28 ms frame, so it is not the
+limit at this spot. The GPU is: it requests 2300 MHz and runs at 1650-1800,
+with throttle reason `pl2` (package power limit, `tile0/gt0/freq0/throttle`),
+and its work span is 15-22 ms a frame. The CPU and GPU share one package
+budget, so a faster render thread buys nothing here, and a P core at 4.6 GHz
+spends more of that budget.
+
+ruled out: pinning the render thread, alone or with `dxvk-cs`, to the P cores
+on the Panther Lake handheld at a station in flat, because the GPU is
+power-limited there and `Render` is idle about half of each frame; the frame
+rate did not move above the scene's drift.
+
+**Open:** a CPU-bound spot is not tested. On the RTX 5090 rig the settlement
+limit was the render thread's draw submission
+(engine-render-performance-2026-09-19.md). Check the signature first: `Render`
+near 100% of a core, and the GPU's throttle `reasons` not a power limit. Only
+then is a pin worth an A/B there, with legs of at least three windows in
+A-B-A-B order.

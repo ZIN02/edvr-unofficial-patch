@@ -716,6 +716,17 @@ inline bool inBox(const float c[3], const OwnCell& cell) noexcept {
     return std::fabs(o[0]) <= cell.boxHalf[0] && std::fabs(o[1]) <= cell.boxHalf[1] && std::fabs(o[2]) <= cell.boxHalf[2];
 }
 
+// Whether a sphere overlaps the box: the distance from its centre (o, in box coordinates from boxCoords) to the centre's clamp into the box (half: the
+// half-extents) is at most the radius. A non-finite or negative radius never overlaps.
+inline bool sphereOverlapsBox(const float o[3], float radius, const float half[3]) noexcept {
+    float d2 = 0.0f;
+    for (int k = 0; k < 3; ++k) {
+        const float over = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
+        d2 += over * over;
+    }
+    return std::isfinite(radius) && radius >= 0.0f && d2 <= radius * radius;
+}
+
 // Built v12: the off-screen emulation's steps, in Elite's order (decomp_431AFE0.txt lines 99 to 102; bytes 0x431DF21..0x431DF40). Kind 1: the byte
 // store [coll+0x629] = 0. Kind 2: the call of 0x4350A50 with rcx = coll+0x300 (the owner count reset). Kind 3: the call of 0x42B8420 with rcx = the
 // pipe, only when the pipe is non-null (it adds 0x78 and jumps to 0x4350A50: pipe+0x31C). Returns the number of steps written to kinds and args.
@@ -864,8 +875,8 @@ inline size_t pickExplicitSegment(const ExplicitObs* obs, size_t n, const float 
     return written;
 }
 
-// Why a record is kept in named mode.
-enum class KeepWhy : uint8_t { kNone = 0, kCell = 1, kExplicit = 2, kSphere = 3 };
+// Why a record is kept in named mode. kReach (built 2026-10-21): a box cell only; the centre lies outside the box but the sphere reaches into it.
+enum class KeepWhy : uint8_t { kNone = 0, kCell = 1, kExplicit = 2, kSphere = 3, kReach = 4 };
 
 struct NamedKeep {
     bool keep = false;
@@ -882,7 +893,10 @@ inline bool inAddrSet(const uintptr_t* set, size_t n, uintptr_t addr) noexcept {
 
 // The named rule for one record (Built v8.3b). No own cell: the sphere rule for the frame. With one: kept when the record's centre lies within
 // the cell radius of the cell centre (why cell), or when it is an explicit part's nearest instance (why explicit). Otherwise culled, including a
-// record whose sphere contains the camera.
+// record whose sphere contains the camera. Built 2026-10-21: in box mode a record that those two would cull is also kept (why reach) when its
+// sphere overlaps the box and does not contain the camera: a bay door's panels have their centres to one side of the box and reach well into it
+// (flight log, fleet carrier, large bay: DoorA0 to DoorA3, radius 72.5 m, centres up to 42 m outside, culled by the centre rule). A sphere that
+// contains the camera is the station's own enclosing structure and is still culled. The capsule and sphere cells judge the centre alone.
 inline NamedKeep keepNamedCell(const float centre[3], float radius, const float camera[3], float R, const OwnCell& cell,
                                const uintptr_t* explicitSet, size_t explicitN, uintptr_t addr) noexcept {
     NamedKeep v;
@@ -905,23 +919,21 @@ inline NamedKeep keepNamedCell(const float centre[3], float radius, const float 
     if (inAddrSet(explicitSet, explicitN, addr)) {
         v.keep = true;
         v.why = KeepWhy::kExplicit;
+        return v;
+    }
+    if (cell.box && !v.containing) {
+        float o[3];
+        boxCoords(centre, cell, o);
+        if (sphereOverlapsBox(o, radius, cell.boxHalf)) {
+            v.keep = true;
+            v.why = KeepWhy::kReach;
+        }
     }
     return v;
 }
 
-// Built 2026-10-21 (temporary instrument): the census of culled records whose sphere reaches into the sealed box. o: a centre in box coordinates (boxCoords),
-// half: the box's half-extents.
-// Whether the sphere overlaps the box: the distance from the centre to its clamp into the box is at most the radius (a non-finite radius never does).
-inline bool sphereOverlapsBox(const float o[3], float radius, const float half[3]) noexcept {
-    float d2 = 0.0f;
-    for (int k = 0; k < 3; ++k) {
-        const float over = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
-        d2 += over * over;
-    }
-    return std::isfinite(radius) && radius >= 0.0f && d2 <= radius * radius;
-}
-
-// How far the centre lies beyond each half-extent, metres (0 within it).
+// Built 2026-10-21 (temporary instrument): the census of culled records whose sphere reaches into the sealed box (sphereOverlapsBox is the rule's own).
+// How far the centre lies beyond each half-extent, metres (0 within it). o: a centre in box coordinates (boxCoords), half: the box's half-extents.
 inline void outsideByBox(const float o[3], const float half[3], float out[3]) noexcept {
     for (int k = 0; k < 3; ++k) out[k] = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
 }
@@ -935,6 +947,7 @@ struct CensusHit {
     uint8_t path = 0;
     float centre[3] = {};   // the world centre
     float radius = 0.0f;
+    bool containing = false;   // the record's sphere contains the camera
 };
 
 struct CensusNode {
@@ -943,6 +956,7 @@ struct CensusNode {
     float centre[3] = {};   // the largest instance's world centre
     float radius = 0.0f;    // the largest instance's radius
     uint32_t instances = 0;
+    bool containing = false;   // the largest instance's sphere contains the camera
 };
 
 // Folds hits by node (the largest radius keeps its centre and path; instances counts the node's hits) and sorts by radius, largest first (ties by node).
@@ -954,12 +968,13 @@ inline size_t foldCensusHits(const CensusHit* hits, size_t n, CensusNode* out, s
         while (j < k && out[j].node != hits[i].node) ++j;
         if (j == k) {
             if (k >= outCap) continue;
-            out[k] = CensusNode{hits[i].node, hits[i].path, {hits[i].centre[0], hits[i].centre[1], hits[i].centre[2]}, hits[i].radius, 0};
+            out[k] = CensusNode{hits[i].node, hits[i].path, {hits[i].centre[0], hits[i].centre[1], hits[i].centre[2]}, hits[i].radius, 0, hits[i].containing};
             ++k;
         } else if (hits[i].radius > out[j].radius) {
             out[j].path = hits[i].path;
             for (int c = 0; c < 3; ++c) out[j].centre[c] = hits[i].centre[c];
             out[j].radius = hits[i].radius;
+            out[j].containing = hits[i].containing;
         }
         ++out[j].instances;
     }

@@ -2969,19 +2969,117 @@ int main(int argc, char** argv) {
               "census chain: a world centre reads in box coordinates and is outside by 10 m along U");
         check(!se::sphereOverlapsBox(o, 9.9f, cell.boxHalf) && se::sphereOverlapsBox(o, 10.0f, cell.boxHalf), "census chain: the overlap follows the box's own axes");
     }
+    // ---- Built 2026-10-21: the reach rule. In box mode a record whose centre lies outside the box is kept (why reach) when its sphere overlaps the box and
+    // does not contain the camera. The box is the large carrier bay of the flight log (half-extents U 223, V 74, W 163.9), axis-aligned at the origin, so a box
+    // coordinate is a world coordinate; the door panels are the log's DoorA2 (centre -8.3,-88.6,-9.0, radius 72.5 m, outside the width face by 14.6 m) ----------
+    {
+        se::OwnCell box;
+        box.has = true;
+        box.box = true;
+        box.boxU[0] = 1.0f;
+        box.boxV[1] = 1.0f;
+        box.boxW[2] = 1.0f;
+        box.boxHalf[0] = 223.0f;
+        box.boxHalf[1] = 74.0f;
+        box.boxHalf[2] = 163.9f;
+        const float camera[3] = {0.0f, 0.0f, -100.0f};   // the commander in the cockpit, on the pad
+        const float door[3] = {-8.3f, -88.6f, -9.0f};
+        const uintptr_t none[1] = {0};
+        const float R = 80.0f;
+        se::NamedKeep v = se::keepNamedCell(door, 72.5f, camera, R, box, none, 0, 0x1000);
+        check(v.keep && v.why == se::KeepWhy::kReach && !v.containing,
+              "reach: a door whose centre is 14.6 m outside the width face and whose sphere (72.5 m) reaches in is kept, by reach");
+        const float cameraNearDoor[3] = {-8.3f, -60.0f, -9.0f};   // inside the box and inside the door's sphere (28.6 m from its centre)
+        v = se::keepNamedCell(door, 72.5f, cameraNearDoor, R, box, none, 0, 0x1000);
+        check(!v.keep && v.why == se::KeepWhy::kNone && v.containing,
+              "reach: the same record is culled when its sphere contains the camera (the station's enclosing structure stays culled)");
+        const float deck[3] = {0.0f, -400.0f, 0.0f};   // a hull or deck mesh: centre missing outside, a radius that overlaps the box and holds the camera
+        v = se::keepNamedCell(deck, 450.0f, camera, R, box, none, 0, 0x2000);
+        check(!v.keep && v.containing, "reach: a big record that overlaps the box and contains the camera is culled");
+        v = se::keepNamedCell(deck, 340.0f, camera, R, box, none, 0, 0x2000);   // reaches 14 m into the box, 412 m from the camera
+        check(v.keep && v.why == se::KeepWhy::kReach && !v.containing,
+              "reach: a big record that overlaps the box and does not contain the camera is kept (the rule is the sphere's, not its size)");
+        const float missing[3] = {0.0f, -200.0f, 0.0f};   // outside the width face by 126 m
+        v = se::keepNamedCell(missing, 72.5f, camera, R, box, none, 0, 0x3000);
+        check(!v.keep && v.why == se::KeepWhy::kNone, "reach: a record whose sphere misses the box is culled");
+        const float touch[3] = {0.0f, -146.5f, 0.0f};   // 72.5 m past the width face: the sphere just touches it
+        check(se::keepNamedCell(touch, 72.5f, camera, R, box, none, 0, 0x3000).why == se::KeepWhy::kReach &&
+                  !se::keepNamedCell(touch, 72.4f, camera, R, box, none, 0, 0x3000).keep,
+              "reach: a sphere that just touches a face is kept, one that stops 0.1 m short is culled");
+        const float corner[3] = {223.0f + 3.0f, 74.0f + 4.0f, 0.0f};   // 5 m from the edge, past two faces
+        check(se::keepNamedCell(corner, 5.0f, camera, R, box, none, 0, 0x4000).why == se::KeepWhy::kReach &&
+                  !se::keepNamedCell(corner, 4.9f, camera, R, box, none, 0, 0x4000).keep,
+              "reach: past two faces the distance is to the edge");
+        const float inside[3] = {10.0f, 20.0f, 30.0f};
+        v = se::keepNamedCell(inside, 5.0f, camera, R, box, none, 0, 0x5000);
+        check(v.keep && v.why == se::KeepWhy::kCell, "reach: a centre inside the box is kept by the cell, as before");
+        const float insideBig[3] = {10.0f, 20.0f, -90.0f};   // centre in the box and a sphere that holds the camera: the centre rule keeps it
+        v = se::keepNamedCell(insideBig, 500.0f, camera, R, box, none, 0, 0x5000);
+        check(v.keep && v.why == se::KeepWhy::kCell && v.containing, "reach: a centre inside the box is kept even when the sphere contains the camera, as before");
+        const uintptr_t explicitSet[1] = {0x6000};
+        v = se::keepNamedCell(missing, 72.5f, camera, R, box, explicitSet, 1, 0x6000);
+        check(v.keep && v.why == se::KeepWhy::kExplicit, "reach: an explicit part's nearest instance is kept, as before");
+        v = se::keepNamedCell(door, 72.5f, camera, R, box, explicitSet, 1, 0x6000);
+        check(v.keep && v.why == se::KeepWhy::kExplicit, "reach: an explicit part that also reaches into the box keeps its explicit label (the reach count is the new keeps only)");
+        check(!se::keepNamedCell(door, 72.5f, cameraNearDoor, R, box, explicitSet, 1, 0x7000).keep, "reach: another address is not the explicit part");
+        check(!se::keepNamedCell(door, std::nanf(""), camera, R, box, none, 0, 0x1000).keep && !se::keepNamedCell(door, INFINITY, camera, R, box, none, 0, 0x1000).keep,
+              "reach: a non-finite radius is never kept by reach");
+        // A box turned and moved: the rule follows the box's own axes. U along world y, V along world -x, W along world z, centre (1000, 2000, 3000).
+        se::OwnCell turned = box;
+        turned.boxU[0] = 0.0f;
+        turned.boxU[1] = 1.0f;
+        turned.boxV[0] = -1.0f;
+        turned.boxV[1] = 0.0f;
+        turned.boxCentre[0] = 1000.0f;
+        turned.boxCentre[1] = 2000.0f;
+        turned.boxCentre[2] = 3000.0f;
+        const float turnedDoor[3] = {1000.0f + 88.6f, 2000.0f - 8.3f, 3000.0f - 9.0f};   // box coordinates -8.3, -88.6, -9.0
+        const float turnedCamera[3] = {1000.0f, 2000.0f, 3000.0f - 100.0f};
+        v = se::keepNamedCell(turnedDoor, 72.5f, turnedCamera, R, turned, none, 0, 0x1000);
+        check(v.keep && v.why == se::KeepWhy::kReach, "reach: in a turned box the door's sphere is judged against the box's own axes");
+        const float wrongSide[3] = {1000.0f - 88.6f, 2000.0f - 8.3f, 3000.0f - 9.0f};   // 88.6 m the other way across the width: reaches in as well (the box is symmetric)
+        check(se::keepNamedCell(wrongSide, 72.5f, turnedCamera, R, turned, none, 0, 0x1000).why == se::KeepWhy::kReach,
+              "reach: the missing side of the width is judged the same way");
+        const float alongLength[3] = {1000.0f - 8.3f, 2000.0f + 223.0f + 80.0f, 3000.0f};   // 80 m past the length face
+        check(!se::keepNamedCell(alongLength, 72.5f, turnedCamera, R, turned, none, 0, 0x1000).keep, "reach: a sphere 80 m past the length face does not reach (72.5 m)");
+        // The other cells judge the centre alone: a sphere that overlaps a capsule or a pad sphere is not kept for it.
+        se::OwnCell sphereCell;
+        sphereCell.has = true;
+        sphereCell.radius = 50.0f;
+        const float nearSphere[3] = {60.0f, 0.0f, 0.0f};
+        v = se::keepNamedCell(nearSphere, 30.0f, camera, R, sphereCell, none, 0, 0x8000);
+        check(!v.keep && v.why == se::KeepWhy::kNone, "reach: a pad-sphere cell keeps by the centre alone (a sphere that overlaps it is culled)");
+        v = se::keepNamedCell(inside, 5.0f, camera, R, sphereCell, none, 0, 0x8000);
+        check(v.keep && v.why == se::KeepWhy::kCell, "reach: a pad-sphere cell keeps a centre inside it by the cell");
+        se::OwnCell capsuleCell;
+        capsuleCell.has = true;
+        capsuleCell.capsule = true;
+        capsuleCell.radius = 20.0f;
+        capsuleCell.capB[2] = 100.0f;
+        const float nearCapsule[3] = {30.0f, 0.0f, 50.0f};
+        v = se::keepNamedCell(nearCapsule, 30.0f, camera, R, capsuleCell, none, 0, 0x9000);
+        check(!v.keep && v.why == se::KeepWhy::kNone, "reach: a capsule cell keeps by the centre alone (a sphere that overlaps it is culled)");
+        // No cell: the sphere rule for the frame, unchanged.
+        se::OwnCell noCell;
+        v = se::keepNamedCell(door, 72.5f, camera, R, noCell, none, 0, 0x1000);
+        check(v.keep && v.why == se::KeepWhy::kSphere, "reach: with no cell the sphere rule decides (this door is 127 m from the camera, inside 72.5 + 80 m)");
+        v = se::keepNamedCell(missing, 72.5f, camera, R, noCell, none, 0, 0x3000);
+        check(!v.keep && v.why == se::KeepWhy::kNone, "reach: with no cell a record beyond the camera sphere is culled (224 m from the camera)");
+    }
     {
         // The fold: one entry per node, the largest instance keeps its centre and path, the count is the node's hits, the order is radius then node.
         se::CensusHit h[6];
-        auto hit = [](uintptr_t node, uint8_t path, float x, float r) {
+        auto hit = [](uintptr_t node, uint8_t path, float x, float r, bool containing = false) {
             se::CensusHit v;
             v.node = node;
             v.path = path;
             v.centre[0] = x;
             v.radius = r;
+            v.containing = containing;
             return v;
         };
         h[0] = hit(0x300, se::kCensusStore, 1.0f, 2.0f);
-        h[1] = hit(0x300, se::kCensusProducer, 2.0f, 9.0f);
+        h[1] = hit(0x300, se::kCensusProducer, 2.0f, 9.0f, true);
         h[2] = hit(0x100, se::kCensusStore, 3.0f, 12.0f);
         h[3] = hit(0x300, se::kCensusStore, 4.0f, 5.0f);
         h[4] = hit(0x200, se::kCensusStore, 5.0f, 9.0f);
@@ -2994,6 +3092,8 @@ int main(int argc, char** argv) {
         check(out[2].instances == 3 && out[2].path == se::kCensusProducer && out[2].centre[0] == 2.0f,
               "census fold: a node with three hits counts three and keeps its largest instance's path and centre");
         check(out[3].node == 0 && out[3].instances == 1, "census fold: the node-less hit sorts last by its radius");
+        check(out[2].containing && !out[0].containing && !out[1].containing && !out[3].containing,
+              "census fold: a node keeps whether its largest instance's sphere contains the camera");
         check(se::foldCensusHits(h, 0, out, 8) == 0, "census fold: no hits, no nodes");
         se::CensusNode two[2];
         check(se::foldCensusHits(h, 6, two, 2) == 2, "census fold: no more nodes than the output holds");

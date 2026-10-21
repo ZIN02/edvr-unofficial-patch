@@ -64,7 +64,7 @@ RigTally g_rigTally;
 struct TlsCounters {
     uint32_t stamp = 0;   // the pass these counts belong to
     uint64_t callsStore = 0, callsProducer = 0, callsRig = 0;
-    uint64_t kept = 0, keptUnknown = 0, culled = 0, noCamera = 0;
+    uint64_t kept = 0, keptUnknown = 0, keptReach = 0, culled = 0, noCamera = 0;
     uint64_t worldSrc[5] = {};
     uint64_t producerVetoes = 0, rigVetoes = 0;
     uint64_t rigSeen = 0, rigVetoed = 0, rigMixed = 0, rigUnknown = 0, rigRefresh = 0;
@@ -600,6 +600,8 @@ bool cachedName(uintptr_t record, char* out, size_t cap) noexcept {
 // and the tick names them ("culled near the bay" lines). No key, no menu row. A callback appends only when the snapshot it pinned names the pass
 // (PadSnapshot::censusStamp) and its own Writer's stamp equals it. A Writer is counted busy, so the drain that closes the pass has waited for every
 // appender before the tick reads the array; the tick resets the array before it publishes the snapshot that names the pass.
+// Since the reach rule (keepNamedCell, same day) the box keeps a record whose sphere reaches into it unless the sphere contains the camera, so the census
+// lists only records that contain the camera; each line says so.
 constexpr size_t kCensusCap = 1024;       // hits kept in the pass (past it they are counted as dropped)
 constexpr uint32_t kCensusPasses = 60;    // informative sealed passes after the engage before the census pass is named (about 1 s)
 constexpr uint32_t kCensusDumpsMax = 6;   // dumps in a session
@@ -652,6 +654,7 @@ void censusNote(const PadSnapshot& s, uint8_t path, uintptr_t node, const float 
     h.centre[1] = centre[1];
     h.centre[2] = centre[2];
     h.radius = radius;
+    h.containing = sealed::containsCamera(centre, radius, s.cam);
 }
 
 // The producer veto's append. It opens a Writer of its own (the producer path has none), so the drain that closes the pass waits for it.
@@ -1348,6 +1351,7 @@ std::atomic<uint64_t> g_winRigVetoes{0};               // rig vetoes (before the
 std::atomic<uint64_t> g_winProducerVetoes{0};          // records the producer-B veto skipped in the window
 std::atomic<uint64_t> g_winCulled{0};                  // records culled after the store in the window
 std::atomic<uint64_t> g_winKeptUnknown{0};             // records kept because their centre could not be read, in the window
+std::atomic<uint64_t> g_winKeptReach{0};               // records the post-store judgement kept because their sphere reaches into the box (centre outside), in the window
 
 
 void tcFlush(TlsCounters& t) noexcept {
@@ -1357,6 +1361,7 @@ void tcFlush(TlsCounters& t) noexcept {
     g_kept.fetch_add(t.kept, std::memory_order_relaxed);
     g_keptUnknown.fetch_add(t.keptUnknown, std::memory_order_relaxed);
     g_winKeptUnknown.fetch_add(t.keptUnknown, std::memory_order_relaxed);
+    g_winKeptReach.fetch_add(t.keptReach, std::memory_order_relaxed);
     g_culled.fetch_add(t.culled, std::memory_order_relaxed);
     g_winCulled.fetch_add(t.culled, std::memory_order_relaxed);
     g_winNoCamera.fetch_add(t.noCamera, std::memory_order_relaxed);
@@ -1678,14 +1683,15 @@ const char* censusClassWord(sealed::NameClass c) noexcept {
 // One census line. The centre is written in box coordinates (U along the length, V across the width, W up the shaft, metres from the box's centre), and
 // outside-by is how far each coordinate lies beyond the half-extent (0 within it).
 void censusLine(const sealed::OwnCell& cell, const char* name, const char* cls, const char* via, uint32_t instances, const float centre[3],
-                float radius) noexcept {
+                float radius, const char* containsCam) noexcept {
     float o[3] = {};
     float out[3] = {};
     sealed::boxCoords(centre, cell, o);
     sealed::outsideByBox(o, cell.boxHalf, out);
-    Log::get().note("optimized station: culled near the bay: %s [class %s] via %s x%u: centre %.1f,%.1f,%.1f m, radius %.1f m, outside by %.1f,%.1f,%.1f m",
+    Log::get().note("optimized station: culled near the bay: %s [class %s] via %s x%u: centre %.1f,%.1f,%.1f m, radius %.1f m, outside by %.1f,%.1f,%.1f m, "
+                    "sphere contains the camera: %s",
                     name, cls, via, static_cast<unsigned>(instances), static_cast<double>(o[0]), static_cast<double>(o[1]), static_cast<double>(o[2]),
-                    static_cast<double>(radius), static_cast<double>(out[0]), static_cast<double>(out[1]), static_cast<double>(out[2]));
+                    static_cast<double>(radius), static_cast<double>(out[0]), static_cast<double>(out[1]), static_cast<double>(out[2]), containsCam);
 }
 
 // The report, on the tick after the census pass: once the drain has closed the pass with every writer gone (closedThrough), the array holds the pass's
@@ -1746,7 +1752,8 @@ void censusReport() noexcept {
                 name = "(unnamed)";
             }
         }
-        censusLine(cell, name, cls, n.path == sealed::kCensusProducer ? "producer" : "store", n.instances, n.centre, n.radius);
+        censusLine(cell, name, cls, n.path == sealed::kCensusProducer ? "producer" : "store", n.instances, n.centre, n.radius,
+                   n.containing ? "yes" : "no");
     }
     if (c.rigsDone) {
         Log::get().note("optimized station: culled near the bay: rig veto: %u rigs vetoed in the publication of the census pass, %u of them within %.0f m of "
@@ -1756,7 +1763,7 @@ void censusReport() noexcept {
         for (size_t i = 0; i < rigShown; ++i) {
             const CensusRig& r = c.rigs[i];
             censusLine(cell, r.name[0] != '\0' ? r.name : "(unnamed)", censusClassWord(sealed::classifyName(r.name[0] != '\0', r.name)), "rig", 1, r.centre,
-                       r.radius);
+                       r.radius, "not measured");
         }
     } else {
         Log::get().note("optimized station: culled near the bay: rig veto: no rig publication was made for the census pass, so the rig veto is not measured.");
@@ -1801,12 +1808,12 @@ void summaryLine(uint64_t now) noexcept {
         if (!quiet) Log::get().note(__VA_ARGS__); \
     } while (0)
     SUMMARY_NOTE("optimized station: last %llu s: sealed for %llu of %llu frames; rigs vetoed early %llu, records vetoed early %llu, "
-                    "records culled after the store %llu, records kept unread %llu, faults %llu (unreadable bucket %llu, cull read %llu, cull restored "
+                    "records culled after the store %llu, records kept by reach %llu, records kept unread %llu, faults %llu (unreadable bucket %llu, cull read %llu, cull restored "
                     "%llu, cull torn %llu, tick view %llu; callbacks before the first camera %llu, not faults); sun draws skipped %llu.",
                     static_cast<unsigned long long>((now - g_summaryStartMs) / 1000), static_cast<unsigned long long>(g_winSealedFrames),
                     static_cast<unsigned long long>(g_winFrames), static_cast<unsigned long long>(g_winRigVetoes),
                     static_cast<unsigned long long>(g_winProducerVetoes), static_cast<unsigned long long>(g_winCulled),
-                    static_cast<unsigned long long>(g_winKeptUnknown), static_cast<unsigned long long>(g_winFaults.load()),
+                    static_cast<unsigned long long>(g_winKeptReach.load()), static_cast<unsigned long long>(g_winKeptUnknown), static_cast<unsigned long long>(g_winFaults.load()),
                     static_cast<unsigned long long>(g_winFaultBy[kFaultBucket].load()), static_cast<unsigned long long>(g_winFaultBy[kFaultCullRead].load()),
                     static_cast<unsigned long long>(g_winFaultBy[kFaultCullRestored].load()),
                     static_cast<unsigned long long>(g_winFaultBy[kFaultCullTorn].load()),
@@ -1921,7 +1928,7 @@ void summaryLine(uint64_t now) noexcept {
     g_rigEpochs = 0;
     g_summaryStartMs = now;
     g_winFrames = g_winSealedFrames = g_winDockedFrames = g_winRigVetoes = g_winProducerVetoes = 0;
-    g_winCulled = g_winKeptUnknown = g_winFaults = 0;
+    g_winCulled = g_winKeptUnknown = g_winKeptReach = g_winFaults = 0;
     g_winNoCamera = 0;
     for (auto& f : g_winFaultBy) f = 0;
 }
@@ -2562,6 +2569,7 @@ void afterStoreJudge(uintptr_t bucket, uintptr_t record, bool judge) noexcept {
     const sealed::NamedKeep v = sealed::keepNamedCell(centre, radius, cam, kFallbackSphereM, s.cell, s.explicitPrev, s.explicitCount, record);
     bool keep = v.keep;
     const bool containing = v.containing;
+    if (v.why == sealed::KeepWhy::kReach) ++tc.keptReach;   // built 2026-10-21: counted here only (the producer path judges the same record by the same rule)
     // The bay: the own hangar's parts inside the bay volume, even where the box alone would cull them. The shaft is the cell's.
     if (!keep && s.cell.capsule) {
         float u[3] = {};

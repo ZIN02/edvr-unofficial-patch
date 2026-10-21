@@ -14,17 +14,8 @@
   P cores' extra power comes out of the GPU's clock (1824 -> 1539 MHz at the
   settlement). Entries at the end.
 
-- **State: Feature 2 (variable-rate shading) retired 2026-09-29 (code removed,
-  184eee7f).** foveation.cpp, `experimental.foveation` and the seven
-  `advanced.foveation_*` keys are gone. The Feature 2 and Feature 3 text below
-  (rings, distance, passes, outer rate) is history. DLSS where you look
-  (Feature 6, `temporal_aa_fovea_*`) was removed in the 2026-10 key cull: the
-  feature shipped off, and its keys and code are gone.
-- **State: the desk probes retired 2026-09-29 (code removed, 72247cdf).**
-  `dlaaMotionProbe`, `dlaaCropProbe` and `edvrDlaaCostProbe`, which the smoke
-  harness ran and the Feature 6 entries below cite, are deleted with
-  tools/smoke's trained-pass block. The fovea geometry they exercised stays.
-- **State (older entries):** moved to Status detail below (2026-10-15), unchanged.
+- **State (older entries):** moved to Status detail below (2026-10-15; the
+  Feature 2 and desk-probe retirements 2026-10-21), unchanged.
 - **Open:**
   - Feature 6's seam blend-band width: "a headset-on judgement" not yet
     made (under "What must be measured first").
@@ -70,6 +61,17 @@ Nothing here is implemented yet.*
 
 ## Status detail (moved out of Status 2026-09-29)
 
+- **State: Feature 2 (variable-rate shading) retired 2026-09-29 (code removed,
+  184eee7f).** foveation.cpp, `experimental.foveation` and the seven
+  `advanced.foveation_*` keys are gone. The Feature 2 and Feature 3 text below
+  (rings, distance, passes, outer rate) is history. DLSS where you look
+  (Feature 6, `temporal_aa_fovea_*`) was removed in the 2026-10 key cull: the
+  feature shipped off, and its keys and code are gone. (Moved out of Status 2026-10-21.)
+- **State: the desk probes retired 2026-09-29 (code removed, 72247cdf).**
+  `dlaaMotionProbe`, `dlaaCropProbe` and `edvrDlaaCostProbe`, which the smoke
+  harness ran and the Feature 6 entries below cite, are deleted with
+  tools/smoke's trained-pass block. The fovea geometry they exercised stays.
+  (Moved out of Status 2026-10-21.)
 - **Older State entries (moved out of Status 2026-10-15):** A pre-implementation design doc, mostly
   historical (the older State bullet and the 2026-09-23 entry: Status detail
   below). Feature 1's sharpening shipped in 0.14.0 as `render_sharpness`;

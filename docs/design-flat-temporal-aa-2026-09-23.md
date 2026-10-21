@@ -18024,3 +18024,50 @@ Fix (built, not flown): a write to a witnessed colour restarts its
 entry, so only writers after the last write speak for it. A write with no
 writer after it leaves no witness (`why=no-witness-entry`). A write to
 the depth stays a conflict, and a later colour write does not undo it.
+
+### Flown 16:29 (`786a1c80`): witness accepted on most frames, refused in clusters
+
+`edvr_gfx_20261021_162929` matches the build. On the loadout screen, 268-284
+of 300 frames per 5 s are now treated with jitter, against 150 before. The
+witness is accepted with one camera (A01CDF4B6B05ADD3), `relation=match` or
+`inverse-mismatch`, and the inverse-only repair applies. Sean: the Motion
+source view now flickers in pulses with pauses between them.
+
+The remaining 8-16 refusals per 5 s are `deferred-inverse-unproven`. Each
+is reported again as `engine-source-not-ready` for the same frame; that
+reason is the frame's final one, not the next frame's.
+
+First reading, corrected by the trace below: the refusals are not the
+`writers=1 camera=0 why=witness-camera-not-current` lines at q=8-11. Those
+were probe frames during a stand-down while the scene loaded (16:33:11 to
+16:34:04, 296 of 300 frames stood down per 5 s).
+
+The trace `flat_trace_20491.bin` (16:34:04) holds frames 20488-20491, with
+20491 refused. It was decoded through the real reducer
+(scratchpad/trace20491). In 20491:
+- the 22 camera-bearing G-buffer writers are all present (camera
+  8DCD81D259CCBA2C, b1 7AC7B8E0);
+- between them and the lighting pass, the game renders an auxiliary
+  612x436 deferred scene on its own depth, which rewrites the shared b1
+  buffer with its camera (A940677EFC9D02A6);
+- the sun-shadow resolve pairs 53211E8C/7EAC7196 and 53211E8C/B403F48C then
+  write an R8 target on the main depth with that camera still bound. They
+  open a second witness entry, and rule (d) refuses as
+  `second-camera-on-depth`.
+
+Accepted frames 20488-20490 have no auxiliary scene there.
+`flat_trace_13455.bin` (15:53) shows the same pattern. VS 53211E8C declares
+no constant buffer; PS B403F48C is empty; PS 7EAC7196 reads only its own
+cb2. So the veto is a false positive. `flatMatchDeferredCamera` on 20491's
+own CB2 gives `inverse-mismatch` against the 22-writer camera, as in every
+accepted frame.
+
+Correction to the 15:51 entry: "a second camera on the loadout depth"
+was ruled out for that flight only. In this flight a stale b1 binding on
+b1-free shaders is the blocker in the auxiliary-scene frames.
+
+Fix (built, not flown): `flatProjectionB1Unread`. It covers the verified
+inert pairs (`flatProjectionDrawUnchanged`, now in the D3D-free
+`flat_inert_pairs.h`) plus 53211E8C/7EAC7196. The witness neither opens
+nor conflicts an entry for them. Refused witness lines get their own
+5-second log budget, so accepted frames cannot hide them.

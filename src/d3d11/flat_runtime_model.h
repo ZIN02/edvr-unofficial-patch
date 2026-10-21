@@ -2,6 +2,7 @@
 #include "flat_mono_frame.h"
 #include "flat_deferred_camera.h"
 #include "flat_forward_light.h"
+#include "flat_inert_pairs.h"
 #include <optional>
 
 namespace edvr {
@@ -296,6 +297,7 @@ inline bool flatRuntimeCameraCurrent(const FlatRuntimeDraw& d, uint32_t q, uint6
 // d.camera (the runtime's camera table answers every draw), so nothing is copied here but the first writer's 96 bytes.
 inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& d, uint32_t q) {
     const auto& k = d.key;
+    if (flatProjectionB1Unread(k.vs, k.ps)) return;   // its bound b1 is not a camera it drew with
     for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == k.depth) return;
     FlatRuntimeCameraWitness* e = nullptr;
     for (uint32_t i = 0; i < p.witnessesUsed; ++i)

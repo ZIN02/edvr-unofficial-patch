@@ -522,7 +522,7 @@ struct State {
     uint32_t hdrCaptureWriteEvictions = 0;
     uint64_t deferredCameraChecks = 0, deferredCameraAccepted = 0, deferredCameraRefused = 0;
     uint64_t deferredCameraLastLog = 0, deferredInverseLastLog = 0, deferredInverseExecutions = 0;
-    uint64_t deferredWitnessCalls = 0, deferredWitnessLastLog = 0;
+    uint64_t deferredWitnessCalls = 0, deferredWitnessLastLog = 0, deferredWitnessRefusedLastLog = 0;
     bool deferredInverseLastBound = false;
     // The prepared clone this draw is about to execute rewrites the whole camera, not just the rays.
     bool deferredRepairWhole = false, deferredInverseLastWhole = false;
@@ -2143,15 +2143,17 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     } else ++s.deferredCameraRefused;
     const uint64_t now=GetTickCount64();
     // The pool rule found no record on this depth: the witness of the G-buffer writers was the only donor to be had, and this says what it
-    // saw. First occurrence, then at most once per 5 s, the ownership report's budget.
-    if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,s.deferredWitnessLastLog)) {
+    // saw. First occurrence, then at most once per 5 s, the ownership report's budget -- a refusal on its own budget, so frames that
+    // pass cannot hide the ones that do not.
+    uint64_t& witnessLastLog=donor?s.deferredWitnessLastLog:s.deferredWitnessRefusedLastLog;
+    if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,witnessLastLog)) {
         Log::get().note("flat deferred witness: frame=%llu q=%u H=%p depth=%p SRV0=%p entry=%u writers=%u entries-on-depth=%u distinct-cameras=%u conflict=%s overflow=%u camera=%016llX b1=%p veto=%p veto-b1=%p veto-camera=%016llX donor-role=%s why=%s relation=%s accepted=%u calls=%llu; no source record on this depth, the G-buffer writers' camera stands in only where every writer on the depth agrees",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.depth,k.srvResource[0],donor.entry?1u:0u,donor.writers,
             donor.witnessEntries,donor.witnessCameras,flatWitnessConflictName(donor.conflict),donor.overflow?1u:0u,
             (unsigned long long)donor.entryCameraHash,donor.entryB1,donor.vetoColor,donor.vetoB1,(unsigned long long)donor.vetoHash,
             flatDeferredDonorRoleName(donor.role),flatDeferredDonorWhyName(donor.why),
             flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredWitnessCalls);
-        s.deferredWitnessLastLog=now;
+        witnessLastLog=now;
     }
     if(s.deferredCameraChecks<=8 ||
        (nonzero && !s.deferredCameraNonzeroLogged) || now-s.deferredCameraLastLog>=5000) {

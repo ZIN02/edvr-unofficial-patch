@@ -310,6 +310,29 @@ inline unsigned run() {
         z.see(z.writer());
         expect(!z.donor(z.lighting()) && z.entry(z.gbuf)->conflict == FlatWitnessConflict::Written,
                "a colour write after a depth write does not undo it");
+        // pairs that never read VS b1 (flatProjectionB1Unread) neither open nor conflict an entry, whatever b1 they inherit
+        const auto filter = [](Scene& sc, const void* colour, uint64_t vs, uint64_t ps, float nearPlane) {
+            auto d = draw(colour, 60, sc.depth, sc.dsv, vs, ps);
+            d.key.kind = kFlatContractScreen;
+            camera(d, kFrame, sc.p->sequence + 1, nearPlane);
+            return d;
+        };
+        Scene sr;  // the loadout's sun-shadow resolve after an auxiliary scene left its camera in b1 (flat_trace_20491)
+        sr.see(sr.writer());
+        sr.see(filter(sr, token(0x1300), 0x53211E8C072CD02Eull, 0x7EAC71963E66C5FEull, .5f));
+        sr.see(filter(sr, token(0x1300), 0x53211E8C072CD02Eull, 0xB403F48CB35D9739ull, .5f));
+        expect(sr.donor(sr.lighting()).role == Role::Witness && !sr.entry(token(0x1300)) && sr.donor(sr.lighting()).witnessCameras == 1,
+               "the b1-free sun-shadow pairs with a stale camera: no entry, no veto");
+        sr.see(filter(sr, token(0x1300), 0x53211E8C072CD02Eull, 0x7EAC71963E66C5FFull, .5f));
+        expect(!sr.donor(sr.lighting()) && sr.donor(sr.lighting()).why == Why::OtherCamera, "one PS bit away it is a second camera: none");
+        Scene ia;  // an inert pair writing SRV0 first opens no entry
+        ia.see(filter(ia, ia.gbuf, 0xE8FDC0D92EEBA6D7ull, 0x258B95AC99520C1Full, .5f));
+        expect(!ia.entry(ia.gbuf) && !ia.donor(ia.lighting()) && ia.donor(ia.lighting()).why == Why::NoEntry, "an inert pair alone on SRV0: none");
+        ia.see(ia.writer());
+        expect(ia.donor(ia.lighting()).role == Role::Witness && ia.entry(ia.gbuf)->writers == 1, "the first camera writer after it opens the entry");
+        expect(flatProjectionB1Unread(0x53211E8C072CD02Eull, 0x7EAC71963E66C5FEull) && flatProjectionB1Unread(0xFC1193AFFC596F74ull, 0x258B95AC99520C1Full) &&
+               !flatProjectionB1Unread(0x53211E8C072CD02Eull, 0x7EAC71963E66C5FFull) && !flatProjectionB1Unread(0x114AF608F86D9ED8ull, kPreviewPs),
+               "b1-free pairs are exact");
         Scene y;   // a compute pass writing the G-buffer through a UAV
         y.see(y.writer());
         flatRuntimeDispatchObserveWritten(*y.p, token(0x7777));
@@ -392,9 +415,10 @@ inline unsigned run() {
                verifier.find("donor-role=%s source=%p") != std::string::npos && verifier.find("flatDeferredDonorRoleName(donor.role)") != std::string::npos,
                "the HDR camera line, the ownership line and the witness line each name the donor role once");
         expect(runtime.find("flatDeferredDonorOwnershipName(donor.role)") != std::string::npos &&
-               verifier.find("if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,s.deferredWitnessLastLog)) {") != std::string::npos &&
-               verifier.find("s.deferredWitnessLastLog=now;") != std::string::npos,
-               "the witness line is printed only where the pool rule had no record, first occurrence and then every 5 s");
+               verifier.find("uint64_t& witnessLastLog=donor?s.deferredWitnessLastLog:s.deferredWitnessRefusedLastLog;") != std::string::npos &&
+               verifier.find("if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,witnessLastLog)) {") != std::string::npos &&
+               verifier.find("witnessLastLog=now;") != std::string::npos,
+               "the witness line is printed only where the pool rule had no record, first occurrence and then every 5 s, refusals on their own budget");
         // the witness line is written after the relation is known and before the HDR camera line, inside the verifier's one exit
         const auto relation = verifier.find("const auto match=donor && copied?");
         const auto line = verifier.find("flat deferred witness:");

@@ -2,8 +2,8 @@
 
 ## Status
 
-- **State (2026-10-20 21:00): the bloom chain's bytecode is read; nothing
-  built.** Base Elite with EDVR's AA off: the flat System Map and loading
+- **State (2026-10-20 21:20): the stripes are confirmed as undithered
+  8-bit banding (lossless shots); nothing built.** Base Elite with EDVR's AA off: the flat System Map and loading
   screens, on builds 332841 and 334473. The chain was dumped on the 20:49
   flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
   lets flat read `advanced.glare_shader_dump`. See "The chain's bytecode".
@@ -18,9 +18,9 @@
   banded glow, and the named bloom shaders have the same hashes on both
   builds.
 - **Open hypotheses, ranked:**
-  1. Output quantization: the tone pass writes 8-bit with no dither, which
-     bands a wide, dim glow on black. Confirm with a lossless screenshot
-     showing 1-code steps.
+  1. **Confirmed:** output quantization. The tone pass writes 8-bit with no
+     dither, so a wide, dim glow on black falls in clean one-code bands,
+     up to 99 px wide at codes 1 and 2 (see "Lossless loading screens").
   2. Tent offsets wider than a texel. If Ultra's `FilterRadius 3` and
      `FilterRadiusWide 4` scale the tents' cb2 offsets, each up pass adds
      nine copies of the coarser level up to 3-4 texels apart (150-200
@@ -40,10 +40,9 @@
     code 60.
   - Temporal threshold instability: the artifact is in still frames.
   - The 4.4.2.0 update: see above.
-- **Next capture (needs no new code):** one loading screen at Bloom Medium,
-  High and Ultra, AA off (F7), each saved with Steam's uncompressed copy.
-  Bands at all three settings point to 1. Lumps only at High and Ultra
-  point to 2.
+- **Next:** which Bloom tier the 21:15:15 and 21:16:01 shots used (only
+  21:16:39 is known, Ultra), to judge 2. At 8-10x gain no texel-grid lumps
+  show in any of the three.
 - **Fix (gated on that capture):**
   - for 1, dither the tone write by swapping the known tone pixel shaders;
   - for 2, swap `8826CACC` for a dense tent of the same footprint.
@@ -324,3 +323,25 @@ half-texel. Any offset error would have to be in the CPU-side cb2 values;
 the measured centre offset bounds it to under a pixel at screen centre.
 The two offset sets and Ultra's `FilterRadius 3` / `FilterRadiusWide 4`
 match one-for-one, which is what hypothesis 2 rests on.
+
+## Lossless loading screens (2026-10-20, 21:15-21:17)
+
+Build `98ba10fa` (rebased on `aed71854`), AA off, SSAA 1.0 from launch
+(HDR 1920x1200; levels 960x600 down to 60x37). There were three Steam
+uncompressed copies, each taken right after a reload from the main menu
+(journal `LoadGame` 03:15:13, 03:15:57, 03:16:35 UTC). Elite wrote
+`Custom.4.4.fxcfg` once, at 21:16:20 (BloomQuality 3), so only the last
+shot's tier is known.
+
+- **The output is not dithered.** Every R code from 0 to 20 occurs, so the
+  JPEGs' even-only plateaus (0, 2, 4) were JPEG DC quantization. 76-88% of
+  R steps and 90-98% of G steps in the tails are exactly one code; larger
+  steps sit on lines and hull texture. The tail rows are monotone runs with
+  no back-and-forth flips. Right of the nose in the Ultra shot, codes 5 to
+  1 each hold 8-10 px; above the ship in the 21:15:15 shot, code 1 holds
+  99 px. That is the striping, and fix A addresses exactly that.
+- **No texel-grid lumps.** At 8-10x gain the outer contours are one-code
+  iso-lines stepping on the pixel grid, not 16 px or 32 px blocks. The
+  glow's shape follows the ship.
+- **Reach differs by shot.** Right of the nose, the glow reaches code 0 at
+  64 px in the 21:16:01 shot and at 147 px in the Ultra shot.

@@ -35,5 +35,5 @@ third_party/openxr/loader/
 # carries what the repo needs, the review's own ledger does not ship.
 reviews/
 
-# Agent working folder. Files already tracked here stay tracked; new files need `git add -f`.
-.agents/
+# Per-build scratch under .agents/. Other agent material there stays committed.
+.agents/build-*/

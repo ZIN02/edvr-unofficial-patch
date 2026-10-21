@@ -82,6 +82,11 @@ import time
 import types
 from pathlib import Path
 
+try:
+    from tools import steam_library
+except ImportError:
+    import steam_library
+
 GAME_EXE = "EliteDangerous64.exe"
 
 NATIVE_RECEIPT_VERSION = 1
@@ -129,9 +134,9 @@ def _descriptor_scope(path):
 def native_paths(root, target):
     """The deliberately separate native package and its paired graphics DLL."""
     return {
-        "native_source": os.path.join(root, "build", "edvr_openxr_runtime.dll"),
+        "native_source": os.path.join(build_dir(root), "edvr_openxr_runtime.dll"),
         # Native startup routing is compiled into a distinct graphics image.
-        "graphics_source": os.path.join(root, "build", "edvr_openxr_graphics.dll"),
+        "graphics_source": os.path.join(build_dir(root), "edvr_openxr_graphics.dll"),
         "native_target": os.path.join(target, "Openvr", "win64", "openvr_api.dll"),
         "graphics_target": os.path.join(target, "d3d11.dll"),
         "original": os.path.join(target, "Openvr", "win64", "openvr_api_orig.dll"),
@@ -140,6 +145,10 @@ def native_paths(root, target):
 
 
 GAME_PROBE_ATTEMPTS = 4
+# Which kind of host the stopped-game probe reads: Windows asks Toolhelp32 or
+# tasklist; anything else (the Linux test-flight path, where Elite runs under
+# Proton) reads /proc. A Wine-hosted Python cannot see Proton's processes.
+GAME_PROBE_WINDOWS = os.name == "nt"
 GAME_PROBE_PAUSE = 0.4
 _LAST_PROBE_REASON = ""
 
@@ -254,9 +263,40 @@ def _game_pids_toolhelp(exe=None):
         k32.CloseHandle(snap)
 
 
+def _game_pids_proc(exe=None, proc="/proc"):
+    """PIDs of the game from /proc (Linux, Proton). The kernel truncates a
+    process name to 15 characters, so EliteDangerous64.exe is the comm
+    "EliteDangerous6"; match that prefix, any case. `exe` and `proc` are
+    the self-test's."""
+    want = (exe or GAME_EXE)[:15].lower()
+    pids, seen = [], 0
+    try:
+        names = os.listdir(proc)
+    except OSError as exc:
+        raise _ProbeError("cannot list %s: %s" % (proc, exc))
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc, name, "comm"), "r", encoding="utf-8", errors="replace") as f:
+                comm = f.read().strip()
+        except FileNotFoundError:
+            continue                    # exited between the listing and the read
+        except OSError as exc:
+            raise _ProbeError("cannot read process %s: %s" % (name, exc))
+        seen += 1
+        if comm.lower() == want:
+            pids.append(int(name))
+    if not seen:
+        raise _ProbeError("%s lists no processes" % proc)
+    return pids
+
+
 def _game_pids():
     """Game PIDs by the first method that reads the list; both failing raises
     with both reasons."""
+    if not GAME_PROBE_WINDOWS:
+        return _game_pids_proc()
     reasons = []
     for name, probe in (("toolhelp", _game_pids_toolhelp),
                         ("tasklist", _game_pids_tasklist)):
@@ -275,7 +315,9 @@ def _probe_game_once(target):
         pids = _game_pids()
     except _ProbeError as exc:
         return False, False, str(exc)
-    if target is None:
+    if target is None or not GAME_PROBE_WINDOWS:
+        # /proc has no Windows image path to compare with a target: any running
+        # game counts, the conservative direction for a tool that replaces DLLs.
         return True, bool(pids), ""
     images = [_process_image_path(pid) for pid in pids]
     known, running = game_running_in(target, images)
@@ -880,6 +922,18 @@ def _rc3_flat_ini_target(target):
 
 
 def _validate_v2_receipt(r):
+    """Validate a v2 receipt against the build directory it was installed from."""
+    global _BUILD_OVERRIDE
+    saved = _BUILD_OVERRIDE
+    if isinstance(r, dict) and r.get("build") == COMPILE_ONLY_MARK and isinstance(r.get("root"), str):
+        _BUILD_OVERRIDE = compile_build_dir(r["root"])
+    try:
+        return _validate_v2_receipt_in(r)
+    finally:
+        _BUILD_OVERRIDE = saved
+
+
+def _validate_v2_receipt_in(r):
     if not isinstance(r, dict) or r.get("version") != 2 or r.get("kind") not in (NATIVE_KIND, FLAT_KIND) or r.get("state") != "installed":
         raise ValueError("receipt is not an installed EDVR v2 package")
     target, root, files = r.get("target"), r.get("root"), r.get("files")
@@ -912,10 +966,10 @@ def _validate_v2_receipt(r):
         raise ValueError("incomplete or duplicate EDVR v2 components")
     if r["kind"] == FLAT_KIND:
         sources = {"graphics": paths["graphics"],
-                   "dlss": os.path.join(root, "build", "nvngx_dlss.dll"),
-                   "xess": os.path.join(root, "build", "libxess.dll"),
-                   "xess_license": os.path.join(root, "build", "INTEL-XESS-LICENSE.txt"),
-                   "xess_third_party": os.path.join(root, "build", "INTEL-XESS-THIRD-PARTY.txt"),
+                   "dlss": os.path.join(build_dir(root), "nvngx_dlss.dll"),
+                   "xess": os.path.join(build_dir(root), "libxess.dll"),
+                   "xess_license": os.path.join(build_dir(root), "INTEL-XESS-LICENSE.txt"),
+                   "xess_third_party": os.path.join(build_dir(root), "INTEL-XESS-THIRD-PARTY.txt"),
                    "ini": _ini_source(root, "flat"), "profile": "generated"}
         for e in files:
             expected = sources[e["key"]]
@@ -1028,6 +1082,131 @@ def short_hash(root):
     except (OSError, subprocess.SubprocessError):
         pass
     return "nogit"
+
+
+# A compile-only build is the Linux (Steam Deck, Proton) test-flight path: the
+# Wine toolchain in .toolchains/windows/ compiles the production DLLs without
+# any of build.bat's validation gates (AGENTS.md, "Build and verify before
+# commit"). --compile-only installs from its output directory instead of
+# <root>/build, refuses when the tree has moved since the compile, and marks
+# the install receipt so it is never mistaken for a validated build.
+COMPILE_ONLY_KIND = "local-wine-production-dll-compile-only"
+COMPILE_ONLY_MARK = "compile-only"
+COMPILE_ONLY_BUILD_CMD = ('.toolchains/windows/host/powershell/pwsh -Command '
+                          '"python3 .toolchains/windows/toolchain.py build-dlls%s"')
+_BUILD_OVERRIDE = None
+
+
+def build_dir(root):
+    """Where the build's products are: <root>/build, or the compile-only output."""
+    return _BUILD_OVERRIDE or os.path.join(root, "build")
+
+
+def _set_build_override(path):
+    global _BUILD_OVERRIDE
+    _BUILD_OVERRIDE = path
+
+
+def compile_build_dir(root):
+    """Where a compile-only build of `root` lands. The main checkout holds the
+    toolchain, so its output is inside it; any other tree (a worktree) keeps
+    its output in its own ignored build/, which a fingerprint never sees."""
+    toolchain = os.path.join(root, ".toolchains", "windows")
+    if os.path.isdir(toolchain):
+        return os.path.join(toolchain, "compile-build")
+    return os.path.join(root, "build", "compile-build")
+
+
+def _toolchain_dir(root):
+    """The Linux toolchain's folder (device-local, not in git), or None."""
+    env = os.environ.get("EDVR_TOOLCHAIN_DIR")
+    if env:
+        return env if os.path.isfile(os.path.join(env, "compile_only.py")) else None
+    bases = [root, repo_root()]
+    try:   # a worktree's toolchain is the main checkout's
+        common = subprocess.run(["git", "-C", root, "rev-parse", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        if common:
+            bases.append(os.path.dirname(os.path.abspath(os.path.join(root, common))))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for base in bases:
+        d = os.path.join(base, ".toolchains", "windows")
+        if os.path.isfile(os.path.join(d, "compile_only.py")):
+            return d
+    return None
+
+
+def compile_only_fingerprint(root):
+    """The tree's source fingerprint, computed by compile_only.py itself so the
+    receipt and this check can never drift apart."""
+    import importlib.util
+    d = _toolchain_dir(root)
+    if d is None:
+        raise SystemExit("[edvr] --compile-only needs the Linux toolchain's "
+                         ".toolchains/windows/compile_only.py (device-local, not in git).")
+    spec = importlib.util.spec_from_file_location("edvr_compile_only", os.path.join(d, "compile_only.py"))
+    module = importlib.util.module_from_spec(spec)
+    keep = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, d)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(d)
+        sys.dont_write_bytecode = keep
+    module.ROOT = Path(root)
+    module.SOURCE = module.ROOT / "build.bat"
+    return module.source_fingerprint()
+
+
+def compile_only_build(root, require_current=True, out=print):
+    """The compile-only build directory for `root`, or SystemExit saying why not.
+
+    Refuses without a receipt, with outputs that no longer match it, and (when
+    `require_current`) when the tree is not the one that was compiled. A
+    --verify-only passes require_current=False: it compares the game directory
+    to the build, and a moved tree is a warning there, not a reason to look away.
+    """
+    bdir = compile_build_dir(root)
+    receipt_path = os.path.join(bdir, "compile_only_receipt.json")
+    redo = COMPILE_ONLY_BUILD_CMD % ("" if bdir.startswith(os.path.join(root, ".toolchains")) else " --root " + root)
+    if not os.path.isfile(receipt_path):
+        raise SystemExit("[edvr] no compile-only receipt at %s\n       compile first: %s" % (receipt_path, redo))
+    try:
+        with open(receipt_path, "r", encoding="utf-8") as f:
+            receipt = json.load(f)
+        outputs = receipt["outputs"]
+        fingerprint = receipt["source_fingerprint"]
+        if receipt.get("kind") != COMPILE_ONLY_KIND or receipt.get("validated") is not False \
+                or not isinstance(outputs, dict) or not outputs or not isinstance(fingerprint, str):
+            raise ValueError("not a compile-only receipt")
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit("[edvr] %s is not a usable compile-only receipt (%s)\n       compile again: %s"
+                         % (receipt_path, exc, redo))
+    for name, record in sorted(outputs.items()):
+        path = os.path.join(bdir, name)
+        if not os.path.isfile(path) or not isinstance(record, dict) or \
+                sha256(path).lower() != str(record.get("sha256", "")).lower():
+            raise SystemExit("[edvr] %s no longer matches the compile-only receipt (a compile in "
+                             "progress, or a stale copy)\n       compile again: %s" % (path, redo))
+    out("[edvr] COMPILE-ONLY build, NOT Windows validated and NOT a release asset: %s" % bdir)
+    current = compile_only_fingerprint(root) == fingerprint
+    if not current:
+        message = ("the tree %s is not the one this build was compiled from "
+                   "(commit or edit since, or another branch)" % root)
+        if require_current:
+            raise SystemExit("[edvr] refusing: %s\n       compile again: %s" % (message, redo))
+        out("[edvr] WARNING: %s; --verify-only compares the game directory to the build, not to the tree" % message)
+    try:
+        dirty = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        dirty = ""
+    if dirty:
+        out("[edvr] WARNING: the tree is dirty, so these DLLs report a -dirty version and edvr_log.py "
+            "--expect-build HEAD will not match them; commit, then compile, before a build that will be flown")
+    return bdir
 
 
 def backup_name(dst, tag, now=None):
@@ -1211,44 +1390,10 @@ def _products_under(root):
 
 
 def steam_dirs():
-    roots = []
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Valve\Steam") as k:
-            roots.append(winreg.QueryValueEx(k, "SteamPath")[0])
-    except (ImportError, OSError):
-        pass
-    # Every library, not just the default one: the game is routinely on a
-    # different drive from Steam itself.
-    libs = list(roots)
-    for r in list(roots):
-        vdf = os.path.join(r, "steamapps", "libraryfolders.vdf")
-        if not os.path.isfile(vdf):
-            continue
-        try:
-            with open(vdf, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    parts = line.split('"')
-                    if len(parts) >= 5 and parts[1] == "path":
-                        libs.append(parts[3].replace("\\\\", "\\"))
-        except OSError:
-            pass
-    # A plain fallback for a rig whose registry entry has gone missing.
-    libs.append(r"C:\Steam")
-    # Deduplicated case- and separator-insensitively. The registry hands
-    # back `c:/steam` and the fallback is `C:\Steam`; compared as strings
-    # those are two installs, and the tool then refuses to act because it
-    # has "found two" -- the same directory, twice.
-    out, seen = [], set()
-    for lib in libs:
-        base = os.path.join(lib, "steamapps", "common", "Elite Dangerous")
-        for leaf in _products_under(base):
-            key = os.path.normcase(os.path.normpath(leaf))
-            if key not in seen:
-                seen.add(key)
-                out.append(os.path.normpath(leaf))
-    return out
+    # One resolver for this tool and edvr_log.py: the Windows registry and
+    # every library its libraryfolders.vdf names, or on Linux (Steam Deck,
+    # Proton) ~/.local/share/Steam and ~/.steam/steam.
+    return steam_library.steam_dirs(GAME_EXE)
 
 
 def frontier_dirs():
@@ -1349,10 +1494,10 @@ def native_direct_verify(root, target, loader, runtime):
 def _standard_native_paths(root, target):
     """Files owned by the normal native OpenXR installation."""
     xr = os.path.join(target, "Openvr", "win64")
-    return {"runtime": os.path.join(root, "build", "edvr_openxr_runtime.dll"),
-            "graphics": os.path.join(root, "build", "edvr_openxr_graphics.dll"),
-            "loader": os.path.join(root, "build", "openxr_loader.dll"),
-            "notice": os.path.join(root, "build", "OPENXR-LOADER-LICENSE.txt"),
+    return {"runtime": os.path.join(build_dir(root), "edvr_openxr_runtime.dll"),
+            "graphics": os.path.join(build_dir(root), "edvr_openxr_graphics.dll"),
+            "loader": os.path.join(build_dir(root), "openxr_loader.dll"),
+            "notice": os.path.join(build_dir(root), "OPENXR-LOADER-LICENSE.txt"),
             "runtime_target": os.path.join(xr, "openvr_api.dll"),
             "graphics_target": os.path.join(target, "d3d11.dll"),
             "loader_target": os.path.join(xr, "openxr_loader.dll"),
@@ -1362,7 +1507,7 @@ def _standard_native_paths(root, target):
 
 
 def _flat_paths(root, target):
-    return {"graphics": os.path.join(root, "build", "d3d11.dll"),
+    return {"graphics": os.path.join(build_dir(root), "d3d11.dll"),
             "graphics_target": os.path.join(target, "d3d11.dll"),
             "game": os.path.join(target, GAME_EXE)}
 
@@ -1370,7 +1515,7 @@ def _flat_paths(root, target):
 def _ini_source(root, half):
     """The template for a settings file: `vr` or `flat`, one per half."""
     return os.path.join(root, "edvr.ini") if half == "vr" else \
-        os.path.join(root, "build", "edvr-flat.ini")
+        os.path.join(build_dir(root), "edvr-flat.ini")
 
 
 def _ini_target(target, half):
@@ -1693,15 +1838,15 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
     payload = ("runtime", "graphics", "loader", "notice") if native else ("graphics",)
     errors = ["missing %s source %s" % ("native" if native else "flat", p[k]) for k in payload
               if not os.path.isfile(p[k])]
-    if include_dlss and not os.path.isfile(os.path.join(root, "build", "nvngx_dlss.dll")):
-        errors.append("missing optional DLSS source %s" % os.path.join(root, "build", "nvngx_dlss.dll"))
+    if include_dlss and not os.path.isfile(os.path.join(build_dir(root), "nvngx_dlss.dll")):
+        errors.append("missing optional DLSS source %s" % os.path.join(build_dir(root), "nvngx_dlss.dll"))
     xess_names = (("xess", "libxess.dll"), ("xess_license", "INTEL-XESS-LICENSE.txt"),
                   ("xess_third_party", "INTEL-XESS-THIRD-PARTY.txt"))
     # XeSS-SR ships with every scope: the flat half and the VR half both select it.
     if include_xess:
         for key, name in xess_names:
-            if not os.path.isfile(os.path.join(root, "build", name)):
-                errors.append("missing XeSS source %s" % os.path.join(root, "build", name))
+            if not os.path.isfile(os.path.join(build_dir(root), name)):
+                errors.append("missing XeSS source %s" % os.path.join(build_dir(root), name))
     # Each settings file the scope owns, as (source, target, receipt key).
     ini_pairs = _ini_pairs(root, target, scope)
     if include_ini:
@@ -1716,7 +1861,7 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
     if native:
         try:
             import fetch_openxr_loader
-            fetch_openxr_loader.verify(os.path.join(root, "build"))
+            fetch_openxr_loader.verify(build_dir(root))
         except (ImportError, OSError, ValueError) as exc:
             raise SystemExit("[edvr] pinned OpenXR loader verification failed: %s" % exc)
         try:
@@ -1762,13 +1907,13 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
         if scope == "flat" and _flat_vr_leftovers(target):
             print("[edvr] flat verify mismatch: VR components remain"); ok = False
         if include_dlss:
-            dlss = os.path.join(root, "build", "nvngx_dlss.dll")
+            dlss = os.path.join(build_dir(root), "nvngx_dlss.dll")
             dst = os.path.join(target, "nvngx_dlss.dll")
             if not os.path.isfile(dst) or sha256(dst) != sha256(dlss):
                 print("[edvr] %s verify mismatch: %s" % (scope, dst)); ok = False
         if include_xess:
             for key, name in xess_names:
-                src = os.path.join(root, "build", name); dst = os.path.join(target, name)
+                src = os.path.join(build_dir(root), name); dst = os.path.join(target, name)
                 if not os.path.isfile(dst) or sha256(dst) != sha256(src):
                     print("[edvr] %s verify mismatch: %s" % (scope, dst)); ok = False
         elif _selects_xess(target, scope):
@@ -1776,9 +1921,9 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
             # A selected XeSS mode must never be reported as fully verified
             # unless the runtime and its notices match this build.
             missing = [name for _, name in xess_names
-                       if not os.path.isfile(os.path.join(root, "build", name)) or
+                       if not os.path.isfile(os.path.join(build_dir(root), name)) or
                        not os.path.isfile(os.path.join(target, name)) or
-                       sha256(os.path.join(root, "build", name)) != sha256(os.path.join(target, name))]
+                       sha256(os.path.join(build_dir(root), name)) != sha256(os.path.join(target, name))]
             if missing:
                 print("[edvr] WARNING: the ini selects XeSS but its runtime/notices are not verified "
                       "(%s); install with --xess" % ", ".join(missing))
@@ -1813,14 +1958,14 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                         "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
                     "installed_sha256": sha256(p[key])})
     if include_dlss:
-        src = os.path.join(root, "build", "nvngx_dlss.dll"); dst = os.path.join(target, "nvngx_dlss.dll")
+        src = os.path.join(build_dir(root), "nvngx_dlss.dll"); dst = os.path.join(target, "nvngx_dlss.dll")
         entries.append({"key": "dlss", "source": os.path.abspath(src), "target": os.path.abspath(dst),
                         "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
                         "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
                         "installed_sha256": sha256(src)})
     if include_xess:
         for key, name in xess_names:
-            src = os.path.join(root, "build", name); dst = os.path.join(target, name)
+            src = os.path.join(build_dir(root), name); dst = os.path.join(target, name)
             entries.append({"key": key, "source": os.path.abspath(src), "target": os.path.abspath(dst),
                             "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
                             "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
@@ -1869,7 +2014,7 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                        plan={"receipt": receipt, "backups": [e["backup"] for e in entries if e["backup"]]})
         print("[edvr] dry run: wrote nothing."); return 0
     journal = {"version": 2, "kind": NATIVE_KIND if native else FLAT_KIND, "target": os.path.abspath(target),
-               "root": os.path.abspath(root), "state": "staging", "files": entries}
+               "root": os.path.abspath(root), "state": "staging", "files": entries, **({"build": COMPILE_ONLY_MARK} if _BUILD_OVERRIDE else {})}
     made, changed = [], []
     receipt_owned = False
     try:
@@ -2407,6 +2552,13 @@ def _scope_self_test():
 
 
 def main(argv=None):
+    try:
+        return _main(argv)
+    finally:
+        _set_build_override(None)       # --compile-only is per invocation, never left behind
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(
         description="Install a built EDVR into a game directory, verified.")
     ap.add_argument("--target", default="steam",
@@ -2419,6 +2571,12 @@ def main(argv=None):
                     help="the tree to install FROM; defaults to this "
                          "script's own repository, which is what you want "
                          "unless you are installing another worktree's build")
+    ap.add_argument("--compile-only", action="store_true",
+                    help="install the Linux toolchain's compile-only build "
+                         "(.toolchains/windows/compile-build, or <root>/build/compile-build "
+                         "for a worktree) instead of <root>/build. Refused when its receipt "
+                         "does not match this tree; the build is not Windows validated. "
+                         "Compile with: %s" % (COMPILE_ONLY_BUILD_CMD % ""))
     ap.add_argument("--dll", action="store_true",
                     help="compatibility alias: install the complete native package")
     ap.add_argument("--openvr", action="store_true",
@@ -2472,6 +2630,11 @@ def main(argv=None):
 
     if args.self_test:
         return _run_self_test_labelled()
+
+    if args.compile_only and (args.retire_stale_native_receipt or args.restore_native or args.suspend
+                              or args.resume or args.native_openxr):
+        ap.error("--compile-only is for the standard install and --verify-only; "
+                 "it takes no restore, suspend or native-openxr option")
 
     if args.retire_stale_native_receipt:
         if any((args.scope, args.profile, args.root, args.native_openxr, args.native_receipt,
@@ -2567,16 +2730,18 @@ def main(argv=None):
     root = os.path.abspath(args.root) if args.root else repo_root()
     target = resolve_target(args.target)
     tag = args.tag or short_hash(root)
-    dlss_source = os.path.join(root, "build", "nvngx_dlss.dll")
+    if args.compile_only:
+        _set_build_override(compile_only_build(root, require_current=not args.verify_only))
+    dlss_source = os.path.join(build_dir(root), "nvngx_dlss.dll")
     if args.force or args.no_backup:
         ap.error("normal native installation requires a stopped game and transactional backups")
     if scope == "flat" and (args.dll or args.openvr):
         ap.error("--scope flat cannot be combined with --dll or --openvr")
     if args.dlss and not os.path.isfile(dlss_source):
-        ap.error("--dlss requested but build/nvngx_dlss.dll is missing")
-    xess_source = os.path.join(root, "build", "libxess.dll")
+        ap.error("--dlss requested but %s is missing" % dlss_source)
+    xess_source = os.path.join(build_dir(root), "libxess.dll")
     if args.xess and not os.path.isfile(xess_source):
-        ap.error("--xess requested but build/libxess.dll is missing")
+        ap.error("--xess requested but %s is missing" % xess_source)
     return standard_native_install(root, target, tag, args.dry_run,
                                    args.verify_only,
                                    include_dlss=(args.dlss or (args.all and os.path.isfile(dlss_source))),
@@ -2741,16 +2906,18 @@ def _prune_self_test():
                   "an unreadable current receipt (%s) prunes nothing and says so: %r" % (label, text))
 
         # --- a backup that cannot be removed is said and does not stop the rest --------
+        # (a read-only file is unremovable on Windows; on POSIX removal needs only the directory)
         game, xr = new_game()
         gfx = backups(game, "d3d11.dll", 7)
-        os.chmod(gfx[0], stat.S_IREAD)
-        try:
-            removed, text = quiet(prune_backups, game, 5)
-            check(removed == [gfx[1]] and not os.path.exists(gfx[1]) and os.path.exists(gfx[0])
-                  and "could not prune" in text,
-                  "an unremovable backup is reported and the others still go: %r %r" % (removed, text))
-        finally:
-            os.chmod(gfx[0], stat.S_IWRITE | stat.S_IREAD)
+        if os.name == "nt":
+            os.chmod(gfx[0], stat.S_IREAD)
+            try:
+                removed, text = quiet(prune_backups, game, 5)
+                check(removed == [gfx[1]] and not os.path.exists(gfx[1]) and os.path.exists(gfx[0])
+                      and "could not prune" in text,
+                      "an unremovable backup is reported and the others still go: %r %r" % (removed, text))
+            finally:
+                os.chmod(gfx[0], stat.S_IWRITE | stat.S_IREAD)
 
         # --- through main(): a good install prunes; a dry run and a refused count do not ---
         import fetch_openxr_loader as _prune_loader
@@ -2913,6 +3080,163 @@ def _xess_opt_in_self_test():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _compile_only_self_test():
+    """--compile-only: installs from the compile-only output and not from build/,
+    refuses a tree that has moved or an output that changed, marks its receipt,
+    verifies against the compile-only build -- and its --dry-run writes nothing."""
+    import contextlib
+    import io
+
+    def git(root, *args):
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+    def run(args):
+        """(exit code or the SystemExit text, stdout)"""
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = main(args)
+        except SystemExit as stop:
+            code = stop.code
+        return code, out.getvalue()
+
+    tmp = tempfile.mkdtemp(prefix="edvr_compile_only_test_")
+    old_validate = globals()["validate_elite_game"]
+    old_probe = globals()["strict_game_running"]
+    old_env = os.environ.get("EDVR_TOOLCHAIN_DIR")
+    saved_pe = None
+    try:
+        root, game = Path(tmp, "repo"), Path(tmp, "game")
+        tool = root / ".toolchains" / "windows"
+        cbuild = tool / "compile-build"
+        for d in (tool, cbuild, root / "build", game):
+            d.mkdir(parents=True)
+        (root / "build.bat").write_bytes(b"@echo off\r\n")
+        (root / ".gitignore").write_bytes(b"build/\n.toolchains/\n")
+        # The fingerprint comes from compile_only.py itself. Use the host's own
+        # when it has one (so this test notices it changing shape); a host without
+        # the Linux toolchain gets a stand-in with the same two globals and function.
+        real = _toolchain_dir(repo_root())
+        if real:
+            for name in ("compile_only.py", "toolchain.py"):
+                shutil.copy2(os.path.join(real, name), tool / name)
+        else:
+            (tool / "compile_only.py").write_text(
+                "import hashlib, subprocess\nfrom pathlib import Path\n"
+                "ROOT = Path(__file__).resolve().parents[2]\nSOURCE = ROOT / 'build.bat'\n"
+                "def source_fingerprint():\n"
+                "    git = lambda *a: subprocess.check_output(['git', '-C', str(ROOT), *a])\n"
+                "    return hashlib.sha256(git('rev-parse', 'HEAD') + git('diff', '--binary', 'HEAD')).hexdigest()\n")
+        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "fixture")
+        os.environ.pop("EDVR_TOOLCHAIN_DIR", None)
+
+        if compile_build_dir(str(root)) != str(cbuild) or \
+                compile_build_dir(str(game)) != str(game / "build" / "compile-build"):
+            print("compile_build_dir does not follow the toolchain/worktree rule")
+            return False
+        products = {"d3d11.dll": b"COMPILE-GRAPHICS", "libxess.dll": b"COMPILE-XESS",
+                    "INTEL-XESS-LICENSE.txt": b"LICENSE", "INTEL-XESS-THIRD-PARTY.txt": b"THIRD-PARTY"}
+        for name, data in products.items():
+            (cbuild / name).write_bytes(data)
+        (root / "build" / "d3d11.dll").write_bytes(b"VALIDATED-GRAPHICS")   # must never be read
+        (game / GAME_EXE).write_bytes(b"GAME")
+        (game / "d3d11.dll").write_bytes(b"OLD-GRAPHICS")
+        globals()["validate_elite_game"] = lambda path: None
+        globals()["strict_game_running"] = lambda *a: (True, False)
+        import openxr_pe
+        saved_pe = (openxr_pe.Image, openxr_pe._exports)
+        openxr_pe.Image = lambda data: data           # the live d3d11.dll reads as an EDVR build
+        openxr_pe._exports = lambda image: ({0: "edvr_graphics"}, None)
+        args = ["--root", str(root), "--target", str(game), "--scope", "flat", "--xess", "--compile-only", "--tag", "co"]
+        snapshot = lambda: sorted((str(p.relative_to(game)), p.read_bytes()) for p in game.rglob("*") if p.is_file())
+
+        def write_receipt(**change):
+            receipt = {"kind": COMPILE_ONLY_KIND, "validated": False,
+                       "source_fingerprint": compile_only_fingerprint(str(root)),
+                       "outputs": {"d3d11.dll": {"sha256": hashlib.sha256(products["d3d11.dll"]).hexdigest(),
+                                                  "size": len(products["d3d11.dll"])}}}
+            receipt.update(change)
+            (cbuild / "compile_only_receipt.json").write_text(json.dumps(receipt))
+
+        def refused(why, extra=(), contains=""):
+            before = snapshot()
+            code, text = run(args + list(extra))
+            good = code not in (0, 1, None) and contains in str(code) and snapshot() == before
+            if not good:
+                print("compile-only did not refuse %s: %r %r" % (why, code, text))
+            return good
+
+        ok = True
+        if (cbuild / "compile_only_receipt.json").exists() or \
+                not refused("a missing receipt", ["--dry-run"], "no compile-only receipt"):
+            return False
+        write_receipt()
+        before = snapshot()
+        code, text = run(args + ["--dry-run"])
+        if code != 0 or snapshot() != before or "COMPILE-ONLY build" not in text or "NOT Windows validated" not in text \
+                or "d3d11.dll" not in text or "libxess.dll" not in text:
+            print("compile-only --dry-run: wrote files or planned the wrong thing: %r %r" % (code, text)); ok = False
+        code, text = run(args)
+        receipt_file = game / "edvr_flat_receipt.json"
+        installed = json.loads(receipt_file.read_text()) if receipt_file.is_file() else {}
+        if code != 0 or (game / "d3d11.dll").read_bytes() != products["d3d11.dll"] \
+                or (game / "libxess.dll").read_bytes() != products["libxess.dll"]:
+            print("compile-only install did not take the compile-build files: %r %r" % (code, text)); ok = False
+        if installed.get("build") != COMPILE_ONLY_MARK:
+            print("compile-only install did not mark its receipt: %r" % installed.get("build")); ok = False
+        if run(args + ["--verify-only"])[0] != 0:
+            print("compile-only --verify-only rejected its own install"); ok = False
+        (game / "d3d11.dll").write_bytes(b"CHANGED")
+        if run(args + ["--verify-only"])[0] != 1:
+            print("compile-only --verify-only accepted a changed d3d11.dll"); ok = False
+        (game / "d3d11.dll").write_bytes(products["d3d11.dll"])
+        # Verification compares against the compile-build, and a moved tree only warns there.
+        (root / "build.bat").write_bytes(b"@echo off\r\nrem edited\r\n")
+        code, text = run(args + ["--verify-only"])
+        if code != 0 or "WARNING" not in text or "dirty" not in text:
+            print("compile-only --verify-only on a moved, dirty tree should warn and still compare: %r %r" % (code, text)); ok = False
+
+        # The refusals: each one leaves the game directory alone.
+        ok &= refused("an edited tree", ["--dry-run"], "not the one this build was compiled from")
+        ok &= refused("an edited tree (real install)", [], "compile again")
+        git(root, "commit", "-q", "-am", "moved")
+        ok &= refused("a committed tree", ["--dry-run"], "not the one this build was compiled from")
+        write_receipt()   # the receipt of the tree as it is now
+        if run(args + ["--dry-run"])[0] != 0:
+            print("compile-only --dry-run refused a tree matching its receipt"); ok = False
+        write_receipt(validated=True)
+        ok &= refused("a receipt that claims validation", ["--dry-run"], "not a usable compile-only receipt")
+        write_receipt()
+        (cbuild / "d3d11.dll").write_bytes(b"RECOMPILING")
+        ok &= refused("an output that no longer matches its receipt", ["--dry-run"], "no longer matches")
+        (cbuild / "d3d11.dll").write_bytes(products["d3d11.dll"])
+
+        # The marked receipt validates against the compile-build, not build/, so it restores.
+        if restore_native(str(receipt_file)) != 0 or (game / "d3d11.dll").read_bytes() != b"OLD-GRAPHICS":
+            print("a compile-only receipt did not restore"); ok = False
+        for combo in (["--restore-native", str(receipt_file)], ["--native-openxr"], ["--suspend"]):
+            code, _ = run(["--target", str(game), "--compile-only"] + combo)
+            if code != 2:
+                print("--compile-only %s was accepted: %r" % (combo[0], code)); ok = False
+        if _BUILD_OVERRIDE is not None:
+            print("--compile-only left the build override set after main()"); ok = False
+        return ok
+    except (AssertionError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("compile-only self-test failed: %s" % exc)
+        return False
+    finally:
+        globals()["validate_elite_game"] = old_validate
+        globals()["strict_game_running"] = old_probe
+        if saved_pe:
+            openxr_pe.Image, openxr_pe._exports = saved_pe
+        if old_env is not None:
+            os.environ["EDVR_TOOLCHAIN_DIR"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _game_probe_self_test():
     """strict_game_running must prove the state or say why it could not, ride
     out a transient failure, and still refuse a game running from the target."""
@@ -2964,22 +3288,30 @@ def _game_probe_self_test():
     finally:
         subprocess.run = saved_run
 
-    # Toolhelp32 reads the live process list and finds this process.
-    try:
-        found = _game_pids_toolhelp(os.path.basename(sys.executable))
-        check(os.getpid() in found, "Toolhelp32 did not find this process (%r)" % (found,))
-        check(isinstance(_game_pids_toolhelp(), list), "Toolhelp32 game probe not a list")
-    except (_ProbeError, OSError) as exc:
-        check(False, "Toolhelp32 failed on a live system: %s" % exc)
+    # Toolhelp32 reads the live process list and finds this process. It is a
+    # Windows API: on another host (the Linux test-flight path) only the
+    # injected-probe cases below can run.
+    import ctypes
+    if hasattr(ctypes, "WinDLL"):
+        try:
+            found = _game_pids_toolhelp(os.path.basename(sys.executable))
+            check(os.getpid() in found, "Toolhelp32 did not find this process (%r)" % (found,))
+            check(isinstance(_game_pids_toolhelp(), list), "Toolhelp32 game probe not a list")
+        except (_ProbeError, OSError) as exc:
+            check(False, "Toolhelp32 failed on a live system: %s" % exc)
+    else:
+        print("[edvr] self-test: live Toolhelp32 check skipped (not a Windows host)")
 
     # strict_game_running: retries, reasons, and the refusal that must stay.
     tmp = tempfile.mkdtemp(prefix="edvr_gameprobe_test_")
     saved = {n: globals()[n] for n in ("_game_pids_toolhelp", "_game_pids_tasklist",
-                                       "_process_image_path", "GAME_PROBE_PAUSE")}
+                                       "_process_image_path", "GAME_PROBE_PAUSE",
+                                       "GAME_PROBE_WINDOWS")}
     try:
         mine = os.path.join(tmp, "mine"); other = os.path.join(tmp, "other")
         os.makedirs(mine); os.makedirs(other)
         globals()["GAME_PROBE_PAUSE"] = 0
+        globals()["GAME_PROBE_WINDOWS"] = True      # these cases script the Windows probes
         calls = []
         def script(results):
             """A pid-lister answering from a list; the last result repeats."""
@@ -3021,6 +3353,37 @@ def _game_probe_self_test():
         check(run([[10]], images=[None]) == (False, False), "unresolved game did not fail closed")
         check("pid 10" in probe_reason(), "unresolved reason missing the pid: %r" % probe_reason())
         check(run([[10]], images=[here], target=None) == (True, True), "targetless probe missed the game")
+
+        # Linux (Proton): /proc, comm truncated to 15 characters, any running game refuses.
+        proc = os.path.join(tmp, "proc")
+        def fake_proc(*comms):
+            shutil.rmtree(proc, ignore_errors=True)
+            for pid, comm in comms:
+                os.makedirs(os.path.join(proc, str(pid)))
+                with open(os.path.join(proc, str(pid), "comm"), "w") as f:
+                    f.write(comm + "\n")
+            os.makedirs(os.path.join(proc, "sys"))           # not a pid: ignored
+        fake_proc((1, "systemd"), (20, "EliteDangerous6"), (21, "eliteDANGEROUS6"), (30, "EDLaunch.exe"))
+        check(sorted(_game_pids_proc(proc=proc)) == [20, 21],
+              "/proc probe did not find the truncated comm in any case: %r" % _game_pids_proc(proc=proc))
+        fake_proc((1, "systemd"), (30, "EliteDangerous"), (31, "Elite"))
+        check(_game_pids_proc(proc=proc) == [], "/proc probe matched a name that is not the game")
+        fake_proc()
+        try: _game_pids_proc(proc=proc); check(False, "an empty /proc did not raise")
+        except _ProbeError as exc: check("lists no processes" in str(exc), "empty /proc reason %r" % str(exc))
+        try: _game_pids_proc(proc=os.path.join(tmp, "absent")); check(False, "a missing /proc did not raise")
+        except _ProbeError as exc: check("cannot list" in str(exc), "missing /proc reason %r" % str(exc))
+        globals()["GAME_PROBE_WINDOWS"] = False
+        real_proc = _game_pids_proc
+        try:
+            for comms, want in (([(1, "systemd")], (True, False)), ([(1, "systemd"), (20, "EliteDangerous6")], (True, True)),
+                                ([], (False, False))):
+                fake_proc(*comms)
+                globals()["_game_pids_proc"] = lambda exe=None, _p=proc: real_proc(exe, _p)
+                got = strict_game_running(os.path.join(tmp, "any-target"))
+                check(got == want, "Linux strict_game_running(%r) = %r, want %r" % (comms, got, want))
+        finally:
+            globals()["_game_pids_proc"] = real_proc
     finally:
         globals().update(saved)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -3088,6 +3451,7 @@ def self_test():
     ok = True
     if not _game_probe_self_test(): ok = False
     if not _xess_opt_in_self_test(): ok = False
+    if not _compile_only_self_test(): ok = False
 
     # The path-aware game probe: only a game running from the install target
     # blocks staging; an unresolvable image path fails closed.
@@ -3111,8 +3475,9 @@ def self_test():
                 print("path-aware probe mismatch: %r gave %r, want %r" %
                       (images, got, want))
                 ok = False
+        # Paths compare case-insensitively on Windows only.
         if game_running_in(probe_game,
-                           [os.path.join(probe_game, ".", GAME_EXE.lower())]) != (True, True):
+                           [os.path.join(probe_game, ".", GAME_EXE.lower() if os.name == "nt" else GAME_EXE)]) != (True, True):
             print("path-aware probe lost a case/separator variant")
             ok = False
     finally:

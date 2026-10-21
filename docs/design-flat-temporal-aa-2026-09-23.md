@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair: in progress (last entry). Why the game drops the phase there: open.
+- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: BUILT (compile-only, rig passes on all 31), INSTALLED, NOT FLOWN; flight signature in the last entry. Why the game drops the phase there: open.
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** Steam `a4a4e751` menu engagement/mode-switch fix visually PASS; carrier history and functional output guard PASS. External deferred-camera refusal remains open; paired witness awaits reproduction.
   Astra release-history review separates the two proven RC3 regressions from the older RC2 deferred matcher; no new FPS regression established. No admission-bound change; main remains unmerged (last entries).
@@ -17870,13 +17870,48 @@ This is the paired witness the RC4 external report lacked (its initiating
 failure was the same pair's `forward-mismatch`, 2026-10-17 entries); whether
 that report was the same mechanism is not established by this log.
 
-Repair (in progress, not built). The legacy recipe for this VS already
-jitters the whole camera (ForwardDp4 at row 10 plus InverseUvRay at row 14,
-`flat_projection_recipes.h`). Under upstream ownership, the new step does the
-following. It certifies the measured omission: the CB2 equals the dephased donor
-within gamma bounds that charge the reversed madd on the camera side only,
-and the raw CB2 is self-consistent and nonsingular. It then uploads the
-two-patch clone, accepted only if the uploaded bytes equal the certified ones
-and pass the strict matcher. The 31 captures become a test fixture. Open,
-not needed for the repair: why the game builds this CB2 without the phase in
-supercruise and planetary flight.
+Repair, `6b8f62c1` (BUILT compile-only, INSTALLED on the Steam flat
+profile, NOT FLOWN). The legacy recipe for this VS already jitters the whole
+camera (ForwardDp4 at row 10 plus InverseUvRay at row 14,
+`flat_projection_recipes.h`). `flatRepairDeferredWholeOmission` accepts a
+strict `Forward` only when the CB2 equals the donor camera with the phase
+removed. In that proof the reversed madd is charged on the camera side
+only, and the raw CB2 must be self-consistent and nonsingular. It then
+rebuilds rows 10..16 with the two patch layouts. The runtime uploads that
+two-patch clone and accepts it only when the uploaded bytes equal the
+certified ones and pass the strict matcher. A failed preparation fails
+closed as `deferred-whole-preparation-failed`. Zero-phase frames now warm
+both plan shapes, so the first nonzero frame of either omission finds its
+plan without allocating.
+
+One tolerance change, on the whole-camera path only. The plain gamma(8)
+bound refused frame 23898: a clip-x coefficient that cancels to 0.0083
+differs by 1.7e-8 against 9e-9. The camera and CB2 are finalized from
+different frustums, so that rounding scales with the terms before
+cancellation. Those are a frustum-scale row times a unit rotation column,
+so by Cauchy-Schwarz they are bounded by the clip row's xyz length. That
+length was 1.040 for x and 1.664 for y in every capture, a ratio equal to
+the 960/600 aspect. The whole-camera comparison adds twice that length to
+the gamma(8) magnitude for clip rows x and y. This is the rc.5 lesson again:
+the bound must carry the magnitude before cancellation. The new bound is
+about 1e-6; wrong-sign, half, doubled, perturbed and 2e-5-nudged inputs
+stay refused. The default matcher and the inverse-only repair are unchanged,
+and a test pins that. The bound assumes an orthonormal view rotation, which
+nothing checks directly. Test rig:
+`tools/flat_temporal_test/flat_deferred_forward_omission_captures.h`, all
+31 repair, and the 35 rc.5 captures are refused by the new repair.
+
+Flight signature (check `edvr_log.py --expect-build 6b8f62c1` first):
+- **Ran:** in supercruise or on a planet, `flat deferred HDR camera:` shows
+  `relation=forward-mismatch accepted=1 repair=whole prepared=1`.
+  `flat deferred inverse execution:` reads `uploaded whole-camera clone
+  strict-certified` with `whole-executions` rising. The runtime shows
+  `treated-jittered` with no `deferred-inverse-unproven` refusals.
+- **Never ran:** `forward-mismatch accepted=0 repair=none` and
+  `deferred-inverse-unproven` as before.
+- **Reached but failed:** `reason=deferred-whole-preparation-failed`.
+
+If the log passes and the image still aliases, look for other passes in
+those scenes drawn with an unphased camera; this verifier sees only the
+deferred pass. Open, not needed for the repair: why the game builds this
+CB2 without the phase in supercruise and planetary flight.

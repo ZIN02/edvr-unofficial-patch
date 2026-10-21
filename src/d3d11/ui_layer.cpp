@@ -109,7 +109,7 @@ constexpr uint32_t kCrispHdrMissFrames = 30;
 
 // ------------------------------------------------------------ configuration
 
-float g_target = 0.0f;     // 0 off, 1.0 (the file's 100), 1.25 (125)
+float g_target = 0.0f;     // 0 off, 1.0 (the file's 100), 1.25 (125), 1.5 (150), 2.0 (200)
 // fix.sharp_weapons (default on): the weapons fire into its own additive HDR layer, composited after the upscale. INDEPENDENT of
 // fix.ui_quality: g_sharpWeapons is the key, g_weaponsLive the key with everything it needs (a temporal mode, not stood down, not the
 // flat profile). The layer's machinery runs when either half is live (refreshLive); the interface families are taken only while
@@ -3515,7 +3515,7 @@ void uiLayerConfigure(Config& cfg) {
     g_seedCensus.configure(g_hdrDrawTimingOn);
     // The fallback, for an ini with no such line (a hand-copied DLL over an old
     // file, a deleted line), is the shipped default: 100 since 2026-09-29. A line
-    // that is present and not off/100/125 is refused below and reads as off.
+    // that is present and not off/100/125/150/200 is refused below and reads as off.
     const std::string text = cfg.getString("fix.ui_quality", "100");
     bool recognized = true;
     const char* newSpelling = nullptr;
@@ -3611,7 +3611,7 @@ void uiLayerConfigure(Config& cfg) {
     if (!changed) return;
     g_keyNoted = true;
     if (!recognized) {
-        Log::get().note("ui quality: fix.ui_quality = '%s' is not off, 100 or 125 -- off.",
+        Log::get().note("ui quality: fix.ui_quality = '%s' is not off, 100, 125, 150 or 200 -- off.",
                         text.c_str());
         return;
     }

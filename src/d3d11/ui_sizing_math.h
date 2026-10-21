@@ -269,7 +269,7 @@ struct UiPanelInputs {
     float fovTangent = 0.0f;  // 2 tan(vFOV/2) of the frustum the game is told
     uint32_t outputW = 0;     // W_out: the runtime's untrimmed recommendation
     float trueTangent = 0.0f; // 2 tan(vFOV/2) of the true display frustum
-    float target = 0.0f;      // T: fix.ui_quality's 100 or 125, as 1.0 or 1.25
+    float target = 0.0f;      // T: fix.ui_quality's 100, 125, 150 or 200, as 1.0, 1.25, 1.5 or 2.0
     float supersampling = 0.0f;  // the .fxcfg's SSAAMultiplier; 0 while unknown (then there is no factor)
     uint32_t displayW = 0;    // the game window's width (DisplaySettings.xml); 0 unknown (the observed base stands)
     uint32_t screenW = 0;     // the 2D screen's forced width (fix.vscreen_res_width, applied); 0 none
@@ -384,7 +384,7 @@ inline bool uiPanelFactor(const UiPanelInputs& in, double* f, UiPanelClamp* clam
 struct UiFlatPanelInputs {
     uint32_t renderW = 0, renderH = 0;  // R: the scene the game renders (the flat runtime's own measurement)
     uint32_t outputW = 0, outputH = 0;  // D: the swap chain's back buffer
-    float target = 0.0f;                // T: 1.0 or 1.25
+    float target = 0.0f;                // T: 1.0, 1.25, 1.5 or 2.0
 };
 // fix.ui_quality follows temporal AA in both profiles (2026-10-13): with AA off the panels are the game's own size, as at
 // ui_quality off. The edge between two readings of the AA gate is what the render thread logs once per change.

@@ -301,7 +301,7 @@ void testGrid() {
     unsigned n = 0, overBudget = 0, overLimit = 0, outOfRange = 0, unknownWrong = 0;
     for (uint32_t out : {2500u, 3070u, 4032u, 5000u, 7000u}) {
         for (float hmd : {0.2f, 0.3f, 0.4f, 0.5f, 0.65f, 0.8f, 1.0f, 1.25f, 1.5f}) {
-            for (float target : {1.0f, 1.25f}) {
+            for (float target : {1.0f, 1.25f, 1.5f, 2.0f}) {
                 for (float ss : {0.5f, 0.85f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f}) {
                     for (uint32_t display : {0u, 1280u, 1920u, 2560u, 3840u, 5120u, 7680u}) {
                         for (uint32_t screen : {0u, 3712u, 5040u, 8192u}) {
@@ -329,7 +329,7 @@ void testGrid() {
     check(overBudget == 0, msg);
     std::snprintf(msg, sizeof(msg), "grid of %u states: no state of the record asks for a panel over 16384 on either axis, by the game's own arithmetic (%u over)", n, overLimit);
     check(overLimit == 0, msg);
-    std::printf("  panel budget: grid of %u states (5 headsets x 9 qualities x 2 targets x 8 Supersamplings x 7 windows x 4 2D screens): "
+    std::printf("  panel budget: grid of %u states (5 headsets x 9 qualities x 4 targets x 8 Supersamplings x 7 windows x 4 2D screens): "
                 "%u outside [1/4, 1], %u over the budget while f < 1, %u over 16384\n", n, outOfRange, overBudget, overLimit);
 }
 
@@ -674,7 +674,7 @@ void testLivePick() {
     unsigned n = 0, differ = 0;
     for (uint32_t out : {3070u, 4032u, 5000u})
         for (float hmd : {0.5f, 0.65f, 1.0f})
-            for (float target : {1.0f, 1.25f})
+            for (float target : {1.0f, 1.25f, 1.5f, 2.0f})
                 for (float ss : {0.5f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f})
                     for (uint32_t display : {0u, 3840u, 7680u}) {
                         Rig g;

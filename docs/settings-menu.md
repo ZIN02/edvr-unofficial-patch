@@ -143,7 +143,8 @@ ruled-out list); the summary above points here.
 - **2026-09-23:** the Performance page's `UI quality` row (`fix.ui_quality`)
   is one row for the cockpit panels' size and the UI layer; the one-day
   `HUD quality` row is gone (see the journal's dated entries). Its choices
-  read off / 100% / 125% (the file's `off | 100 | 125`).
+  read off / 100% / 125% / 150% / 200% (the file's `off | 100 | 125 | 150 | 200`;
+  150 and 200 added 2026-10-21).
 - **Current change:** The smaller single-line overlay fits its displayed text and keeps its font size across
   OpenXR resolutions and shows application GPU/CPU elapsed timings. Full
   desktop gates passed; headset checks remain in the

@@ -1142,6 +1142,31 @@ inline const char* uiLayerDecisionName(UiLayerDecision d) {
     }
 }
 
+// The flat HUD's bloom feed (ui_layer.h uiLayerGlowFeed; docs/cockpit-hud-layer-design-2026-09-27.md, "2026-10-21: the HUD's bloom"): what the
+// pass that makes H' = H + the HUD layer's light came to for one draw.
+enum class UiGlowFeed : uint8_t {
+    kFed = 0,     // H' is made: bind it at the slot for this draw
+    kNoHud,       // no HUD in the layer this frame (nothing to feed)
+    kNotReady,    // the pass's shaders or deferred context are not available
+    kBinding,     // the draw's own binding at the slot is not H
+    kTexture,     // H is not a plain 2D mip-0 view, or H' could not be made
+    kFormat,      // H is not R11G11B10_FLOAT, one sample, one slice
+    kFault,       // the pass faulted (its fault budget; stays off once spent)
+    kCount
+};
+inline const char* uiGlowFeedName(UiGlowFeed v) {
+    switch (v) {
+        case UiGlowFeed::kFed: return "fed";
+        case UiGlowFeed::kNoHud: return "no-hud";
+        case UiGlowFeed::kNotReady: return "not-ready";
+        case UiGlowFeed::kBinding: return "binding-not-h";
+        case UiGlowFeed::kTexture: return "texture";
+        case UiGlowFeed::kFormat: return "format";
+        case UiGlowFeed::kFault: return "fault";
+        default: return "?";
+    }
+}
+
 // The facts the draw path gathers; the decision is a pure function of them.
 struct UiLayerDrawFacts {
     UiLayerFamily family = UiLayerFamily::kNone;

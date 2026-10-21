@@ -147,6 +147,14 @@ struct FlatRuntimeDrawScope {
     // (uiComposite).
     bool uiTake=false,uiTaken=false,uiEnded=false,uiTone=false,uiComposite=false;
     uint64_t uiVs=0,uiPs=0;
+    // The HUD's bloom (flat_ui_layer.h flatUiGlowWanted): this is the HDR route's trigger draw and it writes a half-size target of H, the bloom
+    // chain's first level. Begin binds H' = H + the HUD layer's light at `glowSlot` for the game's issue (glowOriginal holds the game's view then),
+    // End puts the game's view back.
+    bool uiGlow=false;
+    uint32_t glowSlot=0,glowHdrW=0,glowHdrH=0,glowTargetW=0,glowTargetH=0;
+    const void* glowHdr=nullptr;
+    uint64_t glowVs=0,glowPs=0;
+    ID3D11ShaderResourceView* glowOriginal=nullptr;
     bool domainPlanned=false,domainStarted=false,domainForeign=false,domainPool=false;
     bool domainProtectedOverlay=false;
     bool domainHdrWriter=false;
@@ -162,7 +170,7 @@ struct FlatRuntimeDrawScope {
     forward_light::Issue forwardIssue{};
     uint64_t lightPayloadToken=0;
     const FlatProjectionBindingPlan* lightPayloadPlan=nullptr;
-    bool needsActualDraw() const { return forwardIssue.kind!=forward_light::Issue::None || lightPayloadToken || drawPacket || domainPlanned || uiTake || uiComposite ||
+    bool needsActualDraw() const { return forwardIssue.kind!=forward_light::Issue::None || lightPayloadToken || drawPacket || domainPlanned || uiTake || uiComposite || uiGlow ||
                                           flatRuntimeNeedsActualDraw(weaponFootprintStarted, overlayPlanned,
                                                                      foregroundPlanned, untrustedPlanned); }
     // After the game's own issue and endActualDraw: the second issues fix.ui_quality's flat layer asks for, each the game's

@@ -1570,6 +1570,22 @@ void testFlatLayerRules() {
     check(!flatUiLayerDoorArms(false, 3840, 2160, 3840, 2160), "flat layer: a refused frame arms nothing");
     check(!flatUiLayerDoorArms(true, 1920, 1080, 3840, 2160), "flat layer: a picture at the render size (an E below D) arms nothing");
     check(!flatUiLayerDoorArms(true, 0, 0, 0, 0), "flat layer: no display size arms nothing");
+    // The HUD's bloom feed (2026-10-21): H' goes to the draw that writes a half-size target of H, the bloom chain's first level.
+    check(flatUiGlowFeedShape(1248, 780, 624, 390), "glow feed: the flown 624x390 level of a 1248x780 H is the chain's first");
+    check(flatUiGlowFeedShape(3840, 2160, 1920, 1080), "glow feed: half of 3840x2160 is the first level");
+    check(flatUiGlowFeedShape(1921, 1081, 960, 540) && flatUiGlowFeedShape(1921, 1081, 961, 541),
+          "glow feed: an odd extent halved down or up is within the pixel of slack");
+    check(!flatUiGlowFeedShape(1248, 780, 1248, 780) && !flatUiGlowFeedShape(1248, 780, 312, 195) && !flatUiGlowFeedShape(1248, 780, 624, 780),
+          "glow feed: a full-size or quarter-size target, or a half in one axis only, is not the first level");
+    check(!flatUiGlowFeedShape(0, 780, 0, 390) && !flatUiGlowFeedShape(1248, 780, 0, 390), "glow feed: no size reads nothing");
+    check(flatUiGlowFeedWanted(true, true, false, 0, 1248, 780, 624, 390) && flatUiGlowFeedWanted(true, true, false, 3, 1248, 780, 624, 390),
+          "glow feed: wanted at a first-level trigger with the layer on and a known slot");
+    check(!flatUiGlowFeedWanted(false, true, false, 0, 1248, 780, 624, 390) && !flatUiGlowFeedWanted(true, false, false, 0, 1248, 780, 624, 390) &&
+              !flatUiGlowFeedWanted(true, true, true, 0, 1248, 780, 624, 390) && !flatUiGlowFeedWanted(true, true, false, 4, 1248, 780, 624, 390) &&
+              !flatUiGlowFeedWanted(true, true, false, ~0u, 1248, 780, 624, 390),
+          "glow feed: not wanted with the layer off, an unread or ambiguous trigger, or a slot past t3");
+    for (size_t i = 0; i < static_cast<size_t>(UiGlowFeed::kCount); ++i)
+        check(std::strcmp(uiGlowFeedName(static_cast<UiGlowFeed>(i)), "?") != 0, "glow feed: every verdict has a name");
     // The layer's size at the door, VR's own rule: D at 100, 1.25 D at 125.
     const UiLayerSize s100 = uiLayerSize(3840, 2160, 1.0f), s125 = uiLayerSize(3840, 2160, 1.25f);
     check(s100.w == 3840 && s100.h == 2160 && s125.w == 4800 && s125.h == 2700,

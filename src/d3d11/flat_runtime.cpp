@@ -6581,6 +6581,23 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     // the frame goes to the copy route, which runs the spatial recovery in place of it (flatRuntimeMapTemporalOff).
     if (hdrTrigger && s.hdrKey == FlatHdrKey::Auto && s.hdrSelected.selected() && !flatRuntimeMapTemporalOff())
         treatHdr(s.hdrSelected, s.hdr.trigger.srvSlot);
+    // fix.ui_quality's HUD bloom (flat_ui_layer.h flatUiGlowWanted): the trigger that writes a half-size target of H is the bloom chain's first level,
+    // which reads the H the layer's HUD is not in. The route's resolve above has written H by now; beginActualDraw binds H' = H + the HUD's light at the
+    // slot the trigger read H at, for this draw only. Asked on every route: the copy route's frames have the same first level.
+    if (hdrTrigger) {
+        const FlatHdrTrigger& t = s.hdr.trigger;
+        if (flatUiGlowWanted(t.srvKnown, t.ambiguous, t.srvSlot, t.hdrWidth, t.hdrHeight, t.targetWidth, t.targetHeight)) {
+            uiGlow = true;
+            glowSlot = t.srvSlot;
+            glowHdr = t.hdr;
+            glowHdrW = t.hdrWidth;
+            glowHdrH = t.hdrHeight;
+            glowTargetW = t.targetWidth;
+            glowTargetH = t.targetHeight;
+            glowVs = k.vs;
+            glowPs = k.ps;
+        }
+    }
     // fix.ui_quality's flat layer (flat_ui_layer.h): the cockpit HUD families out of H and into the shared layer as eye 0,
     // the game's tonemap re-issued over it, and at the output copy the door and the composite. Every decision is made
     // here, after the scope has planned everything else it does with this draw (a draw it does anything else with is
@@ -7337,6 +7354,9 @@ void FlatRuntimeDrawScope::beginActualDraw(ID3D11Buffer* indirectArgs,UINT indir
         auto& s=state();
         flatUiLayerAtCopy(ctx,s.prefix.frame,s.treated||s.hdrTreated,s.prefix.width,s.prefix.height,&original,&replaced);
     }
+    // The bloom chain's first level reads H' (the HUD's light added) in place of H for this one draw; endActualDraw puts the game's view back.
+    if(uiGlow && !glowOriginal)
+        flatUiGlowBegin(ctx,state().prefix.frame,glowSlot,glowHdr,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH,&glowOriginal);
     if(domainPlanned && !producer) {
         FlatComputeInternalScope internal;flatcpu::Scope captureCost(flatcpu::kForegroundCapture);
         Ptr<ID3D11VertexShader> vs;Ptr<ID3D11PixelShader> ps;
@@ -7621,6 +7641,7 @@ void FlatRuntimeDrawScope::endActualDraw() {
     if(lightPayloadToken&&ctx)captureLightReturned(state(),lightPayloadToken);
     // The game's state back from the layer first, before anything else here reads the context.
     if(uiTaken&&!uiEnded&&ctx){flatUiLayerEnd(ctx);uiEnded=true;}
+    if(glowOriginal){flatUiGlowEnd(ctx,glowSlot,glowOriginal);glowOriginal=nullptr;}
     if(drawPacket&&ctx){FlatComputeInternalScope internal;state().drawPackets.after(ctx,drawPacket);drawPacketExecuted=true;}
     if(drawPacketOnly)return;
     if(domainProtectedOverlay && !overlayStarted && !overlayReplayPending)
@@ -7671,6 +7692,7 @@ FlatRuntimeDrawScope::~FlatRuntimeDrawScope() {
     if (!ctx) return;
     // A taken HUD draw whose End never ran (the hook did not reach endActualDraw): the game's state back from the layer.
     if(uiTaken&&!uiEnded){flatUiLayerEnd(ctx);uiEnded=true;}
+    if(glowOriginal){flatUiGlowEnd(ctx,glowSlot,glowOriginal);glowOriginal=nullptr;}
     FlatComputeInternalScope guard;
     if(domainStarted){
         engineVelocityFlatDomainEndDraw(ctx);domainStarted=false;

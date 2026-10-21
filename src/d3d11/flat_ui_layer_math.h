@@ -636,4 +636,20 @@ inline bool flatUiLayerDoorArms(bool treated, uint32_t inW, uint32_t inH, uint32
     return treated && outW && outH && inW == outW && inH == outH;
 }
 
+// THE HUD'S BLOOM (ui_layer.h UiGlowFeed). The HUD the layer takes is out of H, which the game's bloom chain reads, so it has no halo. The
+// chain's first level is the HDR route's trigger draw when Bloom is on (the 2026-10-20 flight: VS DFED8E1C, PS 143AAE05, a 624x390 target of a
+// 1248x780 H), and its target is half of H per axis -- a pixel of slack for an odd extent halved down or up. That is the one draw H' is bound
+// at. A trigger that writes any other size (Bloom off: the depth of field, the tone) is left alone, as is an ambiguous trigger, whose H is a
+// guess, and a slot the detector could not read.
+inline bool flatUiGlowFeedShape(uint32_t hdrW, uint32_t hdrH, uint32_t targetW, uint32_t targetH) {
+    if (!hdrW || !hdrH || !targetW || !targetH) return false;
+    const int64_t dx = static_cast<int64_t>(targetW) * 2 - static_cast<int64_t>(hdrW);
+    const int64_t dy = static_cast<int64_t>(targetH) * 2 - static_cast<int64_t>(hdrH);
+    return dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1;
+}
+inline bool flatUiGlowFeedWanted(bool layerOn, bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvSlot, uint32_t hdrW, uint32_t hdrH,
+                                 uint32_t targetW, uint32_t targetH) {
+    return layerOn && triggerSrvKnown && !triggerAmbiguous && srvSlot < 4 && flatUiGlowFeedShape(hdrW, hdrH, targetW, targetH);
+}
+
 }  // namespace edvr

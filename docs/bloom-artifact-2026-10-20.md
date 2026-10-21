@@ -2,10 +2,10 @@
 
 ## Status
 
-- **State (2026-10-20 22:40): the artifact is undithered 8-bit banding of
-  Elite's own bloom, at Bloom Medium, High and Ultra. Fix A is built and
-  installed for a test flight: `fix.smooth_gradients` (commit `a97d7abb`,
-  local compile `v0.20.0-15-ga97d7abb`), flat only.** Base
+- **State (2026-10-21 06:20): the artifact is undithered 8-bit banding of
+  Elite's own bloom, at Bloom Medium, High and Ultra. Fix A,
+  `fix.smooth_gradients` (commit `a97d7abb`, local compile), is FLOWN flat:
+  the bands are gone on a loading screen (see "Fix A flown").** Base
   Elite with EDVR's AA off: the flat System Map and loading screens, on
   builds 332841 and 334473. The chain was dumped on the 20:49
   flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
@@ -41,10 +41,9 @@
     code 60.
   - Temporal threshold instability: the artifact is in still frames.
   - The 4.4.2.0 update: see above.
-- **Next flight:** the same loading screen, lossless, AA off, with Smooth
-  gradients on and then off (F8, live). Expect no bands when on, block
-  means within half a code of off, and log lines "smooth gradients:
-  dithering tone pixel shader E8948389…" and "smooth gradients 30s".
+- **Next:** optional same-frame on/off pair for brightness (the rig
+  measures block means within 0.09 of a code); one VR launch with the
+  shader dump on, for VR's tone shader; CI before any merge.
 - **Fix:** A, dither the tone write by swapping the known tone pixel
   shaders (`smooth_gradients_ps.h`, `smooth_gradients.cpp`; rig
   `tools/smooth_gradients_test`, 101 checks passing under Wine's D3D11).
@@ -350,3 +349,19 @@ Ultra, so 21:16:01 is High.
   glow's shape follows the ship.
 - **Reach differs by shot.** Right of the nose, the glow reaches code 0 at
   64 px in the 21:16:01 shot and at 147 px in the Ultra shot.
+
+## Fix A flown (2026-10-21, 06:17 flight)
+
+Build `v0.20.0-15-ga97d7abb` (log `edvr_gfx_20261021_061711`), flat, AA
+off, Bloom Ultra, HDR 1920x1200, `fix.smooth_gradients` at its default (on).
+
+- The log names all five transcriptions as created and dithering, each on a
+  1920x1200 target at view format 28: `6E83D02E` (3D menu), `DE65BFFF`,
+  `9270C355` and `E8948389`. In each 30 s window about 1,700 tone draws
+  were dithered and none were left stock. The other full-screen 8-bit draws
+  it counted are led by `06CD42A9` (one a frame), a copy or UI pass.
+- The lossless loading screen (Ship Insurance, 06:18:18) shows the dither
+  working. In its tail rows, 63% of runs flip back and forth between
+  neighbouring codes, against 0% in all three stock shots. The longest run
+  at codes 1-6 is 10-19 px, against 32-200 px stock. The four corners stay
+  exactly 0, so black stays black.

@@ -453,7 +453,6 @@ BOOL CALLBACK initOnceCallback(PINIT_ONCE, PVOID, PVOID*) {
     edvr::seatContextPublish();
     edvr::Log::get().note("game command line: %s", edvr::runtimeGameCommandLine().c_str());
     edvr::modeWatchStart();  // after the profile lines: the watch's first line follows them (mode_watch.h)
-    edvr::oculusRouteSlotWatchStart();  // Temporary instrument (docs/build-334473.md); remove when that arc closes.
     edvr::oculusRouteReport();
 
     const std::string build = edvr::gameBuildVersion();

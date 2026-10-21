@@ -2,60 +2,56 @@
 
 ## Status
 
-- **State (2026-10-20): measured offline, nothing built.** Base Elite with
-  EDVR's AA off. This holds for the flat System Map (build 334473) and for
-  loading screens on both 332841 and 334473.
-- **The halo is not offset.** The star's halo sits within 1 px of its disc's
-  centre. Opposite clean sectors of the halo match within one 8-bit code.
-- **What reads as "further to the lower right" is other emitters.** It is a
-  separate cyan-white glow from the station marker, the asteroid belt and the
-  planet chain; it is centred on those objects. The star halo is not displaced.
-- **What reads as blotches and stripes** on the dark loading screens is
-  contour banding of a wide, dim glow on black. Each band is about one output
-  code. The lumpy band edges follow the emitter's shape.
-- **4.4.2.0 did not introduce it.** A 332841 loading screen (2026-10-19)
-  shows the same banded glow. The bloom shaders EDVR can name have the same
-  hashes on both builds.
+- **State (2026-10-20 21:00): the bloom chain's bytecode is read; nothing
+  built.** Base Elite with EDVR's AA off: the flat System Map and loading
+  screens, on builds 332841 and 334473. The chain was dumped on the 20:49
+  flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
+  lets flat read `advanced.glare_shader_dump`. See "The chain's bytecode".
+- **The halo is not offset.** The star's halo sits within 1 px of its
+  disc. The map's "lower right" is a separate cyan-white glow from the
+  station marker, the belt and the planets, centred on them.
+- **The chain is a standard pyramid.** It has a Karis-weighted 13-tap first
+  downsample with a soft threshold and a luma clamp, 13-tap downsamples,
+  and upsamples that average two 3x3 tents (`8826CACC`). Every UV is the
+  vertex UV plus a CPU offset from cb2.
+- **4.4.2.0 did not introduce it.** A 332841 loading screen shows the same
+  banded glow, and the named bloom shaders have the same hashes on both
+  builds.
 - **Open hypotheses, ranked:**
-  1. Output quantization: the tone pass writes 8-bit with no dither. Confirm
-     with a float bloom texture that is smooth while the 8-bit tone output
-     bands in 1-code steps.
-  2. Coarse-level upsample lumps: a single-tap bilinear upsample in the
-     chain's `8826CACC6382C78D`. Confirm with the dumped bytecode's tap
-     pattern, and kinks in the float bloom at the 39x24 or 78x48 texel
-     period.
-  3. Odd-size rounding as a scale about the top-left corner (156x97 and
-     78x48 at the 0.65 render scale). Confirm with UVs built from
-     SV_Position in the chain bytecode, and an off-centre source whose halo
-     is displaced away from the top-left corner.
+  1. Output quantization: the tone pass writes 8-bit with no dither, which
+     bands a wide, dim glow on black. Confirm with a lossless screenshot
+     showing 1-code steps.
+  2. Tent offsets wider than a texel. If Ultra's `FilterRadius 3` and
+     `FilterRadiusWide 4` scale the tents' cb2 offsets, each up pass adds
+     nine copies of the coarser level up to 3-4 texels apart (150-200
+     output px at 39x24), so far halos turn lumpy and squarish. Weak
+     support: the far star halo is 5-20% brighter on the diagonals than on
+     the axes beyond 90 px. Confirm with a Bloom A/B (below) or with the
+     upsample draws' cb2[3..12].
 - **Ruled out:**
-  - Half-texel offset accumulating toward one corner: at screen centre the
-    fitted halo offset is (+0.5, +0.5) px, where (+6, +4) px costs 36% more.
-  - Lens ghost or flare: the lobe has the marker's colour and is centred on
-    it, and there is no mirror image in the upper left.
-  - R11G11B10 chain precision as the cause of the bands: its 1.6% relative
-    step is under half an output code for codes below 60, which is where
-    the bands are.
-  - The 4.4.2.0 update as the cause: see above.
-  - Temporal threshold instability: the artifact is in still frames, and
-    no flicker is reported.
-- **Next capture (one flight, loading screen and System Map, AA off with
-  F7):**
-  - the whole-chain shader dump, which settles 2 and 3 from bytecode. Its
-    key is VR-only, so the 20:19 flight dumped nothing; flat must allow
-    the key first (see "The capture");
-  - save a Steam *uncompressed* copy of each screenshot (the JPEGs cannot
-    tell 1-code steps from JPEG DC quantization);
-  - read back the tone draw's t2, t1 and 8-bit target (a new instrument).
-- **Fix (gated on that capture):** dither the tone pass's float-to-8-bit
-  write, by shader swap of the known tone variants. Bloom stays everywhere.
-  If 2 is confirmed, also swap the chain's upsample PS for a tent filter.
-  See "Fix proposal".
-- **Environment:** flat, 1920x1200 output. The map flight ran at SSAA 0.65
-  (HDR 1248x780, first bloom level 624x390) with BloomQuality 3 (Ultra),
-  DoF 2, Elite AA off (log `edvr_gfx_20261020_165535`). The 332841 loading
-  screen ran at HDR 1920x1200. Not tested: VR, where all of Elite's VR
-  presets ship BloomQuality 0.
+  - Half-texel offset accumulating toward a corner: the halo fits at
+    (+0.5, +0.5) px.
+  - Lumps from a single-tap bilinear upsample: `8826CACC` is an 18-tap
+    dual tent.
+  - Odd-size rounding as a scale about the corner: no chain shader uses
+    SV_Position or a size, and the UVs span each target whatever its size.
+  - Lens ghost or flare: the lobe has the marker's colour and centre.
+  - R11G11B10 precision as the band source: under half a code below
+    code 60.
+  - Temporal threshold instability: the artifact is in still frames.
+  - The 4.4.2.0 update: see above.
+- **Next capture (needs no new code):** one loading screen at Bloom Medium,
+  High and Ultra, AA off (F7), each saved with Steam's uncompressed copy.
+  Bands at all three settings point to 1. Lumps only at High and Ultra
+  point to 2.
+- **Fix (gated on that capture):**
+  - for 1, dither the tone write by swapping the known tone pixel shaders;
+  - for 2, swap `8826CACC` for a dense tent of the same footprint.
+  Bloom stays everywhere. See "Fix proposal".
+- **Environment:** flat, 1920x1200 output, SSAA 0.65 (HDR 1248x780,
+  first bloom level 624x390), BloomQuality 3 (Ultra), DoF 2, Elite AA off.
+  The 332841 loading screen ran at HDR 1920x1200. Not tested: VR, where
+  Elite's VR presets ship BloomQuality 0.
 
 ---
 
@@ -200,8 +196,9 @@ only believed (docs/cockpit-hud-layer-design-2026-09-27.md).
 | # | Mechanism | Evidence | State |
 |---|---|---|---|
 | 1 | 8-bit tone output with no dither bands a wide, dim gradient | Bands are about 1 code apart, worst on black; the tone PS has no dither | open, leading |
-| 2 | Bilinear single-tap upsample of coarse levels leaves lumps | Not seen in the JPEG (no period lock, 1-2 px wiggle) | open |
-| 3 | Odd-size floor as a scale about the corner | Zero offset at centre is expected either way; needs an off-centre source or the bytecode | open, low |
+| 2 | Tent taps 3-4 texels apart (FilterRadius) leave lumpy, squarish far halos | Far halo 5-20% brighter on the diagonals; the tent offsets are CPU constants | open |
+| 2a | Bilinear single-tap upsample of coarse levels leaves lumps | `8826CACC` is an 18-tap dual tent | ruled out (bytecode) |
+| 3 | Odd-size floor as a scale about the corner | No chain shader uses SV_Position or a size | ruled out (bytecode) |
 | 4 | Half-texel offset per level, accumulating | Halo at (+0.5, +0.5) px of its disc | ruled out |
 | 5 | Lens ghost or flare | Lobe has the marker's colour and centre; no mirror image | ruled out |
 | 6 | R11G11B10 banding | 1.6% relative step is at most 0.5 code under code 60 | ruled out as the band source |
@@ -212,18 +209,20 @@ only believed (docs/cockpit-hud-layer-design-2026-09-27.md).
 
 One session, AA off (F7), on a loading screen and on the System Map:
 
-1. **Shader dump.** `advanced.glare_shader_dump` (`device_hook.cpp`) is
-   read by the VR profile only. `flat_profile_keys.h` does not list it, so
-   flat's `getString` answers "off". The flat flight of 2026-10-20 20:19
-   (log `edvr_gfx_20261020_201910`) ran with it set and dumped nothing.
-   Add the key to that list, then set it for one launch. That gives the
-   bytecode of `5ECFE708…`, `129F602B…`/`8826CACC…`, `FA01CD495BB27AEF`
-   and `C89DD4ED362D743F`, for `tools/dxbc_disasm.py`. It settles 2 (the
-   tap pattern) and 3 (UVs interpolated, or built from SV_Position).
-2. **Lossless screenshots.** Use Steam's "save an uncompressed copy". If
+1. **Shader dump: done.** The 20:19 flat flight dumped nothing, because
+   flat read only the keys in `flat_profile_keys.h`. Commit `4675c3c5`
+   added `advanced.glare_shader_dump` to that list, and the 20:49 flight
+   dumped all 691 shaders (see "The chain's bytecode").
+2. **Bloom A/B.** One loading screen at Bloom Medium, High and Ultra, AA
+   off. This tells 1 from 2 with no new code.
+3. **The upsample's constants**, only if 2 needs a number: cb2[3..12] of
+   the `129F602B` draws, with their target sizes, give the tap spacing in
+   texels. `advanced.census_cb_watch` can dump them, but flat does not
+   read the census keys yet.
+4. **Lossless screenshots.** Use Steam's "save an uncompressed copy". If
    the dark end still runs 0, 2, 4, something upstream of the 8-bit write
    quantizes; if it runs 0, 1, 2, 3, the bands are the 8-bit write.
-3. **Float readback at the tone draw.** This is a new one-shot instrument.
+5. **Float readback at the tone draw.** This is a new one-shot instrument.
    It copies the E8948389 draw's PS t2 (located by
    `flat_ui_layer.cpp toneBloomInput`), its t1 and its RT to staging, and
    writes them raw with format and size. The existing F10 packet capture
@@ -270,14 +269,14 @@ candidate, and it is generic over scenes and objects.
   keyed by role, but EDVR's AA routes consume that target too. Build A
   first; this form only if the variants keep multiplying.
 
-**B. Tent upsample in the chain (only if 2 is confirmed by bytecode or
-readback).**
+**B. Dense tent upsample (only if 2 is confirmed).**
 
 - **What EDVR patches.** Swap `8826CACC6382C78D` (VS `129F602B2A9CA439`)
-  for a 3x3 tent upsample with the same constants and energy. One hash runs
-  all four up passes in every scene, so the fix is generic by
+  for a tent with the same footprint and weight envelope, read from the
+  same cb2 offsets, but with taps no more than one texel apart. One hash
+  runs all four up passes in every scene, so the fix is generic by
   construction.
-- **What it keeps.** Bloom's weights and extent; only the coarse-level
+- **What it keeps.** Bloom's weights and extent; only the sparse-tap
   lumps go.
 - **Risks.** A small change in the halo's look. The swap is inert if a game
   update changes the hash.
@@ -289,7 +288,39 @@ correct bloom from other objects.
 
 **Flight evidence before building:**
 
-- Capture 1 and 2 above. Then 3 if 1 and 2 leave it ambiguous.
+- Capture 2 and 4 above. Then 3 and 5 if they leave it ambiguous.
 - After building A: the same loading screen, lossless, AA off. Expect a
   smooth glow with no bands, a mean within 0.5 code of stock per 64x64
   block, and the swap log naming each variant it took.
+
+## The chain's bytecode (2026-10-20, 20:49 flight)
+
+The dump comes from flight `edvr_gfx_20261020_204909`: build `4675c3c5`,
+game 334473, BloomQuality 3. It disassembles with `tools/dxbc_disasm.py`
+under Wine, using the SDK's `d3dcompiler_47.dll`.
+
+- `DFED8E1C9E191BEC` (VS) passes the vertex UV plus cb2[3..9] as 13 tap
+  positions.
+- `143AAE0597E2F7BF` is the first downsample: 13 taps in five 2x2 boxes,
+  each tap weighted 1/(1 + luma), each box normalised. The four outer boxes
+  weigh 1/8 each and the inner one 1/2. It then applies:
+  - exposure (cb2[1].x times cb2[15].w);
+  - a luma clamp at cb2[16].y;
+  - a soft threshold, saturate((luma - cb2[0].x) * cb2[0].y) squared;
+  - NaN and Inf rejection;
+  - a final scale, cb2[16].x.
+- `5ECFE7085464069B` is the same 13-tap pattern without the luma weights,
+  for the remaining downsamples.
+- `129F602B2A9CA439` (VS) passes the vertex UV plus cb2[3..12] as 18 tap
+  positions.
+- `8826CACC6382C78D` averages two 3x3 tents (weights 1/16, 2/16, 4/16) over
+  one texture at two offset sets, and writes alpha 1. The add of the finer
+  level is therefore blend state, which the dump does not show.
+- `FA01CD495BB27AEF` (the map's composite) is one tap scaled by
+  cb2[0].x.
+
+No chain shader reads SV_Position or a texture size, and none adds a fixed
+half-texel. Any offset error would have to be in the CPU-side cb2 values;
+the measured centre offset bounds it to under a pixel at screen centre.
+The two offset sets and Ultra's `FilterRadius 3` / `FilterRadiusWide 4`
+match one-for-one, which is what hypothesis 2 rests on.

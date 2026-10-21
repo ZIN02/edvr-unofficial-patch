@@ -63,7 +63,7 @@ namespace edvr {
 // hooks are in; otherwise why is written. apply() later sees them in and does not install them again.
 bool uiPanelScaleEarlyHooks(char* why, size_t whyLen);
 
-// From uiLayerConfigure: the key's target (0 off, 1.0, 1.25). The first time
+// From uiLayerConfigure: the key's target (0 off, 1.0, 1.25, 1.5, 2.0). The first time
 // it is on, the sites are checked and the operands swapped (the floats at
 // the game's own values until the factor's inputs are known).
 void uiPanelScaleSetTarget(float target);

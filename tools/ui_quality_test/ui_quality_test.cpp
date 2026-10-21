@@ -109,12 +109,14 @@ bool near1(double a, double b, double eps = 1e-4) { return std::fabs(a - b) <= e
 // ------------------------------------------------------------ arithmetic
 
 void testKey() {
-    // off | 100 | 125: percent of HMD Quality 1.0, the target 1.0 / 1.25 inside.
+    // off | 100 | 125 | 150 | 200: percent of HMD Quality 1.0, the target 1.0 / 1.25 / 1.5 / 2.0 inside.
     bool ok = false;
     const char* alias = "unset";
     check(uiQualityParse("off", &ok, &alias) == 0.0f && ok && !alias, "off is off");
     check(uiQualityParse("100", &ok, &alias) == 1.0f && ok && !alias, "100 is a target of 1.0");
     check(uiQualityParse("125", &ok, &alias) == 1.25f && ok && !alias, "125 is a target of 1.25");
+    check(uiQualityParse("150", &ok, &alias) == 1.5f && ok && !alias, "150 is a target of 1.5");
+    check(uiQualityParse("200", &ok, &alias) == 2.0f && ok && !alias, "200 is a target of 2.0");
     // The first spellings, read for one release, each naming its new one.
     check(uiQualityParse("1.0", &ok, &alias) == 1.0f && ok && alias && std::strcmp(alias, "100") == 0,
           "1.0 is read as 100, and says so");
@@ -124,18 +126,19 @@ void testKey() {
           "1.25 is read as 125, and says so");
     check(uiQualityParse("125", &ok) == 1.25f && ok, "the alias out-parameter is optional");
     // Anything else is off, and refused out loud.
-    const char* garbage[] = {"100%", "125%", "100.0", "1.00", "Off", "on", "150", "0", "", " 125"};
+    const char* garbage[] = {"100%", "125%", "150%", "200%", "100.0", "1.00", "1.5", "2", "2.0", "Off", "on", "175", "250", "0", "", " 125", "150 "};
     bool refused = true;
     for (const char* g : garbage) {
         alias = "unset";
         refused = refused && uiQualityParse(g, &ok, &alias) == 0.0f && !ok && !alias;
     }
-    check(refused, "100%, 125%, 100.0, 1.00, Off, on, 150, 0, empty and a leading space are refused as off");
+    check(refused, "the percent forms, 100.0, 1.00, 1.5, 2, 2.0, Off, on, 175, 250, 0, empty and stray spaces are refused as off");
     check(uiQualityParse(nullptr, &ok) == 0.0f && !ok, "no text is off");
     // The log's and the menu's spelling.
     check(std::strcmp(uiQualityLabel(1.0f), "100%") == 0 && std::strcmp(uiQualityLabel(1.25f), "125%") == 0 &&
+              std::strcmp(uiQualityLabel(1.5f), "150%") == 0 && std::strcmp(uiQualityLabel(2.0f), "200%") == 0 &&
               std::strcmp(uiQualityLabel(0.0f), "off") == 0,
-          "the label: 100%, 125%, off");
+          "the label: 100%, 125%, 150%, 200%, off");
 }
 
 void testSize() {
@@ -151,6 +154,21 @@ void testSize() {
           "4340x4284: the handoff's 74 MB per eye");
     s = uiLayerSize(13108, 1000, 1.25f);
     check(s.w == 0 && s.h == 0, "a layer past D3D11's 16384 is refused, never clamped");
+    // 150 and 200 on the reporter's 3440x1440 display (2026-10-21), and the memory the ini documents: the 8-bit layer, the
+    // HDR layer (8 bytes a pixel) and the depth-stencil target (8) make 20 bytes a pixel.
+    s = uiLayerSize(3440, 1440, 1.5f);
+    check(s.w == 5160 && s.h == 2160, "1.5: 3440x1440 x 1.5 = 5160x2160");
+    s = uiLayerSize(3440, 1440, 2.0f);
+    check(s.w == 6880 && s.h == 2880, "2.0: 3440x1440 x 2 = 6880x2880");
+    check(near1(uiLayerMB(uiLayerBytes(3440, 1440)) * 5.0, 99.07, 0.05) && near1(uiLayerMB(uiLayerBytes(4300, 1800)) * 5.0, 154.8, 0.1) &&
+              near1(uiLayerMB(uiLayerBytes(5160, 2160)) * 5.0, 223.0, 0.1) && near1(uiLayerMB(uiLayerBytes(6880, 2880)) * 5.0, 396.3, 0.1),
+          "3440x1440 at 100, 125, 150 and 200: the 99, 155, 223 and 396 MB (20 bytes a pixel) the ini and the answer give");
+    s = uiLayerSize(8192, 4320, 2.0f);
+    check(s.w == 16384 && s.h == 8640, "2.0: an 8192-wide display's layer is exactly D3D11's limit and is made");
+    s = uiLayerSize(8193, 4320, 2.0f);
+    check(s.w == 0 && s.h == 0, "2.0: one pixel more is refused, never clamped");
+    s = uiLayerSize(4074, 3938, 2.0f);
+    check(s.w == 8148 && s.h == 7876, "2.0: a 4074x3938 headset door makes an 8148x7876 layer per eye");
     s = uiLayerSize(0, 3032, 1.0f);
     check(s.w == 0 && s.h == 0, "no door size, no layer");
     s = uiLayerSize(3070, 3032, 0.0f);
@@ -396,6 +414,30 @@ void testFootprint() {
     check(n == 2 && first == 3 && near1(w[0], 0.2) && near1(w[1], 0.8), "1.25: pixel 3 is 0.2 + 0.8");
     n = uiLayerFootprint(98.9, 100.4, 100, &first, w);
     check(n == 2 && first == 98 && near1(w[0] + w[1], 1.0), "the edge clamps and renormalises");
+    // 1.5: three texels at most, the weights a box of 1.5 gives (each over 1.5, so they sum to 1).
+    n = uiLayerFootprint(0.0, 1.5, 100, &first, w);
+    check(n == 2 && first == 0 && near1(w[0], 2.0 / 3.0) && near1(w[1], 1.0 / 3.0), "1.5: pixel 0 is 2/3 + 1/3");
+    n = uiLayerFootprint(1.5, 3.0, 100, &first, w);
+    check(n == 2 && first == 1 && near1(w[0], 1.0 / 3.0) && near1(w[1], 2.0 / 3.0), "1.5: pixel 1 is 1/3 + 2/3");
+    n = uiLayerFootprint(0.9, 2.4, 100, &first, w);
+    check(n == 3 && first == 0 && near1(w[0] + w[1] + w[2], 1.0) && near1(w[0], 0.1 / 1.5) && near1(w[1], 1.0 / 1.5) && near1(w[2], 0.4 / 1.5),
+          "1.5: a footprint off the grid reaches three texels");
+    // 2.0: the exact 2 x 2 average on the grid, and the tent a half-texel offset gives (a pixel the layer rectangle does not align to).
+    n = uiLayerFootprint(4.0, 6.0, 100, &first, w);
+    check(n == 2 && first == 4 && near1(w[0], 0.5) && near1(w[1], 0.5), "2.0: on the grid a pixel is the exact average of two texels (2 x 2 with the other axis)");
+    n = uiLayerFootprint(4.5, 6.5, 100, &first, w);
+    check(n == 3 && first == 4 && near1(w[0], 0.25) && near1(w[1], 0.5) && near1(w[2], 0.25), "2.0: half a texel off the grid is 1/4, 1/2, 1/4");
+    for (double x0 = 0.0; x0 < 8.0; x0 += 0.37) {
+        n = uiLayerFootprint(x0, x0 + 2.0, 100, &first, w);
+        float sum = 0.0f;
+        for (int k = 0; k < n; ++k) sum += w[k];
+        if (n < 2 || n > 3 || !near1(sum, 1.0)) {
+            check(false, "2.0: every footprint is 2 or 3 texels with weights summing to 1");
+            break;
+        }
+    }
+    n = uiLayerFootprint(98.0, 100.0, 100, &first, w);
+    check(n == 2 && first == 98 && near1(w[0], 0.5) && near1(w[1], 0.5), "2.0: the last pixel of the layer is whole");
 }
 
 void testGate() {
@@ -1570,6 +1612,22 @@ void testFlatLayerRules() {
     check(!flatUiLayerDoorArms(false, 3840, 2160, 3840, 2160), "flat layer: a refused frame arms nothing");
     check(!flatUiLayerDoorArms(true, 1920, 1080, 3840, 2160), "flat layer: a picture at the render size (an E below D) arms nothing");
     check(!flatUiLayerDoorArms(true, 0, 0, 0, 0), "flat layer: no display size arms nothing");
+    // The HUD's bloom feed (2026-10-21): H' goes to the draw that writes a half-size target of H, the bloom chain's first level.
+    check(flatUiGlowFeedShape(1248, 780, 624, 390), "glow feed: the flown 624x390 level of a 1248x780 H is the chain's first");
+    check(flatUiGlowFeedShape(3840, 2160, 1920, 1080), "glow feed: half of 3840x2160 is the first level");
+    check(flatUiGlowFeedShape(1921, 1081, 960, 540) && flatUiGlowFeedShape(1921, 1081, 961, 541),
+          "glow feed: an odd extent halved down or up is within the pixel of slack");
+    check(!flatUiGlowFeedShape(1248, 780, 1248, 780) && !flatUiGlowFeedShape(1248, 780, 312, 195) && !flatUiGlowFeedShape(1248, 780, 624, 780),
+          "glow feed: a full-size or quarter-size target, or a half in one axis only, is not the first level");
+    check(!flatUiGlowFeedShape(0, 780, 0, 390) && !flatUiGlowFeedShape(1248, 780, 0, 390), "glow feed: no size reads nothing");
+    check(flatUiGlowFeedWanted(true, true, false, 0, 1248, 780, 624, 390) && flatUiGlowFeedWanted(true, true, false, 3, 1248, 780, 624, 390),
+          "glow feed: wanted at a first-level trigger with the layer on and a known slot");
+    check(!flatUiGlowFeedWanted(false, true, false, 0, 1248, 780, 624, 390) && !flatUiGlowFeedWanted(true, false, false, 0, 1248, 780, 624, 390) &&
+              !flatUiGlowFeedWanted(true, true, true, 0, 1248, 780, 624, 390) && !flatUiGlowFeedWanted(true, true, false, 4, 1248, 780, 624, 390) &&
+              !flatUiGlowFeedWanted(true, true, false, ~0u, 1248, 780, 624, 390),
+          "glow feed: not wanted with the layer off, an unread or ambiguous trigger, or a slot past t3");
+    for (size_t i = 0; i < static_cast<size_t>(UiGlowFeed::kCount); ++i)
+        check(std::strcmp(uiGlowFeedName(static_cast<UiGlowFeed>(i)), "?") != 0, "glow feed: every verdict has a name");
     // The layer's size at the door, VR's own rule: D at 100, 1.25 D at 125.
     const UiLayerSize s100 = uiLayerSize(3840, 2160, 1.0f), s125 = uiLayerSize(3840, 2160, 1.25f);
     check(s100.w == 3840 && s100.h == 2160 && s125.w == 4800 && s125.h == 2700,

@@ -23,11 +23,11 @@
   (`flatUiLayerShapeToneCandidate`). Entries at the end.
 - **Local flight:** 4b7bfec4, 120427.log, SS 0.5 then about 0.65/UI 125; the
   cleanup keeps the flown guards (88 CPU checks pass).
-- **The key:** `fix.ui_quality = off | 100 | 125`, default 100 in flat (the
-  code's fallback and the flat ini template), the fourth flat F8 row. 100: the
-  panels at display size and the cockpit HUD out of temporal history, whatever
-  the render scale; 125: the same 1.25x larger; off: today's frame. The panels
-  and the cockpit HUD layer need the flat anti-aliasing on.
+- **The key:** `fix.ui_quality = off | 100 | 125 | 150 | 200`, default 100 in
+  flat (the code's fallback and the flat ini template), the fourth flat F8 row.
+  100: the panels at display size and the cockpit HUD out of temporal history,
+  whatever the render scale; 125/150/200: the same 1.25x/1.5x/2x larger (150
+  and 200: 2026-10-21); off: today's frame. Both need the flat AA on.
 - **What ships:** the panel factor `f = (R/D)/T` (ui_panel_scale.cpp, "ui
   quality: panels (flat)" lines); the flat UI layer (flat_ui_layer.{h,cpp}, a
   mono adapter over ui_layer.cpp) for the holo panels, flight HUD and target
@@ -862,3 +862,27 @@ re-issue outcome. At most 12 a session. Remove it once the loop is fixed.
 **Flight.** Steam flat, FSR3: about a minute in the cockpit, then the camera
 suite, cycling the interior cameras, then exit and another minute in the
 cockpit.
+
+## 2026-10-21: 150 and 200
+
+A user on the bloom test build (3440x1440, DLAA, `fix.ui_quality` 125, every
+HUD draw taken, none refused) still saw aliasing on the HUD. With the layer on
+the HUD is out of the temporal history, so the layer's size is the only
+smoothing it has: the composite is an exact box over each pixel's footprint, so
+a pixel is the mean of T squared samples (1.56 at 125). Built, not flown:
+`off | 100 | 125 | 150 | 200` (T = 1.5, 2.0).
+
+- 150 is a fractional ratio, so the weights are uneven (2/3 + 1/3, and three
+  texels off the grid); 200 is the exact 2 x 2 mean, four samples a pixel.
+- The composite shader and its CPU model already took a footprint of up to
+  three texels (`kUiLayerMaxTaps` 4, "s <= 2 needs at most 3"), so no shader
+  changed. The panel factor `f = (R/D)/T` already clamps to [1/4, 1] and the
+  budget holds the widest panel; the grid test now runs all four targets.
+- Memory (the 8-bit layer, the HDR layer and the depth-stencil target, 20
+  bytes a pixel) at 3440x1440: 99 MB at 100, 155 at 125, 223 at 150, 396 at
+  200. A 4074x3938 headset door makes an 8148x7876 layer an eye at 200, over a
+  gigabyte an eye: the ini says so. A layer past 16384 on a side is refused as
+  before (an 8192-wide display is the last one 200 serves).
+- Not changed: the holograms stay in the frame, so no size here smooths them.
+- Flight: UI quality 150 and 200 in the cockpit; the `ui quality:` lines name
+  the size (`150%`, `200%`) and the layer's size and MB.

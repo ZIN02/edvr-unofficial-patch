@@ -21,7 +21,7 @@
 //     composite reproduces what the game's own blends painted, in order;
 //   * the COMPOSITE's filter: an exact box (area) filter of the layer over
 //     each output pixel's footprint -- a copy at 1.0, a supersampled
-//     downsample at 1.25.
+//     downsample at 1.25, 1.5 and 2.0 (2.0 is the exact 2 x 2 average).
 //
 // WHY TRANSMITTANCE AND NOT COVERAGE. The design (A3) kept coverage in alpha,
 // which cannot express an OPAQUE draw: D3D11's blend is src*f1 + dst*f2 with
@@ -53,9 +53,9 @@ namespace edvr {
 
 // ---------------------------------------------------------------- the key --
 
-// "off" | "100" | "125" -> 0 (off) | 1.0 | 1.25: the target HMD Quality, as
+// "off" | "100" | "125" | "150" | "200" -> 0 (off) | 1.0 | 1.25 | 1.5 | 2.0: the target HMD Quality, as
 // a percentage of HMD Quality 1.0 in the file (a plain number, like every
-// numeric key) and "100%" / "125%" in the F8 menu. Exact text, the way the
+// numeric key) and "100%" ... "200%" in the F8 menu. Exact text, the way the
 // other choice keys read: "100.0" is not "100". The first
 // spellings -- "1.0", "1" and "1.25" -- are read for one release as 100 and
 // 125, with *alias set to the new spelling for the log's one-time note.
@@ -71,6 +71,8 @@ inline float uiQualityParse(const char* text, bool* recognized, const char** ali
     if (std::strcmp(text, "off") == 0) return 0.0f;
     if (std::strcmp(text, "100") == 0) return 1.0f;
     if (std::strcmp(text, "125") == 0) return 1.25f;
+    if (std::strcmp(text, "150") == 0) return 1.5f;
+    if (std::strcmp(text, "200") == 0) return 2.0f;
     if (std::strcmp(text, "1.0") == 0 || std::strcmp(text, "1") == 0) {
         if (alias) *alias = "100";
         return 1.0f;
@@ -83,10 +85,12 @@ inline float uiQualityParse(const char* text, bool* recognized, const char** ali
     return 0.0f;
 }
 
-// The target as the menu and the log say it: "100%", "125%", else "off".
+// The target as the menu and the log say it: "100%", "125%", "150%", "200%", else "off".
 inline const char* uiQualityLabel(float target) {
     if (target == 1.0f) return "100%";
     if (target == 1.25f) return "125%";
+    if (target == 1.5f) return "150%";
+    if (target == 2.0f) return "200%";
     return "off";
 }
 
@@ -551,7 +555,7 @@ struct UiLayerPrivateDepthGuard {
 // area weights normalised to 1. Output pixel i of a region whose layer
 // rectangle starts at layer coordinate o with s layer texels a pixel covers
 // [o + i*s, o + (i+1)*s): one texel with weight 1 at s = 1 on the grid (a
-// copy), up to three at s = 1.25. The HLSL in ui_layer_shaders.h is this
+// copy), up to three at s = 1.25, 1.5 or 2. The HLSL in ui_layer_shaders.h is this
 // loop, transcribed; the rig compares the two on WARP.
 constexpr int kUiLayerMaxTaps = 4;  // s <= 2 needs at most 3; one spare
 inline int uiLayerFootprint(double x0, double x1, uint32_t layerDim, uint32_t* first,
@@ -1138,6 +1142,31 @@ inline const char* uiLayerDecisionName(UiLayerDecision d) {
             return "the family's own private pass is not available (left in the scene)";
         case UiLayerDecision::kLayerFailed: return "layer creation failed";
         case UiLayerDecision::kFamilyOff: return "the key that governs this family is off";
+        default: return "?";
+    }
+}
+
+// The flat HUD's bloom feed (ui_layer.h uiLayerGlowFeed; docs/cockpit-hud-layer-design-2026-09-27.md, "2026-10-21: the HUD's bloom"): what the
+// pass that makes H' = H + the HUD layer's light came to for one draw.
+enum class UiGlowFeed : uint8_t {
+    kFed = 0,     // H' is made: bind it at the slot for this draw
+    kNoHud,       // no HUD in the layer this frame (nothing to feed)
+    kNotReady,    // the pass's shaders or deferred context are not available
+    kBinding,     // the draw's own binding at the slot is not H
+    kTexture,     // H is not a plain 2D mip-0 view, or H' could not be made
+    kFormat,      // H is not R11G11B10_FLOAT, one sample, one slice
+    kFault,       // the pass faulted (its fault budget; stays off once spent)
+    kCount
+};
+inline const char* uiGlowFeedName(UiGlowFeed v) {
+    switch (v) {
+        case UiGlowFeed::kFed: return "fed";
+        case UiGlowFeed::kNoHud: return "no-hud";
+        case UiGlowFeed::kNotReady: return "not-ready";
+        case UiGlowFeed::kBinding: return "binding-not-h";
+        case UiGlowFeed::kTexture: return "texture";
+        case UiGlowFeed::kFormat: return "format";
+        case UiGlowFeed::kFault: return "fault";
         default: return "?";
     }
 }

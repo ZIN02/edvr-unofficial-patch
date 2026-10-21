@@ -296,6 +296,33 @@ float4 main(float4 p : SV_POSITION) : SV_Target {
 }
 )HLSL";
 
+// The HUD's light for the game's bloom (flat fix.ui_quality): the scene H plus the HUD HDR layer's premultiplied radiance, one
+// pass at H's size. The layer is the display's size times the quality target, so a pixel of H is an N x N box of the layer's
+// texels (N = the ratio rounded up, 4 at most), point-read inside the pixel's own footprint: a one-texel line keeps its energy
+// whatever the render scale. Non-finite texels read zero; the sum stays inside R11G11B10_FLOAT's range.
+constexpr char kUiGlowFeedPsHlsl[] = R"HLSL(
+Texture2D<float4> HudLayer : register(t0);
+Texture2D<float4> Scene : register(t1);
+float4 main(float4 p : SV_POSITION) : SV_Target {
+    uint sw, sh, lw, lh;
+    Scene.GetDimensions(sw, sh);
+    HudLayer.GetDimensions(lw, lh);
+    float2 sc = float2(lw, lh) / float2(sw, sh);
+    int n = (int)clamp(ceil(max(sc.x, sc.y)), 1.0, 4.0);
+    float3 acc = float3(0, 0, 0);
+    [loop] for (int j = 0; j < n; ++j) {
+        [loop] for (int i = 0; i < n; ++i) {
+            float2 q = (p.xy - 0.5 + (float2(i, j) + 0.5) / n) * sc;
+            int2 t = clamp(int2(floor(q)), int2(0, 0), int2(lw - 1, lh - 1));
+            float3 c = HudLayer.Load(int3(t, 0)).rgb;
+            acc += (all(isfinite(c)) ? max(c, float3(0, 0, 0)) : float3(0, 0, 0));
+        }
+    }
+    float3 o = Scene.Load(int3(p.xy, 0)).rgb + acc / (float)(n * n);
+    return float4(min(o, float3(60000, 60000, 60000)), 1.0);
+}
+)HLSL";
+
 inline constexpr const char* kUiSeedVs = R"(
 struct V { float4 p:SV_POSITION; };
 V main(uint id:SV_VertexID) {

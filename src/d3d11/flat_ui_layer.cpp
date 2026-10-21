@@ -9,6 +9,7 @@
 #include "exposure_fix.h"         // lookupShaderHash: compare the physical shaders with the draw's cached pair
 #include "tonemap_admit.h"        // read-only structural description of the actual game's tone-shaped draw
 #include "ui_layer.h"
+#include "vscreen.h"            // vScreenPSSetShaderResourcesRaw: the bloom feed binds past the shadow
 
 #include "../common/log.h"
 #include "../common/runtime_profile.h"
@@ -55,8 +56,17 @@ struct Window {
     // The map families' draws by the kind their camera rows measured (flatUiJitterSlot: phase, zero, other, no rows), before
     // the no-cancel rule takes the cancel away (2026-10-10).
     uint64_t mapJitter[2][4] = {};
+    // The HUD's bloom feed (flatUiGlowBegin): the first-level draws asked for H', by the pass's verdict (UiGlowFeed).
+    uint64_t glow[static_cast<size_t>(UiGlowFeed::kCount)] = {};
+    uint32_t glowW = 0, glowH = 0;  // the last fed H'
+    // Every HDR-route trigger draw the adapter was asked about (flatUiGlowWanted), those the shape rule took for the bloom chain's first level, and the
+    // last one's target and the scene's size: a window with triggers and no half-size ones is a game with Bloom off (or another chain), not a feed that
+    // never ran.
+    uint64_t glowTriggers = 0, glowHalf = 0;
+    uint32_t glowLastTargetW = 0, glowLastTargetH = 0, glowLastHdrW = 0, glowLastHdrH = 0;
 };
 Window g_w;
+bool g_glowNoted = false;  // the once-only first feed line
 FlatUiLayerAsk g_lastAsk = FlatUiLayerAsk::kNotAsked;
 UiLayerFamily g_decidedFamily = UiLayerFamily::kNone;  // the family of the last kDecided draw (flatUiLayerNoteIssue's)
 bool g_mapCanvasNoted = false, g_mapSpriteNoted = false;  // the once-only first take of each map family
@@ -581,6 +591,56 @@ void flatUiLayerNoteSceneDraw(ID3D11DeviceContext* ctx, uint32_t count, uint32_t
     uiLayerNoteSceneDraw(ctx, count, instances, kind);
 }
 
+bool flatUiGlowWanted(bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvSlot, uint32_t hdrW, uint32_t hdrH, uint32_t targetW,
+                      uint32_t targetH) {
+    const bool wanted = flatUiGlowFeedWanted(flatUiLayerOn(), triggerSrvKnown, triggerAmbiguous, srvSlot, hdrW, hdrH, targetW, targetH);
+    if (flatUiLayerOn()) {
+        ++g_w.glowTriggers;
+        if (wanted) ++g_w.glowHalf;
+        g_w.glowLastTargetW = targetW;
+        g_w.glowLastTargetH = targetH;
+        g_w.glowLastHdrW = hdrW;
+        g_w.glowLastHdrH = hdrH;
+    }
+    return wanted;
+}
+
+bool flatUiGlowBegin(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, uint64_t vs, uint64_t ps, uint32_t hdrW,
+                     uint32_t hdrH, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView** original) {
+    if (!ctx || !original || *original || !flatUiLayerOn()) return false;
+    FlatComputeInternalScope internal;
+    Ptr<ID3D11ShaderResourceView> game;
+    ctx->PSGetShaderResources(slot, 1, &game);
+    int verdict = static_cast<int>(UiGlowFeed::kNotReady);
+    ID3D11ShaderResourceView* fed = uiLayerGlowFeed(ctx, frame, slot, hdr, &verdict);
+    if (verdict < 0 || verdict >= static_cast<int>(UiGlowFeed::kCount)) verdict = static_cast<int>(UiGlowFeed::kFault);
+    ++g_w.glow[verdict];
+    if (!fed || !game) return false;
+    ID3D11ShaderResourceView* bound = fed;
+    vScreenPSSetShaderResourcesRaw(ctx, slot, 1, &bound);
+    *original = game.Detach();
+    g_w.glowW = hdrW;
+    g_w.glowH = hdrH;
+    if (!g_glowNoted) {
+        g_glowNoted = true;
+        Log::get().note("flat ui layer glow: the HUD's light joins the game's bloom -- the first-level draw vs %016llX ps %016llX (target %ux%u of the "
+                        "scene's %ux%u) reads H' = H + the HUD layer at t%u from frame %llu on; the chain, its tier and the tone are the game's.",
+                        static_cast<unsigned long long>(vs), static_cast<unsigned long long>(ps), targetW, targetH, hdrW, hdrH, slot,
+                        static_cast<unsigned long long>(frame));
+    }
+    return true;
+}
+
+void flatUiGlowEnd(ID3D11DeviceContext* ctx, uint32_t slot, ID3D11ShaderResourceView* original) {
+    if (!original) return;
+    if (ctx) {
+        FlatComputeInternalScope internal;
+        ID3D11ShaderResourceView* game = original;
+        vScreenPSSetShaderResourcesRaw(ctx, slot, 1, &game);
+    }
+    original->Release();
+}
+
 void flatUiLayerAtCopy(ID3D11DeviceContext* ctx, uint64_t frame, bool treated, uint32_t outW, uint32_t outH,
                        ID3D11ShaderResourceView** original, bool* replaced) {
     if (!ctx || !original || !replaced || !flatUiLayerOn()) return;
@@ -792,6 +852,21 @@ void flatUiLayerReport(uint64_t windowSeconds) {
         static_cast<unsigned long long>(w.mapJitter[0][2]), static_cast<unsigned long long>(w.mapJitter[0][3]),
         static_cast<unsigned long long>(w.mapJitter[1][0]), static_cast<unsigned long long>(w.mapJitter[1][1]),
         static_cast<unsigned long long>(w.mapJitter[1][2]), static_cast<unsigned long long>(w.mapJitter[1][3]));
+    // The HUD's bloom feed: every first-level draw that asked for H' this window, by what the pass came to. "fed" is the draws that read H'; a
+    // window with the layer live and the HUD taken but nothing here is a build that never ran it, or a game with Bloom off (no first level).
+    {
+        char verdicts[200] = "";
+        size_t used2 = 0;
+        for (size_t v = 0; v < static_cast<size_t>(UiGlowFeed::kCount) && used2 < sizeof(verdicts); ++v) {
+            const int n = std::snprintf(verdicts + used2, sizeof(verdicts) - used2, "%s%s=%llu", used2 ? " " : "",
+                                        uiGlowFeedName(static_cast<UiGlowFeed>(v)), static_cast<unsigned long long>(w.glow[v]));
+            if (n < 0) break;
+            used2 += static_cast<size_t>(n);
+        }
+        Log::get().note("flat ui layer glow: triggers=%llu half-size=%llu (last trigger target %ux%u of the scene's %ux%u); %s (last H' %ux%u)",
+                        static_cast<unsigned long long>(w.glowTriggers), static_cast<unsigned long long>(w.glowHalf), w.glowLastTargetW,
+                        w.glowLastTargetH, w.glowLastHdrW, w.glowLastHdrH, verdicts, w.glowW, w.glowH);
+    }
     g_mapAa.clearCounts();
     char declined[400] = "";
     size_t used = 0;

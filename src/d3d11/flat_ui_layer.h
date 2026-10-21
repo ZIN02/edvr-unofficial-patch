@@ -131,6 +131,17 @@ void flatUiLayerNoteSceneDraw(ID3D11DeviceContext* ctx, uint32_t count, uint32_t
 void flatUiLayerAtCopy(ID3D11DeviceContext* ctx, uint64_t frame, bool treated, uint32_t outW, uint32_t outH,
                        ID3D11ShaderResourceView** original, bool* replaced);
 
+// The HUD's bloom (ui_layer.h UiGlowFeed). The HDR route's trigger draw -- the first draw that reads the scene H after its last write -- is the
+// bloom chain's first level when it writes a target of half H's size, and the HUD the layer took is not in H. flatUiGlowWanted: this trigger
+// is that draw and the layer is live (the scope then sets uiGlow). flatUiGlowBegin, right before that draw's issue: H' = H + the HUD's light is
+// bound at `slot` in place of the game's H (true; `*original` then holds the game's view, one reference, for flatUiGlowEnd), or the draw
+// reads H as always (false, the reason counted). flatUiGlowEnd, right after the issue: the game's view back, the reference released.
+bool flatUiGlowWanted(bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvSlot, uint32_t hdrW, uint32_t hdrH, uint32_t targetW,
+                      uint32_t targetH);
+bool flatUiGlowBegin(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, uint64_t vs, uint64_t ps, uint32_t hdrW,
+                     uint32_t hdrH, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView** original);
+void flatUiGlowEnd(ID3D11DeviceContext* ctx, uint32_t slot, ID3D11ShaderResourceView* original);
+
 // ResizeBuffers on the same device: every per-size reference the layer holds, released (shaders and contexts kept).
 void flatUiLayerRelease();
 // Once a frame with the device the flat runtime adopted: when it is not the device the layer last saw, the shared

@@ -109,7 +109,7 @@ constexpr uint32_t kCrispHdrMissFrames = 30;
 
 // ------------------------------------------------------------ configuration
 
-float g_target = 0.0f;     // 0 off, 1.0 (the file's 100), 1.25 (125)
+float g_target = 0.0f;     // 0 off, 1.0 (the file's 100), 1.25 (125), 1.5 (150), 2.0 (200)
 // fix.sharp_weapons (default on): the weapons fire into its own additive HDR layer, composited after the upscale. INDEPENDENT of
 // fix.ui_quality: g_sharpWeapons is the key, g_weaponsLive the key with everything it needs (a temporal mode, not stood down, not the
 // flat profile). The layer's machinery runs when either half is live (refreshLive); the interface families are taken only while
@@ -3515,7 +3515,7 @@ void uiLayerConfigure(Config& cfg) {
     g_seedCensus.configure(g_hdrDrawTimingOn);
     // The fallback, for an ini with no such line (a hand-copied DLL over an old
     // file, a deleted line), is the shipped default: 100 since 2026-09-29. A line
-    // that is present and not off/100/125 is refused below and reads as off.
+    // that is present and not off/100/125/150/200 is refused below and reads as off.
     const std::string text = cfg.getString("fix.ui_quality", "100");
     bool recognized = true;
     const char* newSpelling = nullptr;
@@ -3611,7 +3611,7 @@ void uiLayerConfigure(Config& cfg) {
     if (!changed) return;
     g_keyNoted = true;
     if (!recognized) {
-        Log::get().note("ui quality: fix.ui_quality = '%s' is not off, 100 or 125 -- off.",
+        Log::get().note("ui quality: fix.ui_quality = '%s' is not off, 100, 125, 150 or 200 -- off.",
                         text.c_str());
         return;
     }
@@ -4310,6 +4310,124 @@ bool crispCoverageContextReady(ID3D11DeviceContext* ctx) {
     Ptr<ID3D11Device> dev;
     ctx->GetDevice(&dev);
     return dev && SUCCEEDED(dev->CreateDeferredContext(0, &g_crispDeferred)) && g_crispDeferred;
+}
+
+// The HUD's light for the game's bloom (ui_layer.h UiGlowFeed; docs/cockpit-hud-layer-design-2026-09-27.md, "2026-10-21: the HUD's bloom").
+// H' = H + the HUD layer's premultiplied radiance, one fullscreen pass at H's size into a texture of H's own format (kUiGlowFeedPsHlsl),
+// recorded on the coverage pass's deferred context and executed with the immediate context's state restored. The caller binds H' for the
+// one draw that reads H as the bloom chain's first level and puts the game's view back after it. The HUD's light is added, not blended
+// over H: behind an opaque panel over a bright scene the halo reads slightly bright, where stock's panel would have replaced the scene.
+struct GlowFeedTexture {
+    Ptr<ID3D11Texture2D> tex;
+    Ptr<ID3D11RenderTargetView> rtv;
+    Ptr<ID3D11ShaderResourceView> srv;
+    uint32_t w = 0, h = 0;
+};
+GlowFeedTexture g_glow;
+ID3D11PixelShader* g_glowPs = nullptr;
+bool g_glowPsTried = false;
+FaultBudget g_glowBudget("uiLayer.glowFeed", 4);
+
+void compileGlowFeedOnce(ID3D11DeviceContext* ctx) {
+    if (g_glowPs || g_glowPsTried || !ctx) return;
+    g_glowPsTried = true;
+    g_glowPs = shaderSwapCreatePs(ctx, kUiGlowFeedPsBytecode, sizeof(kUiGlowFeedPsBytecode), "ui_glow_feed_ps", "crisp hud");
+}
+
+static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Eye& e, uint32_t slot, const void* hdr, UiGlowFeed& verdict) {
+    compileCoverageOnce(ctx);  // the shared fullscreen vertex shader
+    compileGlowFeedOnce(ctx);
+    if (!g_covVs || !g_glowPs || !crispCoverageContextReady(ctx) || !g_crispDeferred) {
+        verdict = UiGlowFeed::kNotReady;
+        return nullptr;
+    }
+    Ptr<ID3D11ShaderResourceView> gameH;
+    ctx->PSGetShaderResources(slot, 1, &gameH);
+    Ptr<ID3D11Resource> gameRes;
+    if (gameH) gameH->GetResource(&gameRes);
+    if (!gameH || !gameRes || gameRes.Get() != hdr) {
+        verdict = UiGlowFeed::kBinding;
+        return nullptr;
+    }
+    D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+    gameH->GetDesc(&sd);
+    Ptr<ID3D11Texture2D> hTex;
+    if (sd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D || sd.Texture2D.MostDetailedMip != 0 || FAILED(gameRes.As(&hTex))) {
+        verdict = UiGlowFeed::kTexture;
+        return nullptr;
+    }
+    D3D11_TEXTURE2D_DESC td{};
+    hTex->GetDesc(&td);
+    if (td.Format != DXGI_FORMAT_R11G11B10_FLOAT || td.SampleDesc.Count != 1 || td.ArraySize != 1) {
+        verdict = UiGlowFeed::kFormat;
+        return nullptr;
+    }
+    if (!g_glow.tex || g_glow.w != td.Width || g_glow.h != td.Height) {
+        g_glow = GlowFeedTexture{};
+        Ptr<ID3D11Device> dev;
+        ctx->GetDevice(&dev);
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = td.Width;
+        d.Height = td.Height;
+        d.MipLevels = 1;
+        d.ArraySize = 1;
+        d.Format = DXGI_FORMAT_R11G11B10_FLOAT;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        GlowFeedTexture made;
+        if (!dev || FAILED(dev->CreateTexture2D(&d, nullptr, &made.tex)) || !made.tex ||
+            FAILED(dev->CreateRenderTargetView(made.tex.Get(), nullptr, &made.rtv)) || !made.rtv ||
+            FAILED(dev->CreateShaderResourceView(made.tex.Get(), nullptr, &made.srv)) || !made.srv) {
+            verdict = UiGlowFeed::kTexture;
+            return nullptr;
+        }
+        made.w = td.Width;
+        made.h = td.Height;
+        g_glow = made;
+    }
+    ID3D11DeviceContext* dc = g_crispDeferred.Get();
+    ID3D11ShaderResourceView* in[2] = {e.hdrSrv.Get(), gameH.Get()};
+    ID3D11RenderTargetView* target = g_glow.rtv.Get();
+    dc->IASetInputLayout(nullptr);
+    dc->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dc->VSSetShader(g_covVs, nullptr, 0);
+    dc->PSSetShader(g_glowPs, nullptr, 0);
+    dc->PSSetShaderResources(0, 2, in);
+    dc->OMSetRenderTargets(1, &target, nullptr);
+    dc->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
+    const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(td.Width), static_cast<float>(td.Height), 0.0f, 1.0f};
+    dc->RSSetViewports(1, &vp);
+    dc->Draw(3, 0);
+    ID3D11ShaderResourceView* none[2] = {};
+    dc->PSSetShaderResources(0, 2, none);
+    Ptr<ID3D11CommandList> list;
+    if (FAILED(dc->FinishCommandList(FALSE, &list)) || !list) {
+        verdict = UiGlowFeed::kFault;
+        return nullptr;
+    }
+    vScreenExecuteCommandListRaw(ctx, list.Get(), 1);
+    verdict = UiGlowFeed::kFed;
+    return g_glow.srv.Get();
+}
+
+ID3D11ShaderResourceView* uiLayerGlowFeed(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, int* verdict) {
+    UiGlowFeed v = UiGlowFeed::kNotReady;
+    ID3D11ShaderResourceView* out = nullptr;
+    do {
+        if (!ctx || !hdr || slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || !runtimeFlatProfile()) break;
+        const Eye& e = g_eye[0];
+        if (!(e.hdrSeq == frame && e.hdrDraws && e.hdrSrv)) {
+            v = UiGlowFeed::kNoHud;
+            break;
+        }
+        if (!guardedBudget(g_glowBudget, [&] { out = glowFeedPass(ctx, e, slot, hdr, v); })) {
+            v = UiGlowFeed::kFault;
+            out = nullptr;
+        }
+    } while (false);
+    if (verdict) *verdict = static_cast<int>(v);
+    return out;
 }
 
 // The whole dependency set a taken HUD draw needs at the tonemap,
@@ -6259,6 +6377,7 @@ bool uiLayerFlatRelease() {
         e.doorFromPass = false;
         e.compositedSeq = 0;
     }
+    g_glow = GlowFeedTexture{};  // H' is H's size: a resize or a profile switch builds it afresh
     g_tc = TargetCache{};
     g_flatDraw = FlatDraw{};
     g_crispPending = CrispTonePending{};
@@ -6334,6 +6453,12 @@ void releaseDeviceObjects() {
         g_covPs = nullptr;
     }
     g_covTried = false;
+    g_glow = GlowFeedTexture{};
+    if (g_glowPs) {
+        g_glowPs->Release();
+        g_glowPs = nullptr;
+    }
+    g_glowPsTried = false;
     if (g_cb) {
         g_cb->Release();
         g_cb = nullptr;

@@ -30,6 +30,13 @@ void oculusRouteInstallEarly(bool nativeBuild);
 // side-effect free.
 void oculusRouteReport();
 
+// Temporary instrument for the 334473 route bypass (docs/build-334473.md); remove when that arc closes.
+// Called once at log open, before the first oculusRouteReport().  Starts a
+// 120 s watch of the LoadLibraryW import slot on a background thread, or
+// records why it did not start.  The watch and its log lines are excluded
+// from the route test rig.
+void oculusRouteSlotWatchStart();
+
 // Restores the executable slot only while it still contains our wrapper.
 // Safe for an uninstalled route.  The caller must provide its normal process
 // teardown quiescence before unloading this DLL.
@@ -82,6 +89,12 @@ static_assert(offsetof(OculusRouteStatus, iatSlot) == 112,
               "OculusRouteStatus pointer fields must retain their ABI offset");
 
 OculusRouteStatus oculusRouteStatusSnapshot();
+
+// For an import hook that takes the route's place in Elite's LoadLibraryW slot.
+// It applies the route's policy with the executable's own return address and
+// forwards every call the route does not refuse to `forward`.
+HMODULE oculusRouteDispatchFrom(LPCWSTR path, uintptr_t returnAddress,
+                                HMODULE (WINAPI* forward)(LPCWSTR));
 
 // Test-only seams.  They exercise the same wrapper dispatch body while
 // injecting a known original target and profile identity, so tests never

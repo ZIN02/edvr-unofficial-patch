@@ -2,8 +2,6 @@
 // The optimized station (fix.optimized_stations = on | off). See optimized_station.cpp for the rules and docs\optimized-station-2026-10-12.md.
 #include <cstdint>
 
-#include "station_sun_probe.h"
-
 namespace edvr {
 
 // Once, at install: reads fix.optimized_stations (on in VR; off in the flat profile unless set) and attaches the hooks when it is on.
@@ -21,10 +19,6 @@ bool optimizedStationSkipsDraw(uint64_t vs, uint64_t ps) noexcept;
 // colour, depth and stencil write off. The flat profile's 30 s line splits `sun draws skipped` by it; a path that never ran reads 0.
 enum class SunDrawPath : uint8_t { kNotIssued = 0, kMasked = 1 };
 void optimizedStationNoteSunDraw(SunDrawPath path) noexcept;
-// Built 2026-10-21 (TEMPORARY, log-only; docs\optimized-station-2026-10-12.md, Status): the sun-skip probe. After a skip the draw path asks whether this
-// frame is the sampled one (one relaxed load) and, if so, hands over the skipped draw's bindings. Neither changes a draw.
-bool optimizedStationSunProbeWants() noexcept;
-void optimizedStationSunProbeNote(uint64_t frame, const sunprobe::Draw& draw) noexcept;
 // The admission store calls this after it has written a record (bucket = the collection, record = its record).
 void optimizedStationAfterStore(uintptr_t bucket, uintptr_t record) noexcept;
 // The render thread's frame tick: the setting, the seal and release rules, the 30 s summary.

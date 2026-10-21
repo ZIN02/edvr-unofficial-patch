@@ -153,7 +153,7 @@ EXPOSED_SECTIONS = ('fix',)
 # key is its LABEL and its CHOICES in the in-headset menu, so that demoting a
 # setting from [fix] to [experimental] costs it its tier and its page but not
 # the words somebody already wrote for it.
-UI_SECTIONS = ('fix', 'advanced', 'experimental', 'menu', 'hotkey', 'diag')
+UI_SECTIONS = ('fix', 'advanced', 'experimental', 'menu', 'hotkey')
 # [hotkey] is the one section whose keys are rows by annotation alone, and whose
 # TIER is the annotation that carries the `hotkey` token (2026-10-08, the F8
 # menu's Hotkeys page): a `# ui:` line is a row everyone sees, a `# dev:` line is a
@@ -169,10 +169,7 @@ MENU_ROW_SECTIONS = ('fix', 'menu')
 # Exceptions: [advanced] keys that carry a `menu <page>` token on their ui: line and are rows of the in-headset menu for everyone (Fix tier), not
 # developer-tier rows. The flat profile's Debug tab (2026-10-16): two toggles every flat user may reach, labelled debug. Flat-only keys, so VR's
 # developer tier loses nothing by their having no row of their own there. Their page is `debug`, which only the flat panel builds.
-# diag.station_sun_skip (2026-10-21) is the one [diag] key here: a TEMPORARY A/B for a flight (docs\optimized-station-2026-10-12.md), a choice
-# row on the same Debug tab. [diag] is in UI_SECTIONS for its ui: line, and a `menu` token on any other [diag] key is still refused. The row goes
-# with the key when the arc closes.
-MENU_ADVANCED_EXCEPTIONS = ('advanced.flat_cpu_timing', 'advanced.flat_refusal_view', 'diag.station_sun_skip')
+MENU_ADVANCED_EXCEPTIONS = ('advanced.flat_cpu_timing', 'advanced.flat_refusal_view')
 # Settings that were taken off every menu on purpose, and must stay off.
 #
 # The three field-of-view trims were [fix] rows on the Performance page until
@@ -1748,18 +1745,6 @@ def self_test():
     said = case(name, debug_ini.replace('flat_cpu_timing', 'other_timing'),
                 {'a.cpp': debug_reads['a.cpp'].replace('flat_cpu_timing', 'other_timing')}, 1)
     expect_in(name, said, 'advanced.other_timing')
-    # The one [diag] exception (2026-10-21, a temporary A/B choice row on the same tab): a Fix-tier row of the page `debug`, once, a choice shipped on;
-    # the same token on any other [diag] key is refused.
-    diag_ini = (debug_ini + '\n[diag]\n# A temporary A/B. Live.\n# ui: Station sun skip | choices on, off | live | menu debug\nstation_sun_skip = on\n')
-    diag_reads = {'a.cpp': debug_reads['a.cpp'] + 'std::string k = cfg.getString("diag.station_sun_skip", "on");\n'}
-    name = 'debug-diag-choice-row'
-    wrote = case(name, diag_ini, diag_reads, 0)
-    expect_in(name, wrote, 'MenuKind::Choice, "on", "", "", 2, "on|off", false, false, 1,\n     MenuTier::Fix, "debug"')
-    if wrote.count('"station_sun_skip"') != 1 or wrote.count('"debug"') != 3:
-        failures.append('%s: one Fix-tier debug row for station_sun_skip beside the two toggles expected' % name)
-    name = 'debug-token-refused-elsewhere-diag'
-    said = case(name, diag_ini.replace('station_sun_skip', 'other_skip'), {'a.cpp': diag_reads['a.cpp'].replace('station_sun_skip', 'other_skip')}, 1)
-    expect_in(name, said, 'diag.other_skip')
 
     # The Explorer Cam page (2026-10-08): `menu explorer_cam` puts a [fix] number row on its own page for everyone (Fix tier), and
     # step / unit / zero / signed shape the row (0.01 m, "+0.15 m", "0 ms (exact)"). The two fallback keys the head joint replaced

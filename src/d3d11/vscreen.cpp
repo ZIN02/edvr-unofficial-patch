@@ -1,7 +1,6 @@
 #include "vscreen.h"
 #include "gpu_timing.h"
 #include "optimized_station.h"   // the station's sun skip while sealed (optimized_station.cpp)
-#include "flat_station_probe.h"   // the flat runtime's draw sequence for the sun skip probe (TEMPORARY, log-only)
 #include "station_draw_mask.h"   // the flat sun draw issued with every write masked (built 2026-10-21)
 #include "gpu_frame_timing.h"
 #include "gpu_census.h"       // issue #38: the per-feature GPU cost census
@@ -4930,66 +4929,13 @@ static void flatCensusDraw(ID3D11DeviceContext* self, char kind, uint32_t count,
     if (drawCensusArmed()) drawCensusOffDraw(self, kind, count, instances, args);
 }
 
-// Built 2026-10-21 (TEMPORARY, log-only; docs\optimized-station-2026-10-12.md, Status): what a skipped sun draw was bound to, for the station's sun skip
-// probe. Begun on the sampled frame (optimizedStationSunProbeWants), on the skip's own draw, owner context, before the flat runtime's scope: it reads
-// bindings and changes none. Finished once the scope is built: the scope numbers the draw (q) when it observes it, so the sequence read before and after
-// says whether the draw has a q of its own (one more than before) or only sits after the last one (the old after-q). Owner thread only: the draw hooks
-// run it for the owner context alone, one draw at a time, so the pending record is plain static state.
-static sunprobe::Draw g_stationSunProbeDraw;
-static uint64_t g_stationSunProbeFrame = 0;
-static bool g_stationSunProbePending = false;
-static void stationSunProbeBegin(ID3D11DeviceContext* self) {
-    sunprobe::Draw& d = g_stationSunProbeDraw;
-    d = sunprobe::Draw{};
-    uint32_t q = 0;
-    d.qKnown = flatRuntimeStationProbeSequence(&g_stationSunProbeFrame, &q);
-    d.afterQ = d.qKnown ? q : 0;
-    void* const rtv = bindingGet(BindSlot::Rtv0);
-    d.rtv = reinterpret_cast<uintptr_t>(rtv);
-    d.dsv = reinterpret_cast<uintptr_t>(bindingGet(BindSlot::Dsv0));
-    ResourceInfo info;
-    if (rtv && bindingResolveProbe(rtv, &info) && info.isTexture2D) {
-        d.sized = true;
-        d.tex = reinterpret_cast<uintptr_t>(info.resource);
-        d.fmt = info.fmt;
-        d.width = info.a;
-        d.height = info.b;
-    }
-    D3D11_VIEWPORT vp[1] = {};
-    UINT vpCount = 1;
-    self->RSGetViewports(&vpCount, vp);
-    d.vpCount = vpCount;
-    if (vpCount > 0) {
-        d.vp[0] = vp[0].TopLeftX;
-        d.vp[1] = vp[0].TopLeftY;
-        d.vp[2] = vp[0].Width;
-        d.vp[3] = vp[0].Height;
-    }
-    g_stationSunProbePending = true;
-}
-static void stationSunProbeFinish() {
-    if (!g_stationSunProbePending) return;
-    g_stationSunProbePending = false;
-    sunprobe::Draw& d = g_stationSunProbeDraw;
-    uint64_t frameAfter = 0;
-    uint32_t qAfter = 0;
-    if (d.qKnown && flatRuntimeStationProbeSequence(&frameAfter, &qAfter) && frameAfter == g_stationSunProbeFrame && qAfter == d.afterQ + 1) {
-        d.afterQ = qAfter;   // the scope numbered this draw
-        d.ownQ = true;
-    }
-    optimizedStationSunProbeNote(d.qKnown ? g_stationSunProbeFrame : 0, d);
-}
-
 // Built v14.34: the optimized station's sun skip in the flat profile. Flat draws never reach beginPanelOverride (VR's verdict makes the same call after its
 // foreign-context return), so the four draw kinds ask here, first, in their flat branch: owner context only, one atomic load while the sun is on.
 // Built 2026-10-21: the answer no longer ends the hook. The draw is the game's deferred lighting pass (kFlatDeferredHdrVs/Ps), which writes the scene HDR
 // target and gives it its camera; the flat runtime's model needs to see it. So the hook goes on to run the scope for it as for any draw and
-// FlatStationSunGate (below) decides what reaches the GPU. Built 2026-10-21 (TEMPORARY, log-only): on the sampled frame the draw is also handed to the
-// station's sun skip probe (stationSunProbeBegin above, finished by FlatStationSunGate).
+// FlatStationSunGate (below) decides what reaches the GPU.
 static inline bool flatStationSkipsDraw(ID3D11DeviceContext* self) {
-    if (self != g_state->ownerCtx || !optimizedStationSkipsDraw(bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps))) return false;
-    if (optimizedStationSunProbeWants()) stationSunProbeBegin(self);
-    return true;
+    return self == g_state->ownerCtx && optimizedStationSkipsDraw(bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps));
 }
 
 // The station's skipped sun draw, once the flat runtime's scope has observed it and (when it planned anything) begun. Every flat draw builds one of these
@@ -5019,7 +4965,6 @@ class FlatStationSunGate {
 public:
     FlatStationSunGate(ID3D11DeviceContext* self, const FlatRuntimeDrawScope& scope, bool stationSkip) : ctx_(self) {
         if (!stationSkip) return;
-        stationSunProbeFinish();
         if (!scope.needsActualDraw()) {
             issue_ = false;
             optimizedStationNoteSunDraw(SunDrawPath::kNotIssued);

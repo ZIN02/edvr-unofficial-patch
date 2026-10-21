@@ -1,5 +1,5 @@
 // The rows of the flat profile's F8 panel, in two tables: the Performance tab (kFlatPageRows, the panel's settings) and the Debug tab
-// (kFlatDebugRows: two toggles every flat user may reach, labelled debug, and a temporary A/B choice).
+// (kFlatDebugRows, two toggles every flat user may reach, labelled debug).
 //
 // menu.cpp builds the pages from them, and tools\flat_sharpen_test reads them to
 // fail the build for any row whose key the flat profile's gate refuses
@@ -42,15 +42,12 @@ inline constexpr FlatPageRow kFlatPageRows[] = {
 };
 inline constexpr size_t kFlatPageRowCount = sizeof(kFlatPageRows) / sizeof(kFlatPageRows[0]);
 
-// The Debug tab (2026-10-16). Each is a key with `menu debug` on its ui: line in edvr.ini (a per-key exception of
-// tools\gen_settings_schema.py, MENU_ADVANCED_EXCEPTIONS), live. Two are [advanced] toggles, off by default:
+// The Debug tab (2026-10-16). Both are [advanced] keys with `menu debug` on their ui: line in edvr.ini (a per-key exception of
+// tools\gen_settings_schema.py, MENU_ADVANCED_EXCEPTIONS), both toggles, both live, both off by default:
 //   flat_cpu_timing   CPU timing in the log   the census's clocks (flat_cpu.h Census::setClocks, flat_runtime.cpp)
 //   flat_refusal_view Motion source view      the prep's per-pixel class painted over the resolved image
-// and, since 2026-10-21, one TEMPORARY choice row, on by default (remove it with the Orbis cockpit arc, docs\optimized-station-2026-10-12.md):
-//   diag.station_sun_skip  Station sun skip   on | off: the optimized station's sun skip alone (optimized_station.cpp)
-// Order is the tab's: menu.cpp walks the generated schema (edvr.ini order, [diag] before [advanced]) and keeps the `debug` rows named here.
+// Order is the tab's: menu.cpp walks the generated schema (edvr.ini order) and keeps the `debug` rows named here.
 inline constexpr FlatPageRow kFlatDebugRows[] = {
-    {"diag",     "station_sun_skip",  FlatRowRead::Allowlist},   // TEMPORARY A/B, 2026-10-21
     {"advanced", "flat_cpu_timing",   FlatRowRead::Allowlist},
     {"advanced", "flat_refusal_view", FlatRowRead::Allowlist},
 };

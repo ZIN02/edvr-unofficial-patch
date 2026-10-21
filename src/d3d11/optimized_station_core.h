@@ -898,7 +898,7 @@ inline bool inAddrSet(const uintptr_t* set, size_t n, uintptr_t addr) noexcept {
 // one side of the box and reach well into it (flight log, fleet carrier, large bay: DoorA0 to DoorA3, radius 72.5 m, centres up to 42 m outside,
 // culled by the centre rule). A sphere that contains the camera is kept too: the first form of this rule culled it as the station's enclosing
 // structure, but DoorA1 and DoorA2 (radius 72.5 m) contain the camera at the pad and were still culled, and at a station where the seal engaged
-// (box 446 x 148 x 556 m) the census found none of 246 culled records overlapping the box, so the exception protected nothing. The capsule and
+// (box 446 x 148 x 556 m) a census of the culled records found none overlapping the box, so the exception protected nothing. The capsule and
 // sphere cells judge the centre alone.
 inline NamedKeep keepNamedCell(const float centre[3], float radius, const float camera[3], float R, const OwnCell& cell,
                                const uintptr_t* explicitSet, size_t explicitN, uintptr_t addr) noexcept {
@@ -933,56 +933,6 @@ inline NamedKeep keepNamedCell(const float centre[3], float radius, const float 
         }
     }
     return v;
-}
-
-// Built 2026-10-21 (temporary instrument): the census of culled records whose sphere reaches into the sealed box (sphereOverlapsBox is the rule's own).
-// How far the centre lies beyond each half-extent, metres (0 within it). o: a centre in box coordinates (boxCoords), half: the box's half-extents.
-inline void outsideByBox(const float o[3], const float half[3], float out[3]) noexcept {
-    for (int k = 0; k < 3; ++k) out[k] = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
-}
-
-// One culled record that overlapped the box (a callback appends it), and a node's fold of them (the tick reports it).
-constexpr uint8_t kCensusProducer = 1;   // the producer-B veto
-constexpr uint8_t kCensusStore = 2;      // the post-store cull
-
-struct CensusHit {
-    uintptr_t node = 0;
-    uint8_t path = 0;
-    float centre[3] = {};   // the world centre
-    float radius = 0.0f;
-    bool containing = false;   // the record's sphere contains the camera
-};
-
-struct CensusNode {
-    uintptr_t node = 0;
-    uint8_t path = 0;       // the path of the largest instance
-    float centre[3] = {};   // the largest instance's world centre
-    float radius = 0.0f;    // the largest instance's radius
-    uint32_t instances = 0;
-    bool containing = false;   // the largest instance's sphere contains the camera
-};
-
-// Folds hits by node (the largest radius keeps its centre and path; instances counts the node's hits) and sorts by radius, largest first (ties by node).
-// Writes at most outCap nodes and returns how many; a hit whose node does not fit is not counted.
-inline size_t foldCensusHits(const CensusHit* hits, size_t n, CensusNode* out, size_t outCap) noexcept {
-    size_t k = 0;
-    for (size_t i = 0; i < n; ++i) {
-        size_t j = 0;
-        while (j < k && out[j].node != hits[i].node) ++j;
-        if (j == k) {
-            if (k >= outCap) continue;
-            out[k] = CensusNode{hits[i].node, hits[i].path, {hits[i].centre[0], hits[i].centre[1], hits[i].centre[2]}, hits[i].radius, 0, hits[i].containing};
-            ++k;
-        } else if (hits[i].radius > out[j].radius) {
-            out[j].path = hits[i].path;
-            for (int c = 0; c < 3; ++c) out[j].centre[c] = hits[i].centre[c];
-            out[j].radius = hits[i].radius;
-            out[j].containing = hits[i].containing;
-        }
-        ++out[j].instances;
-    }
-    std::sort(out, out + k, [](const CensusNode& a, const CensusNode& b) { return a.radius != b.radius ? a.radius > b.radius : a.node < b.node; });
-    return k;
 }
 
 // The class cache's slot (lock-free): node>>3 in bits 0..43, the class in bits 44..46 (never 0 for a stored slot), the frame's stamp in bits

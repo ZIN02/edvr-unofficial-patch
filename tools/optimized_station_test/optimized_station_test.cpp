@@ -10,7 +10,6 @@
 #include "../../src/d3d11/station_pass_core.h"
 #include "../../src/d3d11/station_seal_trace.h"
 #include "../../src/d3d11/station_draw_mask.h"   // d3d11.h types only: the rig links nothing of D3D
-#include "../../src/d3d11/station_sun_probe.h"
 #include "../../src/common/flat_profile_keys.h"
 #include "../../src/d3d11/menu_flat_rows.h"
 #include "../../src/d3d11/view_source.h"
@@ -2927,31 +2926,25 @@ int main(int argc, char** argv) {
               "trace: the seal is marked on its rising edge and the time since the seal counts from it");
     }
 
-    // ---- Built 2026-10-21 (temporary instrument): the census of records culled near the bay. A record whose centre the box culls still draws into the bay when
-    // its sphere reaches the box; the census keeps those, folds them by node, and reports how far each centre lies outside ------------------------------------
+    // ---- Built 2026-10-21: sphereOverlapsBox, the reach rule's own test. A record whose centre the box culls still draws into the bay when its sphere reaches
+    // the box ----------------------------------------------------------------------------------------------------------------------------------------------
     {
         const float half[3] = {160.0f, 55.0f, 127.0f};
         const float inside[3] = {10.0f, -20.0f, 100.0f};
-        check(se::sphereOverlapsBox(inside, 0.5f, half), "census overlap: a centre inside the box overlaps with any radius");
+        check(se::sphereOverlapsBox(inside, 0.5f, half), "box overlap: a centre inside the box overlaps with any radius");
         const float above[3] = {0.0f, 0.0f, 132.0f};   // 5 m past the top
         check(!se::sphereOverlapsBox(above, 4.9f, half) && se::sphereOverlapsBox(above, 5.0f, half),
-              "census overlap: a centre 5 m past a face overlaps from a radius of 5 m (the sphere touches the box)");
+              "box overlap: a centre 5 m past a face overlaps from a radius of 5 m (the sphere touches the box)");
         const float corner[3] = {163.0f, 59.0f, 0.0f};   // 3 and 4 m past two faces: 5 m from the edge
         check(!se::sphereOverlapsBox(corner, 4.9f, half) && se::sphereOverlapsBox(corner, 5.0f, half),
-              "census overlap: past two faces the distance is to the edge, not to either face (3, 4 -> 5 m)");
+              "box overlap: past two faces the distance is to the edge, not to either face (3, 4 -> 5 m)");
         const float below[3] = {-165.0f, 0.0f, 0.0f};
-        check(se::sphereOverlapsBox(below, 6.0f, half) && !se::sphereOverlapsBox(below, 4.0f, half), "census overlap: the negative side is judged the same way");
+        check(se::sphereOverlapsBox(below, 6.0f, half) && !se::sphereOverlapsBox(below, 4.0f, half), "box overlap: the negative side is judged the same way");
         const float distant[3] = {1000.0f, 0.0f, 0.0f};
-        check(!se::sphereOverlapsBox(distant, 800.0f, half) && se::sphereOverlapsBox(distant, 900.0f, half), "census overlap: a big far sphere (a deck or hull mesh) overlaps by its radius");
+        check(!se::sphereOverlapsBox(distant, 800.0f, half) && se::sphereOverlapsBox(distant, 900.0f, half), "box overlap: a big far sphere (a deck or hull mesh) overlaps by its radius");
         check(!se::sphereOverlapsBox(inside, std::nanf(""), half) && !se::sphereOverlapsBox(inside, INFINITY, half) && !se::sphereOverlapsBox(inside, -1.0f, half),
-              "census overlap: a non-finite or negative radius never overlaps");
-        float out[3] = {};
-        const float oOut[3] = {-165.0f, 20.0f, 130.0f};
-        se::outsideByBox(oOut, half, out);
-        check(out[0] == 5.0f && out[1] == 0.0f && out[2] == 3.0f, "census outside-by: the metres beyond each half-extent, 0 within it");
-        se::outsideByBox(inside, half, out);
-        check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f, "census outside-by: a centre inside is outside by nothing");
-        // The chain the callbacks run: world centre -> box coordinates -> overlap, in a box turned on its side and far from the origin.
+              "box overlap: a non-finite or negative radius never overlaps");
+        // The chain the rule runs: world centre -> box coordinates -> overlap, in a box turned on its side and far from the origin.
         se::OwnCell cell;
         cell.has = true;
         cell.box = true;
@@ -2967,10 +2960,8 @@ int main(int argc, char** argv) {
         const float world[3] = {970.0f, 2170.0f, 3000.0f};   // U 170, V 30, W 0: 10 m past the length face
         float o[3] = {};
         se::boxCoords(world, cell, o);
-        se::outsideByBox(o, cell.boxHalf, out);
-        check(o[0] == 170.0f && o[1] == 30.0f && o[2] == 0.0f && out[0] == 10.0f && out[1] == 0.0f && out[2] == 0.0f,
-              "census chain: a world centre reads in box coordinates and is outside by 10 m along U");
-        check(!se::sphereOverlapsBox(o, 9.9f, cell.boxHalf) && se::sphereOverlapsBox(o, 10.0f, cell.boxHalf), "census chain: the overlap follows the box's own axes");
+        check(o[0] == 170.0f && o[1] == 30.0f && o[2] == 0.0f, "box overlap chain: a world centre reads in box coordinates (U 170, 10 m past the length face)");
+        check(!se::sphereOverlapsBox(o, 9.9f, cell.boxHalf) && se::sphereOverlapsBox(o, 10.0f, cell.boxHalf), "box overlap chain: the overlap follows the box's own axes");
     }
     // ---- Built 2026-10-21: the reach rule. In box mode a record whose centre lies outside the box is kept (why reach) when its sphere overlaps the box,
     // whether or not the sphere contains the camera (the carrier's DoorA1 and DoorA2 do). The box is the large carrier bay of the flight log (half-extents U 223, V 74, W 163.9), axis-aligned at the origin, so a box
@@ -3069,38 +3060,6 @@ int main(int argc, char** argv) {
         v = se::keepNamedCell(missing, 72.5f, camera, R, noCell, none, 0, 0x3000);
         check(!v.keep && v.why == se::KeepWhy::kNone, "reach: with no cell a record beyond the camera sphere is culled (224 m from the camera)");
     }
-    {
-        // The fold: one entry per node, the largest instance keeps its centre and path, the count is the node's hits, the order is radius then node.
-        se::CensusHit h[6];
-        auto hit = [](uintptr_t node, uint8_t path, float x, float r, bool containing = false) {
-            se::CensusHit v;
-            v.node = node;
-            v.path = path;
-            v.centre[0] = x;
-            v.radius = r;
-            v.containing = containing;
-            return v;
-        };
-        h[0] = hit(0x300, se::kCensusStore, 1.0f, 2.0f);
-        h[1] = hit(0x300, se::kCensusProducer, 2.0f, 9.0f, true);
-        h[2] = hit(0x100, se::kCensusStore, 3.0f, 12.0f);
-        h[3] = hit(0x300, se::kCensusStore, 4.0f, 5.0f);
-        h[4] = hit(0x200, se::kCensusStore, 5.0f, 9.0f);
-        h[5] = hit(0, se::kCensusProducer, 6.0f, 1.0f);   // a record whose node could not be read
-        se::CensusNode out[8];
-        const size_t k = se::foldCensusHits(h, 6, out, 8);
-        check(k == 4, "census fold: four nodes from six hits (the unreadable node is one entry)");
-        check(out[0].node == 0x100 && out[0].radius == 12.0f && out[0].instances == 1, "census fold: the largest radius sorts first");
-        check(out[1].node == 0x200 && out[2].node == 0x300 && out[1].radius == 9.0f && out[2].radius == 9.0f, "census fold: equal radii order by node");
-        check(out[2].instances == 3 && out[2].path == se::kCensusProducer && out[2].centre[0] == 2.0f,
-              "census fold: a node with three hits counts three and keeps its largest instance's path and centre");
-        check(out[3].node == 0 && out[3].instances == 1, "census fold: the node-less hit sorts last by its radius");
-        check(out[2].containing && !out[0].containing && !out[1].containing && !out[3].containing,
-              "census fold: a node keeps whether its largest instance's sphere contains the camera");
-        check(se::foldCensusHits(h, 0, out, 8) == 0, "census fold: no hits, no nodes");
-        se::CensusNode two[2];
-        check(se::foldCensusHits(h, 6, two, 2) == 2, "census fold: no more nodes than the output holds");
-    }
 
     // ---- Built 2026-10-21: the flat sun draw issued with every write masked (station_draw_mask.h; the states' descriptions: Mask itself needs a device) ------
     {
@@ -3156,150 +3115,6 @@ int main(int argc, char** argv) {
         check(!idle.active() && !idle.begin(nullptr, nullptr, nullptr), "sun mask: without a context nothing is bound and begin() declines");
         idle.end(nullptr);
         check(!idle.active(), "sun mask: end() without a begin() does nothing");
-    }
-
-    // ---- Built 2026-10-21 (TEMPORARY): the sun skip A/B row and the sun skip probe (station_sun_probe.h) --------------------------------------------------------
-    {
-        // The A/B key: on the flat key list (unlisted, getString answers "on" and the F8 row could never switch the skip off), a row of the flat Debug tab
-        // (not the Performance page), passing the gate with every other row, and a near name stays off.
-        check(edvr::flatProfileReadsKey("diag.station_sun_skip"), "sun skip A/B: diag.station_sun_skip is on the flat key list");
-        check(!edvr::flatProfileReadsKey("diag.station_sun_skip_x") && !edvr::flatProfileReadsKey("diag.sky_ring") && !edvr::flatProfileReadsKey("fix.station_sun_skip"),
-              "sun skip A/B: only that key was added (a near name, another [diag] key and the key under [fix] stay off the list)");
-        check(edvr::flatDebugHasRow("diag", "station_sun_skip") && !edvr::flatPageHasRow("diag", "station_sun_skip"),
-              "sun skip A/B: the F8 flat Debug tab has the Station sun skip row, the Performance page does not");
-        check(edvr::flatPageFirstRefused([](const char* k) { return edvr::flatProfileReadsKey(k); }) == nullptr,
-              "sun skip A/B: every row of the flat panel, the Debug tab included, passes the flat key list");
-        check(edvr::flatPageFirstRefused([](const char* k) { return edvr::flatProfileReadsKey(k) && std::strcmp(k, "diag.station_sun_skip") != 0; }) != nullptr,
-              "control: a flat key list without diag.station_sun_skip is caught");
-    }
-    {
-        namespace sp = edvr::sunprobe;
-        // The Orbis flight's conflict: hdr 0xBBD04F00, ref-q 1463, cur-q 1467.
-        sp::Conflict conflict;
-        conflict.have = true;
-        conflict.frame = 24042;
-        conflict.cause = "image-copy-source";
-        conflict.hdr = 0xBBD04F00ull;
-        conflict.refQ = 1463;
-        conflict.curQ = 1467;
-        const auto draw = [](bool qKnown, uint32_t afterQ, uint64_t tex) {
-            sp::Draw d;
-            d.qKnown = qKnown;
-            d.afterQ = afterQ;
-            d.rtv = 0x1000 + afterQ;
-            d.tex = tex;
-            d.dsv = 0x2000;
-            d.sized = tex != 0;
-            d.fmt = 9;
-            d.width = 960;
-            d.height = 600;
-            d.vpCount = 1;
-            d.vp[2] = 960.0f;
-            d.vp[3] = 600.0f;
-            return d;
-        };
-        // The comparisons: a draw is on the HDR target when its texture is the conflict's, between q when ref-q <= after-q < cur-q.
-        check(sp::onHdr(draw(true, 1464, 0xBBD04F00ull), conflict) && !sp::onHdr(draw(true, 1464, 0xBBD05000ull), conflict) && !sp::onHdr(draw(true, 1464, 0), conflict),
-              "sun probe: a draw is on the HDR target when its texture is the conflict's hdr (an unresolved texture never is)");
-        sp::Conflict zeroHdr = conflict;
-        zeroHdr.hdr = 0;
-        check(!sp::onHdr(draw(true, 1464, 0), zeroHdr), "sun probe: an unresolved texture (0) never matches a conflict whose hdr is 0 either");
-        check(sp::betweenQ(draw(true, 1463, 1), conflict) && sp::betweenQ(draw(true, 1466, 1), conflict) && !sp::betweenQ(draw(true, 1462, 1), conflict) &&
-                  !sp::betweenQ(draw(true, 1467, 1), conflict),
-              "sun probe: between ref-q and cur-q means ref-q <= after-q < cur-q (a draw after the ref draw and before the cur draw)");
-        check(!sp::betweenQ(draw(false, 1465, 1), conflict), "sun probe: a draw whose q is unknown is never between");
-        sp::Conflict none;
-        check(!sp::onHdr(draw(true, 1464, 0xBBD04F00ull), none) && !sp::betweenQ(draw(true, 1464, 1), none), "sun probe: with no conflict nothing is on the HDR target or between");
-        // Recording: the first draw fixes the frame and the tick, a draw of another tick is refused, the list stops at six and the total goes on.
-        sp::Frame rec;
-        check(sp::record(&rec, 7, 24042, draw(true, 1464, 0xBBD04F00ull)) && rec.total == 1 && rec.n == 1 && rec.tick == 7 && rec.frame == 24042,
-              "sun probe: the first draw fixes the tick and the game frame");
-        check(!sp::record(&rec, 8, 24043, draw(true, 1500, 1)) && rec.total == 1 && rec.n == 1, "sun probe: a draw stamped with another tick is refused (one sampled frame, never a mix)");
-        for (int i = 0; i < 8; ++i) sp::record(&rec, 7, 24042, draw(true, 1465 + i, 0xBBD05000ull));
-        check(rec.total == 9 && rec.n == sp::kMaxDraws && sp::kMaxDraws == 6, "sun probe: six draws are carried, the total counts them all");
-        // The line: one frame, the draws in order, each with its verdicts, then the conflict.
-        sp::Frame two;
-        sp::record(&two, 3, 24042, draw(true, 1464, 0xBBD04F00ull));
-        sp::record(&two, 3, 24042, draw(true, 1470, 0xBBD05000ull));
-        char line[1100];
-        const size_t n = sp::formatLine(line, sizeof(line), two, conflict);
-        const std::string text(line);
-        check(n == text.size() && text.rfind("optimized station: sun skip probe (frame 24042): 2 draws skipped this frame: after-q=1464 ", 0) == 0,
-              "sun probe line: the header names the frame and the count, the first draw starts with after-q");
-        check(text.find(" after-q=1464 rtv=00000000000015B8 tex=00000000BBD04F00 fmt=9 960x600 dsv=0000000000002000 vp=1(0,0,960,600) [hdr=yes between-q=yes]") != std::string::npos,
-              "sun probe line: a draw carries rtv, tex, format, size, dsv, viewport and its two verdicts");
-        check(text.find("; after-q=1470 rtv=00000000000015BE tex=00000000BBD05000 fmt=9 960x600 dsv=0000000000002000 vp=1(0,0,960,600) [hdr=no between-q=no]") != std::string::npos,
-              "sun probe line: the second draw follows after a semicolon with its own verdicts");
-        const std::string tail = "; flat conflict (frame 24042): cause=image-copy-source hdr=00000000BBD04F00 ref-q=1463 cur-q=1467";
-        check(text.size() > tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0,
-              "sun probe line: the conflict closes the line as the runtime's own conflict line gives it");
-        // Built 2026-10-21: a draw the flat runtime's scope numbered carries its own q (the line says `q=`); the comparison is the same one, so the
-        // reference draw itself (q = ref-q) is in the range and the current draw (q = cur-q) is not.
-        const auto own = [&](uint32_t q, uint64_t tex) {
-            sp::Draw d = draw(true, q, tex);
-            d.ownQ = true;
-            return d;
-        };
-        check(sp::betweenQ(own(1463, 1), conflict) && sp::betweenQ(own(1466, 1), conflict) && !sp::betweenQ(own(1467, 1), conflict) && !sp::betweenQ(own(1462, 1), conflict),
-              "sun probe: a draw with its own q is between ref-q and cur-q when ref-q <= q < cur-q");
-        sp::Frame ownFrame;
-        sp::record(&ownFrame, 4, 24042, own(1463, 0xBBD04F00ull));
-        sp::record(&ownFrame, 4, 24042, draw(true, 1470, 0xBBD05000ull));
-        sp::formatLine(line, sizeof(line), ownFrame, conflict);
-        const std::string ownText(line);
-        check(ownText.find("2 draws skipped this frame: q=1463 rtv=00000000000015B7 tex=00000000BBD04F00 ") != std::string::npos && ownText.find("after-q=1463") == std::string::npos &&
-                  ownText.find("; after-q=1470 rtv=") != std::string::npos && ownText.find(" [hdr=yes between-q=yes]") != std::string::npos,
-              "sun probe line: a draw numbered by the scope prints q=, one that was not still prints after-q=, and the verdicts follow either");
-        // No conflict, an unknown q, an unresolved target.
-        sp::Frame odd;
-        sp::record(&odd, 1, 0, draw(false, 0, 0));
-        sp::formatLine(line, sizeof(line), odd, none);
-        const std::string oddText(line);
-        check(oddText.find("(frame ?)") != std::string::npos && oddText.find("after-q=?") != std::string::npos && oddText.find("fmt=? ?x?") != std::string::npos &&
-                  oddText.find("[hdr=") == std::string::npos && oddText.find("; flat conflict: none recorded for this frame") != std::string::npos,
-              "sun probe line: no frame number, no q and no resolved target are said as ?, and without a conflict there are no verdicts");
-        // Six draws and the "more not listed" count fit the log's line (1200 characters with its prefix); a small buffer ends cleanly.
-        sp::Frame full;
-        for (int i = 0; i < 9; ++i) sp::record(&full, 5, 24042, draw(true, 1465 + i, 0xBBD05000ull));
-        const size_t fullN = sp::formatLine(line, sizeof(line), full, conflict);
-        const std::string fullText(line);
-        check(fullN == fullText.size() && fullN < 1100 && fullText.find("(+3 more not listed)") != std::string::npos && fullText.find("after-q=1470") != std::string::npos &&
-                  fullText.find("after-q=1471") == std::string::npos,
-              "sun probe line: six draws and the count of those not listed fit one log line");
-        char tinyBuf[120];   // not `small`: windows.h (through d3d11.h) defines it as a macro
-        const size_t tinyN = sp::formatLine(tinyBuf, sizeof(tinyBuf), full, conflict);
-        check(tinyN < sizeof(tinyBuf) && std::strlen(tinyBuf) == tinyN, "sun probe line: a buffer too small ends the line cleanly (never past the buffer)");
-        check(sp::formatLine(tinyBuf, 0, full, conflict) == 0, "sun probe line: a zero-size buffer writes nothing");
-        // The sampler: arm when due and skipping, log once the frame is over, wait 5 s.
-        sp::Sampler sam;
-        sp::Frame empty;
-        check(sam.step(empty, 1, 1000, false) == sp::Sampler::Act::kNone && !sam.armed, "sun probe sampler: not skipping, nothing is armed");
-        check(sam.step(empty, 2, 1000, true) == sp::Sampler::Act::kArm && sam.armed, "sun probe sampler: skipping and due, the next frame is armed");
-        check(sam.step(empty, 3, 1010, true) == sp::Sampler::Act::kNone, "sun probe sampler: armed and nothing recorded yet, wait");
-        sp::Frame midway;
-        sp::record(&midway, 3, 24042, draw(true, 1, 1));
-        check(sam.step(midway, 3, 1020, true) == sp::Sampler::Act::kNone, "sun probe sampler: the frame still being drawn is not logged");
-        check(sam.step(midway, 4, 1030, true) == sp::Sampler::Act::kLog && !sam.armed && sam.nextMs == 1030 + sp::kSampleEveryMs,
-              "sun probe sampler: the finished frame is logged once, the next sample is 5 s on");
-        check(sam.step(empty, 5, 1030 + sp::kSampleEveryMs - 1, true) == sp::Sampler::Act::kNone &&
-                  sam.step(empty, 6, 1030 + sp::kSampleEveryMs, true) == sp::Sampler::Act::kArm,
-              "sun probe sampler: re-armed at 5 s and not a millisecond before");
-        // An arm no draw answers is said after 10 s, again every 10 s, six times at most; an answered arm is never stale.
-        const uint64_t armedAt = 1030 + sp::kSampleEveryMs;
-        check(sam.step(empty, 7, armedAt + sp::kStaleAfterMs - 1, true) == sp::Sampler::Act::kNone &&
-                  sam.step(empty, 8, armedAt + sp::kStaleAfterMs, true) == sp::Sampler::Act::kStale,
-              "sun probe sampler: armed 10 s with no skipped draw recorded, it says so (the probe may never be reached)");
-        uint64_t t = armedAt + sp::kStaleAfterMs;
-        uint32_t said = 1;
-        for (int i = 0; i < 20; ++i) {
-            t += sp::kStaleAfterMs;
-            if (sam.step(empty, 9 + i, t, true) == sp::Sampler::Act::kStale) ++said;
-        }
-        check(said == sp::kMaxStaleLines && sam.step(empty, 99, t + 10 * sp::kStaleAfterMs, true) == sp::Sampler::Act::kNone,
-              "sun probe sampler: the stale line is said six times at most");
-        sp::Sampler quick;
-        check(quick.step(empty, 1, 0, true) == sp::Sampler::Act::kArm && quick.step(midway, 2, sp::kStaleAfterMs * 3, true) == sp::Sampler::Act::kLog,
-              "sun probe sampler: an armed frame that was recorded is logged, not called stale");
     }
 
     std::printf("optimized_station_test: %d checks, %d failures\n", g_checks, g_failures);

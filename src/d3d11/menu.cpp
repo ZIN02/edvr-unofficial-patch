@@ -1626,13 +1626,12 @@ void buildPages() {
         // No Plugins tab: add-ons are VR-only, so in flat it could only be empty. The flat add-on follow-up adds it to kFlatTabNames with the
         // flat render path.
         {
-            // Debug: for bug reports and flight tests (CPU timing and the motion source view are off by default; the station sun skip row is a
-            // temporary on-by-default A/B). A heading says so; the rows are the `menu debug` rows named in kFlatDebugRows.
+            // Debug: for bug reports, both off by default. A heading says so; the rows are the `menu debug` rows named in kFlatDebugRows.
             Page p;
             p.name = kFlatTabNames[1];
             Entry h;
             h.kind = EntryKind::Heading;
-            h.text = "For bug reports and flight tests only.";
+            h.text = "For bug reports. Both are off unless you turn them on.";
             p.entries.push_back(h);
             for (int i = 0; i < kRowDefCount; ++i) {
                 const MenuRowDef& d = kMenuRows[i];

@@ -111,7 +111,7 @@ inline unsigned run() {
         builder.find("witness.phaseX=requestedPhaseX;witness.phaseY=requestedPhaseY;witness.applied=requestedApplied;")!=std::string::npos&&
         builder.find("witness.frame=requestedFrame;witness.q=requestedQ;")!=std::string::npos&&lambda<verifier.find("flatRepairDeferredMissingPhase("),
         "verifier snapshots requested phase/count/event before repair and preparation and passes those values to failure report");
-    for(const char* reason:{"deferred-inverse-preparation-failed","deferred-inverse-unproven"}) {
+    for(const char* reason:{"deferred-inverse-preparation-failed","deferred-whole-preparation-failed","deferred-inverse-unproven"}) {
         const auto report=verifier.find(std::string("reportFailure(\"")+reason+"\")");
         const auto fail=verifier.find(std::string("failPhase(s,\"")+reason+"\")");
         expect(report!=std::string::npos&&fail!=std::string::npos&&report<fail,"verification failure reports before failPhase can zero requested phase");

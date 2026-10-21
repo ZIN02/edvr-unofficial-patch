@@ -41,12 +41,12 @@
     no flicker is reported.
 - **Next capture (one flight, loading screen and System Map, AA off with
   F7):**
-  - set `advanced.glare_shader_dump = 1` for one launch. That dumps the
-    whole chain, which settles 2 and 3 from bytecode alone;
+  - the whole-chain shader dump, which settles 2 and 3 from bytecode. Its
+    key is VR-only, so the 20:19 flight dumped nothing; flat must allow
+    the key first (see "The capture");
   - save a Steam *uncompressed* copy of each screenshot (the JPEGs cannot
     tell 1-code steps from JPEG DC quantization);
-  - read back the tone draw's t2 (bloom), t1 (HDR) and its 8-bit target.
-    This needs a new one-shot instrument, see "The capture".
+  - read back the tone draw's t2, t1 and 8-bit target (a new instrument).
 - **Fix (gated on that capture):** dither the tone pass's float-to-8-bit
   write, by shader swap of the known tone variants. Bloom stays everywhere.
   If 2 is confirmed, also swap the chain's upsample PS for a tent filter.
@@ -139,8 +139,7 @@ Fitting the star halo's centre against the disc, on clean pixels only:
 | R+30..R+200 | (+0.5, +0.5) | +8% | +36% |
 | R+8..R+120 | (-0.75, -0.25) | +51% | 15x |
 
-The XeSS image (1.jpg), with doubled bloom from the separate tone re-issue
-bug, fits (0, 0).
+The XeSS image (1.jpg, bloom doubled by the tone re-issue bug) fits (0, 0).
 
 Blotchiness in the clean sectors is the residual's robust SD against the
 star's excess:
@@ -153,7 +152,7 @@ That is 1 to 2 output codes, which is the JPEG's noise level.
 
 **Loading screens (orange hologram on black).** The glow's reach left and
 right of the figure is equal within 18 px, with no consistent sign, at
-every threshold from R+G code 60 down to 4, on both builds. The
+R+G thresholds 60 down to 4, on both builds. The
 334473 glow reaches about 1.6x further, for example R+G code 15 at about
 150-170 px against 85-105 px. That comparison is confounded: render scale
 was 0.65 against 1.0, and the 2026-10-19 BloomQuality is unknown.
@@ -213,13 +212,14 @@ only believed (docs/cockpit-hud-layer-design-2026-09-27.md).
 
 One session, AA off (F7), on a loading screen and on the System Map:
 
-1. **Shader dump.** Set `advanced.glare_shader_dump = 1` for that launch
-   only, which `device_hook.cpp` reads. That gives the bytecode of
-   `5ECFE708…`, `129F602B…`/`8826CACC…`, `FA01CD495BB27AEF` and
-   `C89DD4ED362D743F`. Disassemble them with `tools/dxbc_disasm.py`. This
-   settles 2 (the tap pattern) and 3 (UVs interpolated, or built from
-   SV_Position and a size constant) with no headset time. Set the key back
-   to 0 afterwards.
+1. **Shader dump.** `advanced.glare_shader_dump` (`device_hook.cpp`) is
+   read by the VR profile only. `flat_profile_keys.h` does not list it, so
+   flat's `getString` answers "off". The flat flight of 2026-10-20 20:19
+   (log `edvr_gfx_20261020_201910`) ran with it set and dumped nothing.
+   Add the key to that list, then set it for one launch. That gives the
+   bytecode of `5ECFE708…`, `129F602B…`/`8826CACC…`, `FA01CD495BB27AEF`
+   and `C89DD4ED362D743F`, for `tools/dxbc_disasm.py`. It settles 2 (the
+   tap pattern) and 3 (UVs interpolated, or built from SV_Position).
 2. **Lossless screenshots.** Use Steam's "save an uncompressed copy". If
    the dark end still runs 0, 2, 4, something upstream of the 8-bit write
    quantizes; if it runs 0, 1, 2, 3, the bands are the 8-bit write.
@@ -268,7 +268,7 @@ candidate, and it is generic over scenes and objects.
   and dither in the output copy to the backbuffer (20F383BB/DED87960, only
   when its target is the swap chain). That is two draw-time substitutions
   keyed by role, but EDVR's AA routes consume that target too. Build A
-  first; consider this form only if the variant count keeps growing.
+  first; this form only if the variants keep multiplying.
 
 **B. Tent upsample in the chain (only if 2 is confirmed by bytecode or
 readback).**
@@ -282,14 +282,10 @@ readback).**
 - **Risks.** A small change in the halo's look. The swap is inert if a game
   update changes the hash.
 
-**Not proposed:**
-
-- Replacing the whole bloom with EDVR's own: Ultra's internals are
-  unknown, so matching its look would be a guess.
-- Thresholds, sharpening or contrast changes: they compensate, they do not
-  fix.
-- Anything for the map's "lower right": that is correct bloom from other
-  objects.
+**Not proposed:** EDVR's own replacement bloom (Ultra's internals are
+unknown, so its look would be a guess); threshold, sharpening or contrast
+changes (compensation); anything for the map's "lower right", which is
+correct bloom from other objects.
 
 **Flight evidence before building:**
 

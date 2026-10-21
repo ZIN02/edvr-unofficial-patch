@@ -41,6 +41,9 @@
     code 60.
   - Temporal threshold instability: the artifact is in still frames.
   - The 4.4.2.0 update: see above.
+  - The glow's sharp outer edge as banding: it is the stock tone curve's
+    black floor (E8948389's fitted curve clamps inputs below about 0.0013
+    to 0), which no dither can change (see "Fix A flown").
 - **Next:** optional same-frame on/off pair for brightness (the rig
   measures block means within 0.09 of a code); one VR launch with the
   shader dump on, for VR's tone shader; CI before any merge.
@@ -365,3 +368,23 @@ off, Bloom Ultra, HDR 1920x1200, `fix.smooth_gradients` at its default (on).
   neighbouring codes, against 0% in all three stock shots. The longest run
   at codes 1-6 is 10-19 px, against 32-200 px stock. The four corners stay
   exactly 0, so black stays black.
+
+**A/B on the loading hologram (06:37 flight).** Sean toggled Smooth
+gradients live from F8, nine times, and every switch logged at once. Two
+lossless shots of the "Be Prepared" screen, off at 06:37:17 and on at
+06:37:23, differ as intended. Off, the glow beside the figure is vertical
+stripes at 4x gain, one code apart, because the glow falls off sideways from
+an upright figure. On, the same region is smooth, and its tail rows flip
+between neighbouring codes (14% of runs, against 0% off). On the laptop's
+1920x1200 AMOLED panel (AMS881KB01) the difference is too subtle to see at
+normal brightness.
+
+**The edge that remains is the tone curve, not quantization.** With the
+dither averaged out (9x9 means), the glow is smooth up to a rim where it
+falls to exactly 0 within about 20 px. That is far faster than its own
+falloff, which is exponential at about 3% a pixel. E8948389's fitted
+curve has the numerator 1.004e-4 x - 1.274e-7 near black and is clamped
+by `div_sat`, so every input below x of about 0.0013 maps to 0. That is
+the crushed-black part of Elite's look, present in stock too. Removing
+it would lift blacks everywhere, a change to the look rather than a fix,
+so it is not proposed.

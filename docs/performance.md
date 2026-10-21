@@ -6,11 +6,14 @@
   game FPS claim. Complete cache deferred pending full invalidation proof. P-B
   early receipt discard verified; full build PASS, 170.6 s. Entry below.
 
-- **2026-10-21 render thread on the P cores, ruled out at a station (flat,
-  Panther Lake handheld, Proton):** pinned with `taskset`, no build. The GPU
-  is power-limited (`pl2`) and `Render` idle about half of each frame; the
-  frame rate did not move above the scene's drift. A CPU-bound spot is
-  untested. Entry at the end.
+- **2026-10-21 render thread on the P cores (flat, Panther Lake handheld,
+  Proton), no build, pinned from outside the game:** on the concourse,
+  pinning `Render` and `dxvk-cs` to the two P cores raised the frame rate
+  13% (32.9 -> 37.3 fps; all six pinned windows above all nine unpinned). At
+  a station, where the GPU was the limit, it did nothing. Open: `Render`
+  alone; whether the stock scheduler or LAVD Auto places it on a P core
+  without a pin, which would make this system configuration rather than EDVR
+  code. Entries at the end.
 
 - **State: Feature 2 (variable-rate shading) retired 2026-09-29 (code removed,
   184eee7f).** foveation.cpp, `experimental.foveation` and the seven
@@ -1938,3 +1941,52 @@ limit was the render thread's draw submission
 near 100% of a core, and the GPU's throttle `reasons` not a power limit. Only
 then is a pin worth an A/B there, with legs of at least three windows in
 A-B-A-B order.
+
+### 2026-10-21 the concourse: the pin raises the frame rate 13%
+
+Same device, process and build as the station entry above, on foot in the
+station concourse, standing still. LAVD ran in scx_loader's Gaming mode
+(`scx_lavd --performance --pinned-slice-us 500`). Signature first: `Render`
+used 72% of a core at 26-33 fps, and the GPU requested 1650 MHz of its 2300
+maximum. The GPU was not asking for full clock, so it was not the limit.
+`Render` was not near 100% of a core, as the entry above asked for; the GPU
+requesting less than its maximum was the better sign.
+
+Legs A-B-A-B-A, each exactly three 30 s windows, switched 0.3 s after a window
+boundary so that no window straddles a change. B pins `Render` and `dxvk-cs`
+together to CPU 0-1; A leaves both on all CPUs. Each leg sampled the threads
+every 20 ms and the GPU every 0.5 s.
+
+| Leg | Frames per 30 s | `Render`, % of a core | GPU actual / requested MHz | `pl1` samples |
+|---|---|---|---|---|
+| A | 1002, 927, 896 | 70.7 | 1520 / 1640 | 15% |
+| B | 1128, 1102, 1059 | 61.7 | 1412 / 1595 | 69% |
+| A | 1055, 984, 937 | 68.6 | 1556 / 1610 | 11% |
+| B | 1085, 1145, 1197 | 59.3 | 1372 / 1765 | 78% |
+| A | 1000, 1042, 1037 | 70.2 | 1424 / 1413 | 0% |
+
+All six B windows are above all nine A windows: A means 987 frames (32.9 fps,
+30.4 ms), B 1119 (37.3 fps, 26.8 ms), +13%. Each B leg is above the A legs on
+both sides of it. `Render`'s own work fell from about 21.2 ms a frame to 16.2.
+The P cores ran at 3.6-4.0 GHz while pinned, not 4.7, because the package was
+at its power limit (`pl1` in 69-78% of B samples). The GPU ran slower in B
+(1372-1412 MHz against 1424-1556) and the frame rate still rose, so on the
+concourse the render path is the limit and the GPU is not.
+
+The station result above is not contradicted: there the GPU was the limit and
+the pin had nothing to gain. One rule covers both: the P cores help where
+`Render` is the frame's critical path.
+
+**Open, in order:**
+- Attribution: B moved two threads. A leg pinning `Render` alone says how much
+  of the gain is its own.
+- The root cause is placement: LAVD in Gaming mode leaves `Render` on an E core
+  about 88% of the time. Compare the stock kernel scheduler (`scxctl stop`;
+  ITMT is enabled and prefers CPU 1 then 0) and LAVD's Auto mode on the
+  concourse, unpinned. If either keeps `Render` on a P core by itself without
+  losing elsewhere, the fix is system configuration and EDVR needs no code.
+- Only if no scheduler does it: EDVR pinning its own render thread on Proton.
+  EDVR knows that thread, because its hooks run on it. It would need the CPU's
+  core types from inside Wine (whether Wine reports `EfficiencyClass` is
+  unchecked) and a Windows A/B before it runs there, where Thread Director
+  already places threads.

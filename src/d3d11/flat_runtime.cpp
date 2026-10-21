@@ -523,6 +523,9 @@ struct State {
     uint64_t deferredCameraChecks = 0, deferredCameraAccepted = 0, deferredCameraRefused = 0;
     uint64_t deferredCameraLastLog = 0, deferredInverseLastLog = 0, deferredInverseExecutions = 0;
     bool deferredInverseLastBound = false;
+    // The prepared clone this draw is about to execute rewrites the whole camera, not just the rays.
+    bool deferredRepairWhole = false, deferredInverseLastWhole = false;
+    uint64_t deferredWholeExecutions = 0;
     bool deferredCameraNonzeroLogged = false;
     FlatCameraProbe cameraProbe{};
     struct CopyProvenanceSample {
@@ -2060,45 +2063,69 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         recordDeferredFailure(s,k,why,actual,input,donor,firstWitness,&witness);
     };
     FlatProjectionJitter jitter{};unsigned char certified[kFlatDeferredCameraBytes]{};
-    const bool missingPhase=qualified && flatCameraInjectUpstreamOwns() && nonzero &&
-        flatProjectionJitter(s.phase.currentX,s.phase.currentY,k.width,k.height,jitter) &&
-        flatRepairDeferredMissingPhase(donor->camera,raw,jitter,certified);
+    const bool repairable=qualified && flatCameraInjectUpstreamOwns() && nonzero &&
+        flatProjectionJitter(s.phase.currentX,s.phase.currentY,k.width,k.height,jitter);
+    // Two certified omissions, mutually exclusive by their strict relation:
+    // the rays alone lack the phase (Inverse), or the whole camera does (Forward).
+    const bool missingPhase=repairable && flatRepairDeferredMissingPhase(donor->camera,raw,jitter,certified);
+    const bool wholeOmission=repairable && !missingPhase && flatRepairDeferredWholeOmission(donor->camera,raw,jitter,certified);
+    const bool repairing=missingPhase || wholeOmission;
+    const char* repairName=wholeOmission?"whole":missingPhase?"inverse":"none";
     const FlatProjectionBindingPlan* deferredPlan=nullptr;
     bool prepared=false,warmed=false;
-    // Warm only a fully qualified coherent original. The upstream camera already
-    // owns forward projection; this plan patches exactly the omitted inverse rays.
+    // Warm only a fully qualified coherent original. Camera injection owns the
+    // phase of whatever the pass's CB2 already carries: the inverse-only plan
+    // patches exactly the omitted rays, the whole-camera plan the forward rows
+    // and the rays, the shape the legacy recipe patches for this shader.
     if(s.work==FlatWork::Full && qualified && flatCameraInjectUpstreamOwns() &&
-       ((!nonzero && match==FlatDeferredCameraMatch::Match) || missingPhase)) {
+       ((!nonzero && match==FlatDeferredCameraMatch::Match) || repairing)) {
         Ptr<ID3D11Buffer> ordinary;s.context->VSGetConstantBuffers(kFlatDeferredCameraSlot,1,&ordinary);
         const bool whole=ordinary.Get()==buffer.Get() && first==0 && metadata.width &&
             metadata.width%16==0 && count==metadata.width/16;
-        FlatProjectionRuntimeRequest request{};request.stage=FlatProjectionStage::Vertex;request.slot=kFlatDeferredCameraSlot;
-        request.original=buffer.Get();request.firstConstant=first;request.constantCount=count;
-        request.wholeBuffer=whole;request.patchCount=1;
-        request.patches[0]={FlatProjectionPatchLayout::InverseUvRay,kFlatDeferredInverseFirstRow*16,{}};
+        const auto shape=[&](bool wholeCamera) {
+            FlatProjectionRuntimeRequest request{};request.stage=FlatProjectionStage::Vertex;request.slot=kFlatDeferredCameraSlot;
+            request.original=buffer.Get();request.firstConstant=first;request.constantCount=count;
+            request.wholeBuffer=whole;
+            if(wholeCamera)request.patches[request.patchCount++]={FlatProjectionPatchLayout::ForwardDp4,kFlatDeferredCameraFirstRow*16,{}};
+            request.patches[request.patchCount++]={FlatProjectionPatchLayout::InverseUvRay,kFlatDeferredInverseFirstRow*16,{}};
+            return request;
+        };
+        const auto request=shape(wholeOmission);
         if(!nonzero)flatProjectionJitter(0,0,k.width,k.height,jitter);
         const bool ranged=first==0 && count && count<=4096 && count%16==0;
         warmed=(whole || ranged) && s.projection->preflight(&request,1,jitter,s.phase.phaseSequence,!nonzero);
-        if(warmed && missingPhase) {
+        // A zero-phase frame may allocate, a nonzero one may not. Warm the other
+        // shape here so the first nonzero frame of either omission finds its plan.
+        if(warmed && !nonzero) {
+            const auto sibling=shape(true);
+            warmed=s.projection->preflight(&sibling,1,jitter,s.phase.phaseSequence,true);
+        }
+        if(warmed && repairing) {
             deferredPlan=s.projection->prepare(&request,1,jitter,s.phase.phaseSequence);
             unsigned char uploaded[kFlatDeferredCameraBytes]{};
             prepared=deferredPlan && deferredPlan->copyUploadedConstants(FlatProjectionStage::Vertex,kFlatDeferredCameraSlot,
                 kFlatDeferredCameraFirstRow*16,kFlatDeferredCameraBytes,uploaded) &&
                 std::memcmp(uploaded,certified,sizeof(uploaded))==0 &&
-                flatMatchDeferredCamera(donor->camera,uploaded)==FlatDeferredCameraMatch::Match;
+                flatMatchDeferredCamera(donor->camera,uploaded,wholeOmission)==FlatDeferredCameraMatch::Match;
             if(!prepared)deferredPlan=nullptr;
         }
-        if(missingPhase && !prepared) {
-            reportFailure("deferred-inverse-preparation-failed");
-            failPhase(s,"deferred-inverse-preparation-failed");
+        if(repairing && !prepared) {
+            if(wholeOmission) {
+                reportFailure("deferred-whole-preparation-failed");
+                failPhase(s,"deferred-whole-preparation-failed");
+            } else {
+                reportFailure("deferred-inverse-preparation-failed");
+                failPhase(s,"deferred-inverse-preparation-failed");
+            }
             flatRuntimeMarkUncertain(s.prefix,FlatRuntimeUncertainCause::DeferredPrepare,k.color,k.depth,k.vs,k.ps);
             flatTraceMark(s.traceRing,kFlatTraceEventMarkUncertain,nullptr);
         }
     }
+    if(prepared)s.deferredRepairWhole=wholeOmission;
     const bool executionCoherent=flatDeferredExecutionCoherent(qualified,match,prepared);
     // Later exact consumers cannot hide a changed/unavailable inverse behind
     // the first H witness. This consumer's execution must remain coherent too.
-    if(flatCameraInjectUpstreamOwns() && nonzero && !executionCoherent && !missingPhase) {
+    if(flatCameraInjectUpstreamOwns() && nonzero && !executionCoherent && !repairing) {
         reportFailure("deferred-inverse-unproven");
         failPhase(s,"deferred-inverse-unproven");
         flatRuntimeMarkUncertain(s.prefix,FlatRuntimeUncertainCause::DeferredExecution,k.color,k.depth,k.vs,k.ps);
@@ -2116,10 +2143,10 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     const uint64_t now=GetTickCount64();
     if(s.deferredCameraChecks<=8 ||
        (nonzero && !s.deferredCameraNonzeroLogged) || now-s.deferredCameraLastLog>=5000) {
-        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u source=%p actual=%u input=%u relation=%s accepted=%u missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
+        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.b1,buffer.Get(),first,count,original?1u:0u,current?1u:0u,
             (unsigned long long)metadata.writeFrame,metadata.writeSequence,donor?donor->key.b1:nullptr,donor?donor->last:0,source.Get(),
-            actual?1u:0u,input?1u:0u,flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,missingPhase?1u:0u,prepared?1u:0u,warmed?1u:0u,s.phase.currentX,s.phase.currentY,
+            actual?1u:0u,input?1u:0u,flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,repairName,missingPhase?1u:0u,prepared?1u:0u,warmed?1u:0u,s.phase.currentX,s.phase.currentY,
             (unsigned long long)s.deferredCameraChecks,(unsigned long long)s.deferredCameraAccepted,(unsigned long long)s.deferredCameraRefused,flatWorkName(s.work));
         s.deferredCameraLastLog=now;if(nonzero)s.deferredCameraNonzeroLogged=true;
     }
@@ -6040,15 +6067,18 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         deferredProjection.emplace(*deferredPlan);
         if(deferredProjection->active())d.deferredInverseRepaired=d.deferredHdrVerified;
         ++s.deferredInverseExecutions;
+        const bool wholeClone=s.deferredRepairWhole;
+        if(wholeClone)++s.deferredWholeExecutions;
         const uint64_t executionNow=GetTickCount64();
         if(s.deferredInverseExecutions<=8 || s.deferredInverseLastBound!=deferredProjection->active() ||
-           executionNow-s.deferredInverseLastLog>=5000) {
-            Log::get().note("flat deferred inverse execution: frame=%llu q=%u H=%p original-CB2=%p original-hash=%08X bound=%u typed-first=%u executions=%llu phase=(%.9g,%.9g); uploaded inverse-only clone strict-certified, original provenance retained",
+           s.deferredInverseLastWhole!=wholeClone || executionNow-s.deferredInverseLastLog>=5000) {
+            Log::get().note("flat deferred inverse execution: frame=%llu q=%u H=%p original-CB2=%p original-hash=%08X bound=%u typed-first=%u executions=%llu whole-executions=%llu phase=(%.9g,%.9g); uploaded %s clone strict-certified, original provenance retained",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.projection[1].resource,k.projection[1].hash,
-            deferredProjection->active()?1u:0u,d.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredInverseExecutions,s.phase.currentX,s.phase.currentY);
+            deferredProjection->active()?1u:0u,d.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredInverseExecutions,
+            (unsigned long long)s.deferredWholeExecutions,s.phase.currentX,s.phase.currentY,wholeClone?"whole-camera":"inverse-only");
             s.deferredInverseLastLog=executionNow;
         }
-        s.deferredInverseLastBound=deferredProjection->active();
+        s.deferredInverseLastBound=deferredProjection->active();s.deferredInverseLastWhole=wholeClone;
         if(!deferredProjection->active()) {
             recordDeferredFailure(s,k,"deferred-inverse-binding-failed",true,true,flatRuntimeDeferredDonor(s.prefix,k,s.prefix.sequence+1),d.deferredHdrVerified);
             d.deferredHdrVerified=false;d.deferredInverseRepaired=false;

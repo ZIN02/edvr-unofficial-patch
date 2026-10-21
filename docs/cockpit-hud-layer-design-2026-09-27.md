@@ -2,10 +2,10 @@
 
 ## Status
 
-- **State (2026-10-20): bloom counted twice, BUILT, NOT FLOWN.** With Bloom on
-  and any EDVR temporal mode the re-issue kept the tone's bloom bound and added
-  T(bloom) over the frame (halo 2.0x); the HUD's steps now read zero there, and
-  their own source at the DoF blur. See "2026-10-20: bloom counted twice".
+- **State (2026-10-20): bloom counted twice, FIXED, FLOWN flat** (Sean, XeSS).
+  The re-issue kept the tone's bloom bound and added T(bloom) over the frame;
+  the HUD's steps now read zero there, and their own source at the DoF blur
+  (not yet flown). VR unverified. See "2026-10-20: bloom counted twice".
 - **State: the census retired 2026-09-29 (code removed, 7027e549).**
   `advanced.hud_census` and hud_layer_census.cpp are deleted; Sean chose
   deletion over a compile-out switch, so there is no diagnostics build flag.
@@ -1020,9 +1020,10 @@ Flight signature:
     time.
   - A pair with nothing found says `no scene image to zero`.
   - No such line at all means the code never ran.
-- The 30 s `crisp hud:` line: `N tonemap re-issues (M with the scene's bloom
-  zeroed, D with the DoF blur replaced)`. Expect M = N with Bloom on and M = 0
-  with Bloom off; D is non-zero only while the DoF tone runs.
+- The 30 s `crisp hud:` line (VR only; flat does not print it): `N tonemap
+  re-issues (M with the scene's bloom zeroed, D with the DoF blur replaced)`.
+  Expect M = N with Bloom on and M = 0 with Bloom off; D is non-zero only while
+  the DoF tone runs.
 - Visual: the same F7 pair. The halo should match AA off within JPEG noise, and
   cockpit lights should look the same with UI quality 100 and off.
 - Failure: a HUD that turns dark under some tone. That pair's line names the
@@ -1044,3 +1045,29 @@ VR: unverified. VR admits its tone by structure, so if its Bloom-on tone reads
 bloom from a slot of its own, the same rule zeroes it and the line names it. If
 VR's bloom is baked into H before the tone (BELIEVED, Status detail), this path
 never doubled it there. A VR flight with Bloom on settles which.
+
+### Flown, flat (log edvr_gfx_20261020_201910)
+
+Build `v0.20.0-5-gf7ce80cf-dirty` (6AD81DD1). It was compiled before
+`67b61912` was committed. Its compile receipt's source fingerprint equals
+HEAD `f7ce80cf` plus the diff to `67b61912`, so it is that commit's source,
+and the installed DLL's hash matches the compile. Steam flat, XeSS, render
+1248x780, Bloom on, `fix.ui_quality = 100`.
+
+Sean, by eye: "That seems to have fixed it!"
+
+The log has four tone pairs, each with the bloom zeroed and nothing else:
+
+- `43CA9F1C0AD2ACFE` / `E8948389387DA083`: t0 3D, t1 1248x780 fmt 26 (HDR),
+  t2 624x390 fmt 26 ZEROED.
+- `F9CFC798F21E9AEA` / `E8948389387DA083`: the same.
+- `CFA91824129ECBBC` / `A940FD1B427641AA`: the same shape. This pair is new to
+  the repo, said 0.17 s after `flat map aa: ... System Map (GuiFocus 7)`, so it
+  is most likely the map's tone with Bloom on.
+- `CFA91824129ECBBC` / `9270C355389DA302`: t0 1248x780 (HDR), t1 624x390
+  ZEROED.
+
+The bloom here is half size (624x390), not the quarter the 11:40 capture
+measured; the rule covers both. No DoF pair (DE65) ran, so the blur
+replacement is still unflown. VR has not flown this build.
+

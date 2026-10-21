@@ -46,6 +46,10 @@ inline bool flatProfileReadsKey(const char* key) {
         // The flat jitter cycle's length (flat_runtime.cpp, FlatLivePhase::phaseCount; temporal_math.h). Developer tier, no flat panel
         // row. Unlisted, getInt answers 0 here whatever the file says, which the reader takes for out of range and reads as 8.
         std::strcmp(key, "advanced.temporal_aa_jitter_phases") == 0 ||
+        // The shader dump (device_hook.cpp): every VS, PS and CS the game creates, to edvr_logs\shaders by hash. Flat's post
+        // chain (bloom, tone, copy) is in no effects archive, so a running game is the only place its bytecode can be read.
+        // Developer tier, no flat panel row. Unlisted, getBool answers false here whatever the file says.
+        std::strcmp(key, "advanced.glare_shader_dump") == 0 ||
         // The journal watcher, for the System Map's GuiFocus (journal_watch.h: journalFlatGuiFocus). Its other accessors answer
         // flat with the no-journal values, so enabling the watcher here changes no other flat behaviour. journal_dir names the
         // Saved Games folder when the default is wrong; unlisted, it reads "off" and the watcher looks in a folder named "off".

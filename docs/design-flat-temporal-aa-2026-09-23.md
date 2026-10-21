@@ -18094,4 +18094,5 @@ Lowering the minimum would let a few-draw HDR target, such as the loading
 hologram's, back into temporal treatment. The planned rule instead admits a
 target below the minimum when a verified deferred lighting pass
 (`t.tone.deferredCamera`, `t.hdrCamera`) wrote it: a lit G-buffer is a 3D
-scene. The loading hologram has no such pass. Not built yet.
+scene. The loading hologram has no such pass. Built (with main merged and the
+no-scene spatial pass, 163b0306), not flown.

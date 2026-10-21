@@ -77,7 +77,11 @@ inline FlatSceneFacts flatSceneFacts(const FlatRuntimePrefix& p, uint32_t outW, 
     for (uint32_t i = 0; i < p.targetsUsed; ++i) {
         const auto& t = p.targets[i];
         const auto& k = t.writes.key;
-        if (t.writes.draws < kFlatSceneMinDraws || k.format != 26 || !k.color || !k.rtv || !k.depth || !k.dsv ||
+        // A target whose HDR camera came from a verified lighting pass (deferred, or forward light) is a lit G-buffer: a 3D
+        // scene at any draw count. The loadout's suit preview gives its scene H 7 draws (edvr_gfx_20261021_170848). A probe,
+        // a cubemap face or the loading hologram has no such pass and still needs the minimum.
+        const bool lit = t.hdrCamera && t.tone.deferredCamera;
+        if ((t.writes.draws < kFlatSceneMinDraws && !lit) || k.format != 26 || !k.color || !k.rtv || !k.depth || !k.dsv ||
             !k.width || !k.height || k.depthWidth != k.width || k.depthHeight != k.height)
             continue;
         FlatSceneFacts& slot = flatRenderFitsOutput(k.width, k.height, outW, outH) ? on : off;

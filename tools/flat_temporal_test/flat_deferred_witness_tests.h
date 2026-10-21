@@ -7,6 +7,7 @@
 // places that ask it, not the camera match.
 #include "flat_laser_scene_tone_tests.h"
 #include "../../src/d3d11/flat_deferred_failure_witness.h"
+#include "../../src/d3d11/flat_copy_structure.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -339,6 +340,28 @@ inline unsigned run() {
         expect(y.donor(y.lighting()).role == Role::Witness, "a UAV write to an unrelated resource changes nothing");
         flatRuntimeDispatchObserveWritten(*y.p, y.gbuf);
         expect(!y.donor(y.lighting()) && y.donor(y.lighting()).why == Why::NoEntry, "a UAV write to SRV0 after its writers: none");
+    }
+    // ---- a lit scene below the draw minimum (flatSceneFacts) ---------------------------------------------------------------------------
+    {
+        // The Maverick suit's preview: the scene H takes 7 draws (lighting, sky, five forward), one under kFlatSceneMinDraws.
+        const auto scene = [](bool hdrCamera, bool deferredCamera, uint32_t draws, uint32_t w, uint32_t h) {
+            auto p = std::make_unique<FlatRuntimePrefix>();
+            auto& t = p->targets[p->targetsUsed++];
+            t.resource = token(0x4000); t.writes.draws = draws;
+            auto& k = t.writes.key;
+            k.format = 26; k.color = token(0x4000); k.rtv = token(0x4001); k.depth = token(0x2000); k.dsv = token(0x2001);
+            k.width = k.depthWidth = w; k.height = k.depthHeight = h;
+            t.hdrCamera = hdrCamera; t.tone.deferredCamera = deferredCamera;
+            return p;
+        };
+        const auto lit = flatSceneFacts(*scene(true, true, 7, 960, 600), 1920, 1200);
+        expect(lit.onShape && lit.draws == 7 && lit.width == 960, "a lit scene H with 7 draws is the scene");
+        expect(!flatSceneFacts(*scene(false, false, 7, 960, 600), 1920, 1200).draws, "7 draws without a lit camera: no scene");
+        expect(!flatSceneFacts(*scene(true, false, 7, 960, 600), 1920, 1200).draws, "a camera not from a lighting pass: no scene");
+        expect(!flatSceneFacts(*scene(false, true, 7, 960, 600), 1920, 1200).draws, "the lighting mark without the HDR camera: no scene");
+        expect(flatSceneFacts(*scene(false, false, 8, 960, 600), 1920, 1200).onShape, "eight draws remain a scene without one");
+        const auto off = flatSceneFacts(*scene(true, true, 2, 612, 436), 1920, 1200);
+        expect(off.offShape && !off.onShape, "a lit off-shape H stays off-shape");
     }
     // ---- table overflow fails closed -------------------------------------------------------------------------------------------------
     {

@@ -6,14 +6,13 @@
   game FPS claim. Complete cache deferred pending full invalidation proof. P-B
   early receipt discard verified; full build PASS, 170.6 s. Entry below.
 
-- **2026-10-21 render thread on the P cores (flat, Panther Lake handheld,
-  Proton), no build, pinned from outside the game:** on the concourse,
-  pinning `Render` and `dxvk-cs` to the two P cores raised the frame rate
-  13% (32.9 -> 37.3 fps; all six pinned windows above all nine unpinned). At
-  a station, where the GPU was the limit, it did nothing. Open: `Render`
-  alone; whether the stock scheduler or LAVD Auto places it on a P core
-  without a pin, which would make this system configuration rather than EDVR
-  code. Entries at the end.
+- **2026-10-21 render thread on the P cores, ruled out as an EDVR fix (flat,
+  Panther Lake handheld, Proton):** pinned from outside the game, no build.
+  The result depends on the scene: concourse +13% (32.9 -> 37.3 fps),
+  station no change, settlement about -4% (29.8 -> 28.5-28.8 fps, `Render`
+  alone or with `dxvk-cs`). The CPU and GPU share one power limit, and the
+  P cores' extra power comes out of the GPU's clock (1824 -> 1539 MHz at the
+  settlement). Entries at the end.
 
 - **State: Feature 2 (variable-rate shading) retired 2026-09-29 (code removed,
   184eee7f).** foveation.cpp, `experimental.foveation` and the seven
@@ -1990,3 +1989,46 @@ the pin had nothing to gain. One rule covers both: the P cores help where
   core types from inside Wine (whether Wine reports `EfficiencyClass` is
   unchecked) and a Windows A/B before it runs there, where Thread Director
   already places threads.
+
+### 2026-10-21 a settlement: the pin costs about 4%
+
+Same device, build and scheduler (LAVD Gaming mode), after a game restart, at a
+settlement, standing still. Before the run, `Render` used 72% of a core at
+30-34 fps. Legs A-B-C-A-C-B-A, three 30 s windows each, aligned as on the
+concourse: A unpinned, B `Render` and `dxvk-cs` on CPU 0-1, C `Render` alone on
+CPU 0-1.
+
+| Leg | Frames per 30 s | `Render`, % of a core | GPU actual / requested MHz | `pl1` samples |
+|---|---|---|---|---|
+| A | 883, 912, 924 | 70.3 | 1914 / 2058 | 39% |
+| B | 833, 853, 825 | 49.7 | 1486 / 1762 | 44% |
+| C | 867, 906, 905 | 52.0 | 1589 / 1882 | 40% |
+| A | 919, 901, 895 | 70.6 | 1907 / 2082 | 11% |
+| C | 821, 827, 861 | 47.9 | 1426 / 1836 | 68% |
+| B | 889, 857, 880 | 51.7 | 1655 / 2021 | 72% |
+| A | 886, 829, 896 | 67.0 | 1651 / 1891 | 44% |
+
+A means 894 frames (29.8 fps), B 856 (28.5 fps, -4%), C 864 (28.8 fps, -3%).
+Three of the four pinned legs are below the A legs beside them and the fourth
+(the last B) equals its neighbour. `Render`'s own work fell from about 23.5 ms
+a frame to 17.5, the same speed-up as on the concourse, but the GPU's actual
+clock fell from 1824 MHz (A mean) to 1539 (pinned mean). Unpinned, the GPU here
+requested 1891-2082 MHz of its 2300, against 1413-1640 on the concourse: it had
+little headroom, so the power the P cores took came out of the GPU's clock.
+`Render` alone (C) and `Render` with `dxvk-cs` (B) did the same.
+
+The three spots fit one mechanism: the CPU and GPU share the package power
+limit, and a P core spends more of it per unit of work. Pinning gives the
+render thread speed and takes GPU clock in exchange. That gains where the GPU
+has headroom (concourse, +13%), does nothing where the GPU was the limit
+(station), and loses where both are near their limit (settlement, -4%).
+
+ruled out: a static P-core pin of the render thread as an EDVR fix on the
+Panther Lake handheld, because it trades GPU clock for render-thread speed
+under the shared power limit: +13% on the concourse, about -4% at a settlement,
+nothing at a station.
+
+The scheduler comparison in the concourse entry loses its point for the same
+reason: a scheduler that put `Render` on a P core would make the same trade.
+Splitting the power budget between CPU and GPU belongs to the platform's power
+management, not to EDVR.

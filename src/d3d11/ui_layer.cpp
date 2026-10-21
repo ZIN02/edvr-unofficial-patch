@@ -30,6 +30,7 @@
 #include "temporal_shader_bytecode.h"
 #include "draw_state_describe.h"  // viewName, describeBlend/describeDs, shapeOf, dsStateOf
 #include "tonemap_admit.h"  // the tonemap draw's structural admission, shared with the census
+#include "flat_mono_frame.h"  // kToneDofCompositePs: the one tone input the re-issue blends rather than adds
 
 #include "binding_shadow.h"
 #include "depth_probe.h"   // depthProbeDrawsAtSize: the world-screen gate's own count
@@ -641,6 +642,7 @@ struct Window {
     // coverage passes, HDR layers whose content never reached a tonemap, and
     // the re-issue's declines by reason (each also named once a session).
     uint64_t hdrRedirected = 0, hdrReissued = 0, hdrCoveragePasses = 0, hdrLost = 0;
+    uint64_t hdrSceneZeroed = 0;  // re-issues that read zero at the tone's scene images (the scene's bloom)
     uint64_t hdrDrawTimingEligible = 0, hdrDrawTimingDisabled = 0, hdrDrawTimingIssued = 0;
     uint64_t hdrDrawTimingAborted = 0;
     // fix.sharp_weapons: weapons draws taken into the weapons layer (by pair), layers whose content no re-issue published, and the
@@ -3386,10 +3388,11 @@ void logTotals(double seconds) {
         }
         Log::get().note(
             "crisp hud: %.2f HUD draws a frame taken into the HDR layer, %.2f tonemap "
-            "re-issues and %.2f coverage passes a frame; %llu HDR layers' content never reached "
+            "re-issues (%.2f with the scene's bloom zeroed) and %.2f coverage passes a frame; %llu HDR layers' content never reached "
             "a tonemap; re-issue declines: %s.",
             static_cast<double>(g_win.hdrRedirected) / frames,
             static_cast<double>(g_win.hdrReissued) / frames,
+            static_cast<double>(g_win.hdrSceneZeroed) / frames,
             static_cast<double>(g_win.hdrCoveragePasses) / frames,
             static_cast<unsigned long long>(g_win.hdrLost),
             declines.empty() ? "none" : declines.c_str());
@@ -4241,6 +4244,10 @@ struct CrispToneSave {
     UINT scCount = 0;
     bool scissorSet = false;
     Ptr<ID3D11ShaderResourceView> gameHdrSrv;  // the game's own HDR source at the slot
+    // The tone's scene images (ui_layer_math.h toneInputIsSceneImage: the scene's bloom), as the game bound them, by PS slot:
+    // each step that tonemaps the layer's own light binds null there (weapons_fire.h toneStepKeepsSceneImages), End puts them back.
+    Ptr<ID3D11ShaderResourceView> sceneSrv[kToneSceneScanSlots];
+    uint32_t sceneMask = 0;
     int routeSlot = -1;
     int eye = -1;
     uint64_t seq = 0;
@@ -5024,6 +5031,110 @@ void crispBindStep(ID3D11DeviceContext* ctx, ToneStep step) {
     vScreenOMSetBlendStateRaw(ctx, b.blend, g_crispSave.factor, g_crispSave.sampleMask);
     ID3D11ShaderResourceView* src = b.source;
     vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(g_crispSave.hdrSlot), 1, &src);
+    // The scene's images: null for a step that tonemaps the layer's own light, the game's own for the matched weapons pair.
+    const bool keep = toneStepKeepsSceneImages(step);
+    for (int s = 0; s < kToneSceneScanSlots; ++s) {
+        if (!(g_crispSave.sceneMask & (1u << s))) continue;
+        ID3D11ShaderResourceView* v = keep ? g_crispSave.sceneSrv[s].Get() : nullptr;
+        vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(s), 1, &v);
+    }
+}
+
+// ui_layer_math.h toneInputColourFormat names its formats by number; they are dxgiformat.h's.
+static_assert(DXGI_FORMAT_R32G32B32A32_FLOAT == 2 && DXGI_FORMAT_R32G32B32_FLOAT == 6 &&
+                  DXGI_FORMAT_R16G16B16A16_FLOAT == 10 && DXGI_FORMAT_R16G16B16A16_UNORM == 11 &&
+                  DXGI_FORMAT_R10G10B10A2_UNORM == 24 && DXGI_FORMAT_R11G11B10_FLOAT == 26 &&
+                  DXGI_FORMAT_R8G8B8A8_UNORM == 28 && DXGI_FORMAT_R8G8B8A8_UNORM_SRGB == 29 &&
+                  DXGI_FORMAT_R9G9B9E5_SHAREDEXP == 67 && DXGI_FORMAT_B8G8R8A8_UNORM == 87 &&
+                  DXGI_FORMAT_B8G8R8X8_UNORM == 88 && DXGI_FORMAT_B8G8R8A8_UNORM_SRGB == 91 &&
+                  DXGI_FORMAT_B8G8R8X8_UNORM_SRGB == 93,
+              "toneInputColourFormat's numbers are DXGI_FORMAT values");
+static_assert(kToneSceneScanSlots <= 32, "CrispToneSave::sceneMask is 32 bits wide");
+
+// Puts the tone's scene images back as the game bound them (End, and Begin's fault path).
+void crispRestoreSceneImages(ID3D11DeviceContext* ctx) {
+    for (int s = 0; s < kToneSceneScanSlots; ++s) {
+        if (!(g_crispSave.sceneMask & (1u << s))) continue;
+        ID3D11ShaderResourceView* v = g_crispSave.sceneSrv[s].Get();
+        vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(s), 1, &v);
+    }
+}
+
+// The tone draw's scene images (ui_layer_math.h toneInputIsSceneImage), read from the admitted draw's own PS bindings: the mask
+// and the views go into g_crispSave. The HDR source's size is the game's input at the admitted slot (`gameHdr`). The DoF
+// composite's blur is the one input the tone blends rather than adds, so it is never one of them. Each (vs, ps) pair's reading
+// is said once, whether or not it found any, so a log without the line is a build or a path that never ran this.
+void crispFindSceneImages(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameHdr, int hdrSlot, uint64_t vs, uint64_t ps) {
+    g_crispSave.sceneMask = 0;
+    for (auto& v : g_crispSave.sceneSrv) v.Reset();
+    uint32_t hdrW = 0, hdrH = 0;
+    if (gameHdr) {
+        Ptr<ID3D11Resource> r;
+        gameHdr->GetResource(&r);
+        Ptr<ID3D11Texture2D> t;
+        if (r && SUCCEEDED(r.As(&t))) {
+            D3D11_TEXTURE2D_DESC d{};
+            t->GetDesc(&d);
+            hdrW = d.Width;
+            hdrH = d.Height;
+        }
+    }
+    // Once per pair, at most 16 pairs a session: whether this call says what it found.
+    static uint64_t pairs[16][2] = {};
+    static uint32_t pairCount = 0;
+    bool newPair = pairCount < 16;
+    for (uint32_t i = 0; i < pairCount && newPair; ++i)
+        if (pairs[i][0] == vs && pairs[i][1] == ps) newPair = false;
+    const int blendSlot = ps == flat_mono_detail::kToneDofCompositePs ? 1 : -1;
+    ID3D11ShaderResourceView* raw[kToneSceneScanSlots] = {};
+    ctx->PSGetShaderResources(0, kToneSceneScanSlots, raw);
+    std::string inputs;
+    for (int s = 0; s < kToneSceneScanSlots; ++s) {
+        Ptr<ID3D11ShaderResourceView> view;
+        view.Attach(raw[s]);
+        if (!view) continue;
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+        view->GetDesc(&vd);
+        ToneInputShape in;
+        in.tex2d = vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D;
+        in.viewFormat = static_cast<uint32_t>(vd.Format);
+        if (in.tex2d) {
+            Ptr<ID3D11Resource> r;
+            view->GetResource(&r);
+            Ptr<ID3D11Texture2D> t;
+            if (r && SUCCEEDED(r.As(&t))) {
+                D3D11_TEXTURE2D_DESC d{};
+                t->GetDesc(&d);
+                in.gpuWritten = (d.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS)) != 0;
+                in.w = d.Width;
+                in.h = d.Height;
+            }
+        }
+        const bool scene = toneInputIsSceneImage(s, hdrSlot, blendSlot, in, hdrW, hdrH);
+        if (scene) {
+            g_crispSave.sceneMask |= 1u << s;
+            g_crispSave.sceneSrv[s] = view;
+        }
+        if (!newPair) continue;
+        if (in.tex2d)
+            appendf(inputs, "%st%d %ux%u fmt %u%s%s%s", inputs.empty() ? "" : ", ", s, in.w, in.h, in.viewFormat,
+                    in.gpuWritten ? "" : " (not GPU-written)",
+                    s == hdrSlot ? " (the HDR source)" : s == blendSlot ? " (the DoF blur, kept)" : "", scene ? " ZEROED" : "");
+        else
+            appendf(inputs, "%st%d %s", inputs.empty() ? "" : ", ", s,
+                    vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE3D ? "3D" : "not a 2D view");
+    }
+    if (g_crispSave.sceneMask) ++g_win.hdrSceneZeroed;
+    if (!newPair) return;
+    pairs[pairCount][0] = vs;
+    pairs[pairCount][1] = ps;
+    ++pairCount;
+    Log::get().note("crisp hud: tone vs %016llX ps %016llX, HDR source t%d %ux%u: %s. Its PS inputs: %s. A zeroed input is "
+                    "the scene's bloom or the like, which the frame already carries once: the HUD's steps and the plain weapons "
+                    "add read zero there, the matched weapons pair keeps it. Said once a pair.",
+                    static_cast<unsigned long long>(vs), static_cast<unsigned long long>(ps), hdrSlot, hdrW, hdrH,
+                    g_crispSave.sceneMask ? "the re-issue zeroes the scene's images" : "no scene image to zero",
+                    inputs.empty() ? "none in t0..t15" : inputs.c_str());
 }
 
 // After the admitted draw's own issue (vscreen's forwardWithVerdict, around
@@ -5182,6 +5293,7 @@ bool uiLayerCrispToneBegin(ID3D11DeviceContext* ctx) {
         g_crispSave.plan = plan;
         g_crispSave.step = 0;
         g_crispSave.fellBack = fellBack;
+        crispFindSceneImages(ctx, gameHdr.Get(), p.hdrSlot, p.vs, p.ps);
         crispBindStep(ctx, plan.steps[0]);
         g_crispSave.routeSlot = routeBegin(ctx, UiRouteStage::kHdrTonemap, p.eye, p.seq);
         g_crispSave.active = true;
@@ -5209,6 +5321,7 @@ bool uiLayerCrispToneBegin(ID3D11DeviceContext* ctx) {
                     vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(g_crispSave.hdrSlot),
                                                    1, &gameHdr);
                 }
+                crispRestoreSceneImages(ctx);
             });
         }
         g_crispSave = CrispToneSave{};
@@ -5258,6 +5371,7 @@ void uiLayerCrispToneEnd(ID3D11DeviceContext* ctx) {
             if (g_crispSave.scissorSet) ctx->RSSetScissorRects(g_crispSave.scCount, g_crispSave.sc);
             ID3D11ShaderResourceView* gameHdr = g_crispSave.gameHdrSrv.Get();
             vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(hdrSlot), 1, &gameHdr);
+            crispRestoreSceneImages(ctx);
         })) {
         crispStandDown("a fault while putting the game's state back after the tonemap re-issue");
     }

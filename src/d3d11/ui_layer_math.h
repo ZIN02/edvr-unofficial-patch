@@ -1634,4 +1634,59 @@ inline double uiLayerPercentile(float* v, uint32_t n, double frac) {
     return uiLayerSortedPercentile(v, n, frac);
 }
 
+// THE TONEMAP RE-ISSUE'S SCENE IMAGES (docs/cockpit-hud-layer-design-2026-09-27.md, "2026-10-20: bloom counted twice").
+// The re-issue swaps only the tone's HDR source for the HDR layer; everything else the game's draw bound stays bound. With
+// Elite's Bloom on, the tone reads the scene's bloom from a slot of its own (quarter size at t2 on the flat E894/0D43 tone, t1
+// on 9270), so the layer came out T(HUD + bloom): over every pixel with no HUD that is T(bloom), and the composite adds it onto
+// a frame that already carries it. Bloom counted twice: on Sean's F7 pair of the System Map the halo of the star was 1.95-2.0x
+// as bright at every radius out to 300 px, the bodies 1.3-1.4x, the grid lines and stars unchanged; fix.ui_quality = off
+// restored it. The light the layer adds must be its own, so on the steps that tonemap the layer's light by itself every scene
+// image reads zero (toneStepKeepsSceneImages, weapons_fire.h, says which steps those are).
+//
+// A scene image is a reduced copy of the frame: a 2D view in a colour format (three or more channels) of a texture the GPU wrote
+// (a render target or UAV), the HDR source's shape to within a pixel's rounding, from 1/32 of its size to its full size per
+// axis. The colour LUT (a 3D view), the exposure (1x1, a single channel, and on the VS), a strip or square table, an asset
+// texture and the HDR source's own slot are none of these. `blendSlot` names an input the tone BLENDS with its HDR source
+// rather than adds -- the DoF composite's blur (flat_mono_frame.h kToneDofCompositePs, PS1) -- where zero would dim the HUD
+// instead: it stays as the game bound it, and is not this rule's case. -1 for none.
+// The PS slots the re-issue looks at: t0..t15. The measured tones bind t0..t3 (t3 null on E894); EDHM's t120 is its config table,
+// a buffer, not an image.
+constexpr int kToneSceneScanSlots = 16;
+struct ToneInputShape {
+    bool tex2d = false;       // a TEXTURE2D view: not 3D, an array, multisampled or a buffer
+    bool gpuWritten = false;  // its texture binds as a render target or an unordered-access view
+    uint32_t viewFormat = 0;  // the view's DXGI_FORMAT, as a number (ui_layer.cpp asserts the values below against dxgiformat.h)
+    uint32_t w = 0, h = 0;    // the texture's mip 0
+};
+// Three or more channels: the formats a frame or its bloom is held in. A luminance or exposure texture is one or two.
+inline bool toneInputColourFormat(uint32_t f) {
+    switch (f) {
+        case 2:   // R32G32B32A32_FLOAT
+        case 6:   // R32G32B32_FLOAT
+        case 10:  // R16G16B16A16_FLOAT
+        case 11:  // R16G16B16A16_UNORM
+        case 24:  // R10G10B10A2_UNORM
+        case 26:  // R11G11B10_FLOAT
+        case 28:  // R8G8B8A8_UNORM
+        case 29:  // R8G8B8A8_UNORM_SRGB
+        case 67:  // R9G9B9E5_SHAREDEXP
+        case 87:  // B8G8R8A8_UNORM
+        case 88:  // B8G8R8X8_UNORM
+        case 91:  // B8G8R8A8_UNORM_SRGB
+        case 93:  // B8G8R8X8_UNORM_SRGB
+            return true;
+        default:
+            return false;
+    }
+}
+inline bool toneInputIsSceneImage(int slot, int hdrSlot, int blendSlot, const ToneInputShape& in, uint32_t hdrW, uint32_t hdrH) {
+    if (slot == hdrSlot || slot == blendSlot) return false;
+    if (!in.tex2d || !in.gpuWritten || !toneInputColourFormat(in.viewFormat)) return false;
+    if (!in.w || !in.h || !hdrW || !hdrH || in.w > hdrW || in.h > hdrH) return false;
+    if (static_cast<uint64_t>(in.w) * 32u < hdrW || static_cast<uint64_t>(in.h) * 32u < hdrH) return false;
+    // The same shape: w/h = W/H, cross-multiplied, with a pixel of rounding on either axis (a chain that rounds up or down).
+    const int64_t cross = static_cast<int64_t>(in.w) * hdrH - static_cast<int64_t>(in.h) * hdrW;
+    return (cross < 0 ? -cross : cross) <= static_cast<int64_t>(hdrW) + static_cast<int64_t>(hdrH);
+}
+
 }  // namespace edvr

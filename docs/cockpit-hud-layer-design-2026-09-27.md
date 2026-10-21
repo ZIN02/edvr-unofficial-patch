@@ -2,6 +2,10 @@
 
 ## Status
 
+- **State (2026-10-20): bloom counted twice, BUILT, NOT FLOWN.** With Bloom on
+  and any EDVR temporal mode the re-issue kept the tone's bloom bound and added
+  T(bloom) over the frame (halo 2.0x); the HUD's steps now read zero there.
+  Signature, DoF gap: "2026-10-20: bloom counted twice" (last entry).
 - **State: the census retired 2026-09-29 (code removed, 7027e549).**
   `advanced.hud_census` and hud_layer_census.cpp are deleted; Sean chose
   deletion over a compile-out switch, so there is no diagnostics build flag.
@@ -49,12 +53,9 @@
   `dlss-performance-review-2026-09-28.md` for the confirmed CPU waits and
   retained optimizations. Halo/occlusion parity still needs pixel evidence.
 
-- **Latest journal entry (2026-09-29, built, not flown):** the hologram
-  restore fence lifts at the frame boundary (Review B1); ui_holo_test now
-  1059 checks on WARP (927 in the entry the Open bullet's figure came from).
-- **2026-09-30 (built, not flown):** the re-issue's eye identity now follows the
-  eye through the game's post pass, so the station menu's frosted base is taken
-  after the HUD (ui-layer-2026-09-23.md, "2026-09-30"); its Limits name the HDR-phase inversion.
+- **2026-09-29/30 (built, not flown):** the hologram restore fence lifts at the
+  frame boundary (Review B1, ui_holo_test 1059 checks); the re-issue's eye
+  identity follows the eye through the post pass (ui-layer-2026-09-23.md).
 - **Design background** (the game's tonemap draw, its variants, exposure,
   bloom; measured facts): "Status detail" below, verbatim.
 - **Ruled out:** "Ruled out (do not re-propose)" below; the phase journals
@@ -946,3 +947,96 @@ in `ui_layer.cpp` only logs and flips the flag, and no rig compiles that file.
 The trigger is a rare driver fault, so a flight is unlikely to exercise it.
 The log lines to look for are "restored at the frame boundary" and "could
 NOT be put back".
+
+## 2026-10-20: bloom counted twice
+
+Report (Sean): with EDVR's anti-aliasing on (TAA, DLSS and XeSS alike) and
+Elite's Bloom on, lights become much brighter, in VR and in flat.
+
+Evidence:
+
+- An F7 pair of the System Map (flat, XeSS, 1920x1200, Pegasi Sector AM-S
+  A5-3), measured in display values, AA on against AA off. The star's halo is
+  1.95-2.0x as bright at every radius from 120 to 300 px, with the same extent
+  and shape. The star disc is 1.42x, the planets and moons 1.2-1.4x. The grid
+  lines, the background stars and the UI text are 1.00-1.04x.
+- `fix.ui_quality = off` with AA still on removes the effect (Sean).
+
+Mechanism (code). The re-issue (`uiLayerCrispToneBegin`) swaps only the tone's
+HDR slot; every other input the game bound stays bound. With Bloom on, the
+tone reads bloom from a slot of its own: t2 at quarter size on E894/0D43, t2
+on EAA5, t1 on 9270. So the 8-bit layer is T(H + bloom). Where there is no
+HUD, H is 0, the layer's colour is T(bloom) and its alpha is 1, and the
+composite `l.rgb + f.rgb * l.a` adds T(bloom) to a frame that is already
+T(scene + bloom).
+
+That predicts exactly what the pair shows. Where there is only bloom it is
+exactly 2x. Bright pixels gain less, because the tone compresses them. Pixels
+with no bloom do not change. With Bloom off the stock tone (FEE777) has no
+bloom input, and with AA off the layer does not run.
+
+- ruled out: EDVR's resolve brightening highlights before bloom, because the
+  grid lines are in the resolved HDR image and did not change, EDVR's own TAA
+  accumulates in a compressed space that loses energy on highlights, and
+  section 106 of the flat TAA doc measured every mode's out/in mean at
+  0.87-0.92.
+- ruled out: an exposure change, because it would have moved the grid lines
+  and the stars too.
+
+Fix. There is no key; it always helps.
+
+- `toneInputIsSceneImage` (ui_layer_math.h) decides what counts as a scene
+  image. It is a 2D view, in a colour format, of a texture the GPU wrote. It
+  has the HDR source's shape to within a pixel, and its size is 1/32 to 1x of
+  the source per axis. These are not scene images: the HDR source's own slot,
+  the 3D LUT, the exposure, square tables in one channel, strips, asset
+  textures, and the DoF composite's blur.
+- `toneStepKeepsSceneImages` (weapons_fire.h) decides per step. The HUD's
+  steps and the plain weapons replace read zero there. The matched weapons
+  pair keeps them, because T(F_up + L) - T(F_up) cancels them and needs them
+  to tonemap the light at the right point on the curve.
+- In `ui_layer.cpp`:
+  - `crispFindSceneImages` reads PS t0..t15 at Begin, from the admitted draw's
+    own bindings, and saves what it finds.
+  - `crispBindStep` binds null, or the game's own view, per step.
+  - End and Begin's fault path put the game's views back.
+- The HUD's own bloom halo stays absent, as it has been since Phase 1
+  (Decision 1).
+- Not covered: the DoF composite (DE65) blends its HDR source with the blur
+  at PS1. With the blur left bound, T((1-f)H + f*blur) still adds the scene's
+  blur a second time while Depth of field is on. Zero there would dim the HUD
+  instead. Binding the HUD layer at PS1 too is the likely fix. It is left for
+  a separate decision.
+
+Flight signature:
+
+- Once per tone pair: `crisp hud: tone vs ... ps ..., HDR source tN WxH: the
+  re-issue zeroes the scene's images. Its PS inputs: t0 3D, t1 ... (the HDR
+  source), t2 WxH fmt F ZEROED`.
+  - The cockpit should show E894 with t2 ZEROED.
+  - The System Map's tone (C89DD4) names its bloom slot here for the first
+    time.
+  - A pair with nothing found says `no scene image to zero`.
+  - No such line at all means the code never ran.
+- The 30 s `crisp hud:` line: `N tonemap re-issues (M with the scene's bloom
+  zeroed)`. Expect M = N with Bloom on and M = 0 with Bloom off.
+- Visual: the same F7 pair. The halo should match AA off within JPEG noise, and
+  cockpit lights should look the same with UI quality 100 and off.
+- Failure: a HUD that turns dark under some tone. That pair's line names the
+  input that was zeroed.
+
+Rigs: `ui_quality_test` (ui_tone_scene_test.h) covers:
+
+- the rule on the measured inputs and on rounded VR quarters, and the inputs
+  it keeps;
+- the step map across every plan;
+- six wiring pins, each failed by its own control edit.
+
+Linux compile: the DLLs PASS. `ui_quality_test` ran 1265 CPU checks under Wine
+with no failures; its GPU half needs a WARP device, which Wine lacks. Full
+validation is the Windows workflow.
+
+VR: unverified. VR admits its tone by structure, so if its Bloom-on tone reads
+bloom from a slot of its own, the same rule zeroes it and the line names it. If
+VR's bloom is baked into H before the tone (BELIEVED, Status detail), this path
+never doubled it there. A VR flight with Bloom on settles which.

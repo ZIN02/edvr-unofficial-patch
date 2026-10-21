@@ -3499,6 +3499,7 @@ void testWriteBack(Gpu& g) {
 #include "ui_intro_curve_wiring_test.h"
 #include "ui_panel_budget_test.h"
 #include "ui_flat_panel_settle_test.h"
+#include "ui_tone_scene_test.h"
 
 // 2026-10-13 instruments: the seed reasons as counters (ui_layer_seed_census.h's tallyUiSeedReasons), one per bit, and the name table.
 void testSeedReasonTally() {
@@ -3577,6 +3578,7 @@ int main(int argc, char** argv) {
     panelbudget::testAll();
     panelbudget::testWiring();
     flatsettle::testAll();
+    tonescene::testAll();
     Gpu g;
     if (!setup(g, hardware)) {
         check(false, "a device and the production composite shader");

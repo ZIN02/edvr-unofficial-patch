@@ -18071,3 +18071,27 @@ inert pairs (`flatProjectionDrawUnchanged`, now in the D3D-free
 `flat_inert_pairs.h`) plus 53211E8C/7EAC7196. The witness neither opens
 nor conflicts an entry for them. Refused witness lines get their own
 5-second log budget, so accepted frames cannot hide them.
+
+### Flown 17:08 (`591b66ee`): one suit still refused, below the scene's draw minimum
+
+`edvr_gfx_20261021_170848` matches the build. Sean: the other suits look
+right now; the Maverick suit's preview is still not upscaled. Home was
+pressed at 17:12:39.
+- **The witness:** no second-camera refusals remain. Probe frames accept
+  the witness (`why=accepted`, one camera, 19-25 writers).
+- **The new blocker:** the copy route's `flatSceneFacts`. The main HDR
+  target (960x600 R11G11B10F) receives exactly 7 draws in both census
+  frames: the deferred lighting pass, the sky (F8FA801F), 33A5025C x2,
+  617C6E44, 025B4B9F and 8289669D. That is below `kFlatSceneMinDraws` = 8.
+- **What follows:** `flat scene candidates: winner none`; on the frames
+  where the auxiliary 612x436 preview scene has 8 or more draws it wins
+  off-shape. The copy structure reports `no-scene` (132 of 290 frames),
+  and the runtime refuses `no-3d-scene` and stands down after 5 s.
+- **Why only this suit:** when the main scene does qualify, it has
+  `draws=8`. The other suits evidently add a draw or two.
+
+Lowering the minimum would let a few-draw HDR target, such as the loading
+hologram's, back into temporal treatment. The planned rule instead admits a
+target below the minimum when a verified deferred lighting pass
+(`t.tone.deferredCamera`, `t.hdrCamera`) wrote it: a lit G-buffer is a 3D
+scene. The loading hologram has no such pass. Not built yet.

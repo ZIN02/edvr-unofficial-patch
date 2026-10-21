@@ -1647,8 +1647,9 @@ inline double uiLayerPercentile(float* v, uint32_t n, double frac) {
 // (a render target or UAV), the HDR source's shape to within a pixel's rounding, from 1/32 of its size to its full size per
 // axis. The colour LUT (a 3D view), the exposure (1x1, a single channel, and on the VS), a strip or square table, an asset
 // texture and the HDR source's own slot are none of these. `blendSlot` names an input the tone BLENDS with its HDR source
-// rather than adds -- the DoF composite's blur (flat_mono_frame.h kToneDofCompositePs, PS1) -- where zero would dim the HUD
-// instead: it stays as the game bound it, and is not this rule's case. -1 for none.
+// rather than adds -- the DoF composite's blur (flat_mono_frame.h kToneDofCompositePs, PS1), (1-f) H + f blur -- where zero
+// would dim the light by f instead: it is not this rule's case. The re-issue binds the step's own source there (ui_layer.cpp
+// crispBindStep), so the blend mixes the layer with itself and adds nothing of the scene's. -1 for none.
 // The PS slots the re-issue looks at: t0..t15. The measured tones bind t0..t3 (t3 null on E894); EDHM's t120 is its config table,
 // a buffer, not an image.
 constexpr int kToneSceneScanSlots = 16;

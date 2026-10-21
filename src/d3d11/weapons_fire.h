@@ -164,11 +164,12 @@ inline ToneSource toneStepSource(ToneStep s) {
     }
 }
 
-// Whether a step keeps the tone draw's scene images (ui_layer_math.h toneInputIsSceneImage: the scene's bloom and the like) bound
-// as the game bound them, or reads zero there. The HUD's steps and the plain weapons replace tonemap the layer's own light, which the
-// frame does not hold, so the scene's bloom must not come with it: T(H + bloom) added onto a frame that holds T(scene + bloom) is the
-// bloom twice. The matched pair keeps them: T(F_up + L) - T(F_up) is the light tonemapped on the scene it lands on, and that scene
-// includes its bloom -- both terms carry it, so the difference holds none.
+// Whether a step keeps the tone draw's scene images (ui_layer_math.h toneInputIsSceneImage: the scene's bloom and the like) and the
+// DoF composite's blur bound as the game bound them, or reads zero at the images and its own source at the blur. The HUD's steps and
+// the plain weapons replace tonemap the layer's own light, which the frame does not hold, so nothing of the scene may come with it:
+// T(H + bloom) added onto a frame that holds T(scene + bloom) is the bloom twice, and T((1-f) H + f blur) the blur twice. The matched
+// pair keeps them: T(F_up + L) - T(F_up) is the light tonemapped on the scene it lands on, and that scene includes its bloom and
+// blur -- both terms carry them, so the difference holds neither.
 inline bool toneStepKeepsSceneImages(ToneStep s) {
     return s == ToneStep::kWeaponsBase || s == ToneStep::kWeaponsLit;
 }

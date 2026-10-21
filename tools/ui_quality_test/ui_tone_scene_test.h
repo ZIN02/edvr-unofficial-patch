@@ -6,11 +6,12 @@
 //   * the rule (ui_layer_math.h toneInputIsSceneImage) zeroes the measured bloom input (quarter size at t2 of the flat E894 tone, 1720x720) and
 //     a reduced frame rounded either way, from 1/32 of the HDR source to its full size, and keeps the HDR source's own slot, the 3D LUT, the
 //     1x1 exposure, a single-channel table on a square eye, a strip, an asset texture, a texture larger than the source, and the DoF
-//     composite's blur (the one input the tone blends rather than adds);
+//     composite's blur (the one input the tone blends rather than adds, which the re-issue gives the step's own source instead);
 //   * the steps (weapons_fire.h toneStepKeepsSceneImages): every step that reads the HUD, and the plain weapons replace, reads zero; the
 //     matched pair keeps them, and both of its terms alike, or their difference would carry the bloom;
 //   * the wiring (ui_layer.cpp, by source scan, with controls): Begin finds the images before the first step binds, every step binds by the
-//     step's answer, and End and Begin's fault path put the game's own views back.
+//     step's answer -- null at the images and its own source at the DoF blur, or the game's own views -- and End and Begin's fault path put
+//     the game's own views back, the blur's included.
 namespace tonescene {
 
 void testRule() {
@@ -23,7 +24,7 @@ void testRule() {
     // The 11:40 XeSS cockpit capture (design-flat-ui-quality-2026-10-05.md): the HUD at t1, 1720x720; t2 quarter-sized bloom.
     check(toneInputIsSceneImage(2, 1, -1, bloom, 1720, 720), "the flat E894 tone's quarter-size bloom at t2 is a scene image");
     check(!toneInputIsSceneImage(1, 1, -1, bloom, 1720, 720), "the HDR source's own slot is never zeroed");
-    check(!toneInputIsSceneImage(1, 0, 1, bloom, 1720, 720), "the DoF composite's blur (its blend slot, PS1) is kept");
+    check(!toneInputIsSceneImage(1, 0, 1, bloom, 1720, 720), "the DoF composite's blur (its blend slot, PS1) is not zeroed");
     check(toneInputIsSceneImage(1, 0, -1, bloom, 1720, 720), "9270's bloom at t1 (HDR at t0) is a scene image");
     ToneInputShape s = bloom;
     s.viewFormat = 10;  // R16G16B16A16_FLOAT
@@ -110,12 +111,14 @@ struct Pin {
 std::vector<Pin> pins(const std::string& text) {
     using afterui::functionBody;
     using afterui::squeeze;
-    std::string bind, find, begin, end;
+    std::string bind, find, begin, end, restore;
     const bool found = functionBody(text, "void crispBindStep(", &bind) && functionBody(text, "void crispFindSceneImages(", &find) &&
-                       functionBody(text, "bool uiLayerCrispToneBegin(", &begin) && functionBody(text, "void uiLayerCrispToneEnd(", &end);
-    const std::string b = squeeze(bind), f = squeeze(find), g = squeeze(begin), e = squeeze(end);
+                       functionBody(text, "bool uiLayerCrispToneBegin(", &begin) && functionBody(text, "void uiLayerCrispToneEnd(", &end) &&
+                       functionBody(text, "void crispRestoreSceneImages(", &restore);
+    const std::string b = squeeze(bind), f = squeeze(find), g = squeeze(begin), e = squeeze(end), r = squeeze(restore);
     std::vector<Pin> out;
-    out.push_back({"found", found, "crispBindStep, crispFindSceneImages, uiLayerCrispToneBegin and uiLayerCrispToneEnd are found"});
+    out.push_back({"found", found,
+                   "crispBindStep, crispFindSceneImages, crispRestoreSceneImages, uiLayerCrispToneBegin and uiLayerCrispToneEnd are found"});
     out.push_back({"step-binds",
                    worldroute::has(b, "constboolkeep=toneStepKeepsSceneImages(step);") &&
                        worldroute::has(b, "ID3D11ShaderResourceView*v=keep?g_crispSave.sceneSrv[s].Get():nullptr;") &&
@@ -125,6 +128,19 @@ std::vector<Pin> pins(const std::string& text) {
     const size_t firstStep = g.find("crispBindStep(ctx,plan.steps[0]);");
     out.push_back({"begin-finds", findAt != std::string::npos && firstStep != std::string::npos && findAt < firstStep,
                    "Begin finds the scene's images from the admitted draw's own bindings before the first step binds"});
+    out.push_back({"blur-binds",
+                   worldroute::has(b, "if(g_crispSave.blendSrv){ID3D11ShaderResourceView*v=keep?g_crispSave.blendSrv.Get():src;"
+                                      "vScreenPSSetShaderResourcesRaw(ctx,static_cast<uint32_t>(g_crispSave.blendSlot),1,&v);}"),
+                   "every step binds the DoF blur by the step's answer: the step's own source (never zero, which would dim it), or the game's"});
+    out.push_back({"blur-saved",
+                   worldroute::has(f, "g_crispSave.blendSlot=-1;g_crispSave.blendSrv.Reset();") &&
+                       worldroute::has(f, "constboolblur=s==blendSlot&&s!=hdrSlot&&in.tex2d;if(blur){g_crispSave.blendSlot=s;"
+                                          "g_crispSave.blendSrv=view;}"),
+                   "the DoF blur the game bound is saved, and forgotten at every Begin"});
+    out.push_back({"blur-restores",
+                   worldroute::has(r, "if(g_crispSave.blendSrv){ID3D11ShaderResourceView*v=g_crispSave.blendSrv.Get();"
+                                      "vScreenPSSetShaderResourcesRaw(ctx,static_cast<uint32_t>(g_crispSave.blendSlot),1,&v);}"),
+                   "the restore puts the game's DoF blur back"});
     out.push_back({"end-restores", worldroute::has(e, "crispRestoreSceneImages(ctx);"), "End puts the game's views back"});
     out.push_back({"fault-restores", worldroute::has(g, "crispRestoreSceneImages(ctx);"), "Begin's fault path puts the game's views back"});
     out.push_back({"find-rule",
@@ -155,6 +171,11 @@ void testWiring() {
         {"fault-restores", "                }\n                crispRestoreSceneImages(ctx);\n", "                }\n"},
         {"find-rule", "ps == flat_mono_detail::kToneDofCompositePs ? 1 : -1", "-1"},
         {"find-rule", "            g_crispSave.sceneSrv[s] = view;\n", ""},
+        {"blur-binds", "keep ? g_crispSave.blendSrv.Get() : src", "keep ? g_crispSave.blendSrv.Get() : nullptr"},
+        {"blur-binds", "keep ? g_crispSave.blendSrv.Get() : src", "g_crispSave.blendSrv.Get()"},
+        {"blur-saved", "            g_crispSave.blendSrv = view;\n", ""},
+        {"blur-saved", "    g_crispSave.blendSrv.Reset();\n", ""},
+        {"blur-restores", "        ID3D11ShaderResourceView* v = g_crispSave.blendSrv.Get();\n", "        ID3D11ShaderResourceView* v = nullptr;\n"},
     };
     for (const Control& c : controls) {
         const size_t at = text.find(c.from);

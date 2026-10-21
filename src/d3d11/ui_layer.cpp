@@ -643,6 +643,7 @@ struct Window {
     // the re-issue's declines by reason (each also named once a session).
     uint64_t hdrRedirected = 0, hdrReissued = 0, hdrCoveragePasses = 0, hdrLost = 0;
     uint64_t hdrSceneZeroed = 0;  // re-issues that read zero at the tone's scene images (the scene's bloom)
+    uint64_t hdrDofReplaced = 0;  // re-issues that bound the step's own source at the DoF composite's blur
     uint64_t hdrDrawTimingEligible = 0, hdrDrawTimingDisabled = 0, hdrDrawTimingIssued = 0;
     uint64_t hdrDrawTimingAborted = 0;
     // fix.sharp_weapons: weapons draws taken into the weapons layer (by pair), layers whose content no re-issue published, and the
@@ -3388,11 +3389,13 @@ void logTotals(double seconds) {
         }
         Log::get().note(
             "crisp hud: %.2f HUD draws a frame taken into the HDR layer, %.2f tonemap "
-            "re-issues (%.2f with the scene's bloom zeroed) and %.2f coverage passes a frame; %llu HDR layers' content never reached "
+            "re-issues (%.2f with the scene's bloom zeroed, %.2f with the DoF blur replaced) and %.2f coverage passes a frame; %llu "
+            "HDR layers' content never reached "
             "a tonemap; re-issue declines: %s.",
             static_cast<double>(g_win.hdrRedirected) / frames,
             static_cast<double>(g_win.hdrReissued) / frames,
             static_cast<double>(g_win.hdrSceneZeroed) / frames,
+            static_cast<double>(g_win.hdrDofReplaced) / frames,
             static_cast<double>(g_win.hdrCoveragePasses) / frames,
             static_cast<unsigned long long>(g_win.hdrLost),
             declines.empty() ? "none" : declines.c_str());
@@ -4248,6 +4251,10 @@ struct CrispToneSave {
     // each step that tonemaps the layer's own light binds null there (weapons_fire.h toneStepKeepsSceneImages), End puts them back.
     Ptr<ID3D11ShaderResourceView> sceneSrv[kToneSceneScanSlots];
     uint32_t sceneMask = 0;
+    // The DoF composite's blur (its blend slot, PS1), as the game bound it: each step that tonemaps the layer's own light binds that
+    // step's source there instead, so the blend mixes the layer with itself; End puts it back.
+    int blendSlot = -1;
+    Ptr<ID3D11ShaderResourceView> blendSrv;
     int routeSlot = -1;
     int eye = -1;
     uint64_t seq = 0;
@@ -5023,7 +5030,8 @@ int uiLayerCrispAdmitFlat(ID3D11DeviceContext* ctx, int hdrSlot, const void* ali
 }
 
 // The step the re-issue is on: its HDR source at the admitted slot, its blend over the 8-bit layer (weapons_fire.h's plan; the mapping is
-// sharp_weapons.h's, which the WARP rig runs too). Everything else the game's draw bound stays bound.
+// sharp_weapons.h's, which the WARP rig runs too), and the tone's scene images and DoF blur by the step (toneStepKeepsSceneImages).
+// Everything else the game's draw bound stays bound.
 void crispBindStep(ID3D11DeviceContext* ctx, ToneStep step) {
     Eye& e = g_eye[g_crispSave.eye];
     const SharpStepBinding b =
@@ -5037,6 +5045,12 @@ void crispBindStep(ID3D11DeviceContext* ctx, ToneStep step) {
         if (!(g_crispSave.sceneMask & (1u << s))) continue;
         ID3D11ShaderResourceView* v = keep ? g_crispSave.sceneSrv[s].Get() : nullptr;
         vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(s), 1, &v);
+    }
+    // The DoF blur: the step's own source for a step that tonemaps the layer's own light, (1-f)L + f*L = L, so the scene's blur is not
+    // mixed in a second time and the light is not dimmed by f, as zero would; the game's own blur for the matched weapons pair.
+    if (g_crispSave.blendSrv) {
+        ID3D11ShaderResourceView* v = keep ? g_crispSave.blendSrv.Get() : src;
+        vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(g_crispSave.blendSlot), 1, &v);
     }
 }
 
@@ -5058,15 +5072,22 @@ void crispRestoreSceneImages(ID3D11DeviceContext* ctx) {
         ID3D11ShaderResourceView* v = g_crispSave.sceneSrv[s].Get();
         vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(s), 1, &v);
     }
+    if (g_crispSave.blendSrv) {
+        ID3D11ShaderResourceView* v = g_crispSave.blendSrv.Get();
+        vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(g_crispSave.blendSlot), 1, &v);
+    }
 }
 
 // The tone draw's scene images (ui_layer_math.h toneInputIsSceneImage), read from the admitted draw's own PS bindings: the mask
 // and the views go into g_crispSave. The HDR source's size is the game's input at the admitted slot (`gameHdr`). The DoF
-// composite's blur is the one input the tone blends rather than adds, so it is never one of them. Each (vs, ps) pair's reading
+// composite's blur is the one input the tone blends rather than adds, so it is never one of them: it is saved apart, as the slot
+// crispBindStep gives the step's own source. Each (vs, ps) pair's reading
 // is said once, whether or not it found any, so a log without the line is a build or a path that never ran this.
 void crispFindSceneImages(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameHdr, int hdrSlot, uint64_t vs, uint64_t ps) {
     g_crispSave.sceneMask = 0;
     for (auto& v : g_crispSave.sceneSrv) v.Reset();
+    g_crispSave.blendSlot = -1;
+    g_crispSave.blendSrv.Reset();
     uint32_t hdrW = 0, hdrH = 0;
     if (gameHdr) {
         Ptr<ID3D11Resource> r;
@@ -5115,25 +5136,33 @@ void crispFindSceneImages(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* ga
             g_crispSave.sceneMask |= 1u << s;
             g_crispSave.sceneSrv[s] = view;
         }
+        const bool blur = s == blendSlot && s != hdrSlot && in.tex2d;
+        if (blur) {
+            g_crispSave.blendSlot = s;
+            g_crispSave.blendSrv = view;
+        }
         if (!newPair) continue;
         if (in.tex2d)
-            appendf(inputs, "%st%d %ux%u fmt %u%s%s%s", inputs.empty() ? "" : ", ", s, in.w, in.h, in.viewFormat,
+            appendf(inputs, "%st%d %ux%u fmt %u%s%s%s%s", inputs.empty() ? "" : ", ", s, in.w, in.h, in.viewFormat,
                     in.gpuWritten ? "" : " (not GPU-written)",
-                    s == hdrSlot ? " (the HDR source)" : s == blendSlot ? " (the DoF blur, kept)" : "", scene ? " ZEROED" : "");
+                    s == hdrSlot ? " (the HDR source)" : "", scene ? " ZEROED" : "", blur ? " (the DoF blur) REPLACED by the step's source" : "");
         else
             appendf(inputs, "%st%d %s", inputs.empty() ? "" : ", ", s,
                     vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE3D ? "3D" : "not a 2D view");
     }
     if (g_crispSave.sceneMask) ++g_win.hdrSceneZeroed;
+    if (g_crispSave.blendSrv) ++g_win.hdrDofReplaced;
     if (!newPair) return;
     pairs[pairCount][0] = vs;
     pairs[pairCount][1] = ps;
     ++pairCount;
-    Log::get().note("crisp hud: tone vs %016llX ps %016llX, HDR source t%d %ux%u: %s. Its PS inputs: %s. A zeroed input is "
-                    "the scene's bloom or the like, which the frame already carries once: the HUD's steps and the plain weapons "
-                    "add read zero there, the matched weapons pair keeps it. Said once a pair.",
+    Log::get().note("crisp hud: tone vs %016llX ps %016llX, HDR source t%d %ux%u: %s%s. Its PS inputs: %s. A zeroed input is "
+                    "the scene's bloom or the like, which the frame already carries once, and a replaced one the DoF blur the tone "
+                    "blends its source with: the HUD's steps and the plain weapons add read zero, and their own source, there; the "
+                    "matched weapons pair keeps the game's. Said once a pair.",
                     static_cast<unsigned long long>(vs), static_cast<unsigned long long>(ps), hdrSlot, hdrW, hdrH,
                     g_crispSave.sceneMask ? "the re-issue zeroes the scene's images" : "no scene image to zero",
+                    g_crispSave.blendSrv ? " and replaces the DoF blur" : "",
                     inputs.empty() ? "none in t0..t15" : inputs.c_str());
 }
 

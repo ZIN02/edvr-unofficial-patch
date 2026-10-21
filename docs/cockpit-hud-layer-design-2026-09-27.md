@@ -4,8 +4,8 @@
 
 - **State (2026-10-20): bloom counted twice, BUILT, NOT FLOWN.** With Bloom on
   and any EDVR temporal mode the re-issue kept the tone's bloom bound and added
-  T(bloom) over the frame (halo 2.0x); the HUD's steps now read zero there.
-  Signature, DoF gap: "2026-10-20: bloom counted twice" (last entry).
+  T(bloom) over the frame (halo 2.0x); the HUD's steps now read zero there, and
+  their own source at the DoF blur. See "2026-10-20: bloom counted twice".
 - **State: the census retired 2026-09-29 (code removed, 7027e549).**
   `advanced.hud_census` and hud_layer_census.cpp are deleted; Sean chose
   deletion over a compile-out switch, so there is no diagnostics build flag.
@@ -53,9 +53,8 @@
   `dlss-performance-review-2026-09-28.md` for the confirmed CPU waits and
   retained optimizations. Halo/occlusion parity still needs pixel evidence.
 
-- **2026-09-29/30 (built, not flown):** the hologram restore fence lifts at the
-  frame boundary (Review B1, ui_holo_test 1059 checks); the re-issue's eye
-  identity follows the eye through the post pass (ui-layer-2026-09-23.md).
+- **2026-09-29/30 (built, not flown):** hologram restore fence (Review B1); the
+  re-issue's eye identity follows the post pass (ui-layer-2026-09-23.md).
 - **Design background** (the game's tonemap draw, its variants, exposure,
   bloom; measured facts): "Status detail" below, verbatim.
 - **Ruled out:** "Ruled out (do not re-propose)" below; the phase journals
@@ -1002,24 +1001,28 @@ Fix. There is no key; it always helps.
   - End and Begin's fault path put the game's views back.
 - The HUD's own bloom halo stays absent, as it has been since Phase 1
   (Decision 1).
-- Not covered: the DoF composite (DE65) blends its HDR source with the blur
-  at PS1. With the blur left bound, T((1-f)H + f*blur) still adds the scene's
-  blur a second time while Depth of field is on. Zero there would dim the HUD
-  instead. Binding the HUD layer at PS1 too is the likely fix. It is left for
-  a separate decision.
+- The DoF composite (DE65) blends its HDR source with the blur at PS1:
+  T((1-f)H + f*blur). Left bound, the blur was added a second time while Depth
+  of field is on; zero there would dim the HUD by f instead. Sean asked for it
+  to be fixed too. Each step that reads zero at the scene images now binds its
+  own source at PS1 as well, so the blend mixes the layer with itself and
+  gives T(H). The matched weapons pair keeps the game's blur, as it keeps the
+  bloom.
 
 Flight signature:
 
 - Once per tone pair: `crisp hud: tone vs ... ps ..., HDR source tN WxH: the
   re-issue zeroes the scene's images. Its PS inputs: t0 3D, t1 ... (the HDR
-  source), t2 WxH fmt F ZEROED`.
+  source), t2 WxH fmt F ZEROED`. The DoF tone adds ` and replaces the DoF
+  blur`, and its PS1 reads `(the DoF blur) REPLACED by the step's source`.
   - The cockpit should show E894 with t2 ZEROED.
   - The System Map's tone (C89DD4) names its bloom slot here for the first
     time.
   - A pair with nothing found says `no scene image to zero`.
   - No such line at all means the code never ran.
 - The 30 s `crisp hud:` line: `N tonemap re-issues (M with the scene's bloom
-  zeroed)`. Expect M = N with Bloom on and M = 0 with Bloom off.
+  zeroed, D with the DoF blur replaced)`. Expect M = N with Bloom on and M = 0
+  with Bloom off; D is non-zero only while the DoF tone runs.
 - Visual: the same F7 pair. The halo should match AA off within JPEG noise, and
   cockpit lights should look the same with UI quality 100 and off.
 - Failure: a HUD that turns dark under some tone. That pair's line names the
@@ -1030,9 +1033,10 @@ Rigs: `ui_quality_test` (ui_tone_scene_test.h) covers:
 - the rule on the measured inputs and on rounded VR quarters, and the inputs
   it keeps;
 - the step map across every plan;
-- six wiring pins, each failed by its own control edit.
+- nine wiring pins, each failed by its own control edit; one control puts
+  back the zero at the DoF blur that would dim the HUD.
 
-Linux compile: the DLLs PASS. `ui_quality_test` ran 1265 CPU checks under Wine
+Linux compile: the DLLs PASS. `ui_quality_test` ran 1273 CPU checks under Wine
 with no failures; its GPU half needs a WARP device, which Wine lacks. Full
 validation is the Windows workflow.
 

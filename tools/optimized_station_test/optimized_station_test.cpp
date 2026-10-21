@@ -2924,6 +2924,81 @@ int main(int argc, char** argv) {
               "trace: the seal is marked on its rising edge and the time since the seal counts from it");
     }
 
+    // ---- Built 2026-10-21 (temporary instrument): the census of records culled near the bay. A record whose centre the box culls still draws into the bay when
+    // its sphere reaches the box; the census keeps those, folds them by node, and reports how far each centre lies outside ------------------------------------
+    {
+        const float half[3] = {160.0f, 55.0f, 127.0f};
+        const float inside[3] = {10.0f, -20.0f, 100.0f};
+        check(se::sphereOverlapsBox(inside, 0.5f, half), "census overlap: a centre inside the box overlaps with any radius");
+        const float above[3] = {0.0f, 0.0f, 132.0f};   // 5 m past the top
+        check(!se::sphereOverlapsBox(above, 4.9f, half) && se::sphereOverlapsBox(above, 5.0f, half),
+              "census overlap: a centre 5 m past a face overlaps from a radius of 5 m (the sphere touches the box)");
+        const float corner[3] = {163.0f, 59.0f, 0.0f};   // 3 and 4 m past two faces: 5 m from the edge
+        check(!se::sphereOverlapsBox(corner, 4.9f, half) && se::sphereOverlapsBox(corner, 5.0f, half),
+              "census overlap: past two faces the distance is to the edge, not to either face (3, 4 -> 5 m)");
+        const float below[3] = {-165.0f, 0.0f, 0.0f};
+        check(se::sphereOverlapsBox(below, 6.0f, half) && !se::sphereOverlapsBox(below, 4.0f, half), "census overlap: the negative side is judged the same way");
+        const float distant[3] = {1000.0f, 0.0f, 0.0f};
+        check(!se::sphereOverlapsBox(distant, 800.0f, half) && se::sphereOverlapsBox(distant, 900.0f, half), "census overlap: a big far sphere (a deck or hull mesh) overlaps by its radius");
+        check(!se::sphereOverlapsBox(inside, std::nanf(""), half) && !se::sphereOverlapsBox(inside, INFINITY, half) && !se::sphereOverlapsBox(inside, -1.0f, half),
+              "census overlap: a non-finite or negative radius never overlaps");
+        float out[3] = {};
+        const float oOut[3] = {-165.0f, 20.0f, 130.0f};
+        se::outsideByBox(oOut, half, out);
+        check(out[0] == 5.0f && out[1] == 0.0f && out[2] == 3.0f, "census outside-by: the metres beyond each half-extent, 0 within it");
+        se::outsideByBox(inside, half, out);
+        check(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f, "census outside-by: a centre inside is outside by nothing");
+        // The chain the callbacks run: world centre -> box coordinates -> overlap, in a box turned on its side and far from the origin.
+        se::OwnCell cell;
+        cell.has = true;
+        cell.box = true;
+        cell.boxCentre[0] = 1000.0f;
+        cell.boxCentre[1] = 2000.0f;
+        cell.boxCentre[2] = 3000.0f;
+        cell.boxU[1] = 1.0f;
+        cell.boxV[0] = -1.0f;
+        cell.boxW[2] = 1.0f;
+        cell.boxHalf[0] = 160.0f;
+        cell.boxHalf[1] = 55.0f;
+        cell.boxHalf[2] = 127.0f;
+        const float world[3] = {970.0f, 2170.0f, 3000.0f};   // U 170, V 30, W 0: 10 m past the length face
+        float o[3] = {};
+        se::boxCoords(world, cell, o);
+        se::outsideByBox(o, cell.boxHalf, out);
+        check(o[0] == 170.0f && o[1] == 30.0f && o[2] == 0.0f && out[0] == 10.0f && out[1] == 0.0f && out[2] == 0.0f,
+              "census chain: a world centre reads in box coordinates and is outside by 10 m along U");
+        check(!se::sphereOverlapsBox(o, 9.9f, cell.boxHalf) && se::sphereOverlapsBox(o, 10.0f, cell.boxHalf), "census chain: the overlap follows the box's own axes");
+    }
+    {
+        // The fold: one entry per node, the largest instance keeps its centre and path, the count is the node's hits, the order is radius then node.
+        se::CensusHit h[6];
+        auto hit = [](uintptr_t node, uint8_t path, float x, float r) {
+            se::CensusHit v;
+            v.node = node;
+            v.path = path;
+            v.centre[0] = x;
+            v.radius = r;
+            return v;
+        };
+        h[0] = hit(0x300, se::kCensusStore, 1.0f, 2.0f);
+        h[1] = hit(0x300, se::kCensusProducer, 2.0f, 9.0f);
+        h[2] = hit(0x100, se::kCensusStore, 3.0f, 12.0f);
+        h[3] = hit(0x300, se::kCensusStore, 4.0f, 5.0f);
+        h[4] = hit(0x200, se::kCensusStore, 5.0f, 9.0f);
+        h[5] = hit(0, se::kCensusProducer, 6.0f, 1.0f);   // a record whose node could not be read
+        se::CensusNode out[8];
+        const size_t k = se::foldCensusHits(h, 6, out, 8);
+        check(k == 4, "census fold: four nodes from six hits (the unreadable node is one entry)");
+        check(out[0].node == 0x100 && out[0].radius == 12.0f && out[0].instances == 1, "census fold: the largest radius sorts first");
+        check(out[1].node == 0x200 && out[2].node == 0x300 && out[1].radius == 9.0f && out[2].radius == 9.0f, "census fold: equal radii order by node");
+        check(out[2].instances == 3 && out[2].path == se::kCensusProducer && out[2].centre[0] == 2.0f,
+              "census fold: a node with three hits counts three and keeps its largest instance's path and centre");
+        check(out[3].node == 0 && out[3].instances == 1, "census fold: the node-less hit sorts last by its radius");
+        check(se::foldCensusHits(h, 0, out, 8) == 0, "census fold: no hits, no nodes");
+        se::CensusNode two[2];
+        check(se::foldCensusHits(h, 6, two, 2) == 2, "census fold: no more nodes than the output holds");
+    }
+
     std::printf("optimized_station_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

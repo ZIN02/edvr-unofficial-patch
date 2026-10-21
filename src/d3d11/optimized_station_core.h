@@ -909,6 +909,64 @@ inline NamedKeep keepNamedCell(const float centre[3], float radius, const float 
     return v;
 }
 
+// Built 2026-10-21 (temporary instrument): the census of culled records whose sphere reaches into the sealed box. o: a centre in box coordinates (boxCoords),
+// half: the box's half-extents.
+// Whether the sphere overlaps the box: the distance from the centre to its clamp into the box is at most the radius (a non-finite radius never does).
+inline bool sphereOverlapsBox(const float o[3], float radius, const float half[3]) noexcept {
+    float d2 = 0.0f;
+    for (int k = 0; k < 3; ++k) {
+        const float over = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
+        d2 += over * over;
+    }
+    return std::isfinite(radius) && radius >= 0.0f && d2 <= radius * radius;
+}
+
+// How far the centre lies beyond each half-extent, metres (0 within it).
+inline void outsideByBox(const float o[3], const float half[3], float out[3]) noexcept {
+    for (int k = 0; k < 3; ++k) out[k] = std::fmax(std::fabs(o[k]) - half[k], 0.0f);
+}
+
+// One culled record that overlapped the box (a callback appends it), and a node's fold of them (the tick reports it).
+constexpr uint8_t kCensusProducer = 1;   // the producer-B veto
+constexpr uint8_t kCensusStore = 2;      // the post-store cull
+
+struct CensusHit {
+    uintptr_t node = 0;
+    uint8_t path = 0;
+    float centre[3] = {};   // the world centre
+    float radius = 0.0f;
+};
+
+struct CensusNode {
+    uintptr_t node = 0;
+    uint8_t path = 0;       // the path of the largest instance
+    float centre[3] = {};   // the largest instance's world centre
+    float radius = 0.0f;    // the largest instance's radius
+    uint32_t instances = 0;
+};
+
+// Folds hits by node (the largest radius keeps its centre and path; instances counts the node's hits) and sorts by radius, largest first (ties by node).
+// Writes at most outCap nodes and returns how many; a hit whose node does not fit is not counted.
+inline size_t foldCensusHits(const CensusHit* hits, size_t n, CensusNode* out, size_t outCap) noexcept {
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) {
+        size_t j = 0;
+        while (j < k && out[j].node != hits[i].node) ++j;
+        if (j == k) {
+            if (k >= outCap) continue;
+            out[k] = CensusNode{hits[i].node, hits[i].path, {hits[i].centre[0], hits[i].centre[1], hits[i].centre[2]}, hits[i].radius, 0};
+            ++k;
+        } else if (hits[i].radius > out[j].radius) {
+            out[j].path = hits[i].path;
+            for (int c = 0; c < 3; ++c) out[j].centre[c] = hits[i].centre[c];
+            out[j].radius = hits[i].radius;
+        }
+        ++out[j].instances;
+    }
+    std::sort(out, out + k, [](const CensusNode& a, const CensusNode& b) { return a.radius != b.radius ? a.radius > b.radius : a.node < b.node; });
+    return k;
+}
+
 // The class cache's slot (lock-free): node>>3 in bits 0..43, the class in bits 44..46 (never 0 for a stored slot), the frame's stamp in bits
 // 47..63. A zero word is an empty slot. A node that is not 8-aligned or is out of the 47-bit user range is not cached.
 // Built v14.29: the slot also carries the node's flags (what its name is good for) in bits 47..49, and the key in bits 50..63 (14 bits). Built v14.31:

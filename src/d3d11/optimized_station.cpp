@@ -429,6 +429,7 @@ struct PadSnapshot {
     float ownLiveRadius = 0.0f;
     bool lost = false;            // gathered entries were lost before this publication: the callbacks keep every record
     bool engagePending = false;   // built v14.31: an engage is pending: every pass gathers the near list, the own candidate and the tally
+    uint32_t censusStamp = 0;     // built 2026-10-21 (temporary): the stamp of the pass whose culled records near the bay are kept (0: no census is open)
 };
 sealed::SnapshotRing<PadSnapshot, 40, 32> g_snapRing;
 
@@ -593,6 +594,75 @@ bool cachedName(uintptr_t record, char* out, size_t cap) noexcept {
     return cachedNameOfNode(node, out, cap);
 }
 
+// ---- Built 2026-10-21 (temporary instrument): the census of records culled near the bay -----------------------------------------------------------
+// Flight log edvr_gfx_20261021_085435 (fleet carrier, medium bay): sealed, the bay door overhead was gone, and the latch found no BlastShield record there.
+// About 1 s after each seal (at most kCensusDumpsMax a session) one informative pass keeps every record the box culled whose sphere reaches into the box,
+// and the tick names them ("culled near the bay" lines). No key, no menu row. A callback appends only when the snapshot it pinned names the pass
+// (PadSnapshot::censusStamp) and its own Writer's stamp equals it. A Writer is counted busy, so the drain that closes the pass has waited for every
+// appender before the tick reads the array; the tick resets the array before it publishes the snapshot that names the pass.
+constexpr size_t kCensusCap = 1024;       // hits kept in the pass (past it they are counted as dropped)
+constexpr uint32_t kCensusPasses = 60;    // informative sealed passes after the engage before the census pass is named (about 1 s)
+constexpr uint32_t kCensusDumpsMax = 6;   // dumps in a session
+constexpr uint32_t kCensusRetriesMax = 3; // namings repeated in a seal when the pass held no store callback or culled nothing
+constexpr size_t kCensusLines = 24;       // node lines in a dump
+constexpr size_t kCensusRigLines = 4;     // rig lines in a dump
+constexpr float kCensusRigGapM = 5.0f;    // a vetoed rig whose sphere lies this near the box is listed
+
+struct CensusRig {
+    char name[48] = {};
+    float centre[3] = {};
+    float radius = 0.0f;
+};
+
+struct CensusState {
+    // The callbacks' half: any thread, during the census pass only.
+    std::atomic<uint32_t> n{0};        // hits claimed (past kCensusCap: dropped)
+    std::atomic<uint32_t> culled{0};   // records culled on every path in the pass
+    sealed::CensusHit hits[kCensusCap];
+    // The tick's half.
+    bool open = false;                 // a pass is named and its report is due
+    uint32_t stamp = 0;                // the named pass
+    uint32_t sealNo = 0;               // the seal it belongs to
+    uint32_t classGen = 0;             // the lifecycle generation it was named in (node names are not trusted past a lifecycle point)
+    uint32_t closedThrough = 0;        // the newest pass the drain closed with every writer gone
+    uint32_t run = 0;                  // informative sealed passes since the engage
+    uint32_t dumps = 0;                // dumps written this session
+    uint32_t retries = 0;              // namings repeated in this seal
+    bool reopen = false;               // name the next informative sealed pass again
+    sealed::OwnCell cell;              // the box the pass is judged against (taken on the pass's own tick)
+    bool rigsDone = false;             // the publication made for the pass was measured
+    uint32_t rigsVetoed = 0, rigsNear = 0;
+    CensusRig rigs[kCensusRigLines];
+    sealed::CensusNode folded[kCensusCap];
+};
+CensusState g_census;
+
+// One culled record of the census pass: counted, and kept when its sphere reaches into the box. The caller has checked that its pass is the named one.
+void censusNote(const PadSnapshot& s, uint8_t path, uintptr_t node, const float centre[3], float radius) noexcept {
+    g_census.culled.fetch_add(1, std::memory_order_relaxed);
+    float o[3] = {};
+    sealed::boxCoords(centre, s.cell, o);
+    if (!sealed::sphereOverlapsBox(o, radius, s.cell.boxHalf)) return;
+    const uint32_t i = g_census.n.fetch_add(1, std::memory_order_relaxed);
+    if (i >= kCensusCap) return;
+    sealed::CensusHit& h = g_census.hits[i];
+    h.node = node;
+    h.path = path;
+    h.centre[0] = centre[0];
+    h.centre[1] = centre[1];
+    h.centre[2] = centre[2];
+    h.radius = radius;
+}
+
+// The producer veto's append. It opens a Writer of its own (the producer path has none), so the drain that closes the pass waits for it.
+void censusProducer(uintptr_t rec, const PadSnapshot& s, const float centre[3], float radius) noexcept {
+    GatherWriter w(g_gather);
+    if (w.stamp() != s.censusStamp) return;
+    uintptr_t node = 0;
+    if (!readVal(&node, rec + kRecName)) node = 0;
+    censusNote(s, sealed::kCensusProducer, node, centre, radius);
+}
+
 // The producer-B decision from the published view (built v14.25; was producerDecide under the lock). Caches the record's sphere in the snapshot's
 // generation. True skips the record: outside the cell, and not the own ship.
 bool producerDecideSnap(uintptr_t rec, const PadSnapshot& s) noexcept {
@@ -605,6 +675,7 @@ bool producerDecideSnap(uintptr_t rec, const PadSnapshot& s) noexcept {
     char nm[48] = {};
     if (s.ownPrefix[0] != '\0') cachedName(rec, nm, sizeof(nm));
     if (sealed::ownShipExempt(sealed::containsCamera(centre, radius, s.cam), radius, nm, s.ownPrefix)) return false;
+    if (s.censusStamp != 0) censusProducer(rec, s, centre, radius);   // built 2026-10-21 (temporary): the census pass keeps what the box culls
     return true;
 }
 
@@ -910,6 +981,12 @@ void refreshRigVerdicts() noexcept {
     }
     const bool allMode = false;
     uint32_t published = 0;
+    // Built 2026-10-21 (temporary): this publication is the one in force during the census pass: the rigs it vetoes, and those within kCensusRigGapM of the box.
+    const bool censusRigs = g_census.open && g_census.stamp == g_frameStamp.load(std::memory_order_relaxed);
+    if (censusRigs) {
+        g_census.rigsDone = true;
+        g_census.rigsVetoed = g_census.rigsNear = 0;
+    }
     for (RigSlot& s : g_rigSlots) {
         if (s.rig == 0 || s.epoch != g_rigEpoch) continue;
         const float* mn = nullptr;
@@ -941,6 +1018,18 @@ void refreshRigVerdicts() noexcept {
         if (!allMode && !ownRig && g_ownPrefix[0] != '\0') ownRig = sealed::ownShipExempt(false, 0.0f, s.name, g_ownPrefix);
         s.verdict = ownRig ? kVerdictUnknown : sealed::verdictCode(v);   // 2 outside, 1 mixed, 0 unknown
         const uint8_t code = g_lossPublished ? kVerdictUnknown : s.verdict;
+        if (censusRigs && code == kVerdictOutside) {
+            ++g_census.rigsVetoed;
+            if (sealed::distanceToCell(c, g_cellPrev) - r <= kCensusRigGapM) {
+                if (g_census.rigsNear < kCensusRigLines) {
+                    CensusRig& cr = g_census.rigs[g_census.rigsNear];
+                    std::snprintf(cr.name, sizeof(cr.name), "%s", s.name);
+                    std::memcpy(cr.centre, c, sizeof(cr.centre));
+                    cr.radius = r;
+                }
+                ++g_census.rigsNear;
+            }
+        }
         // The run of vetoes the rig has in the committed publication moves into this one (the refresh every kRigRefreshN calls needs it across ticks).
         uint32_t carried = 0;
         uint8_t ov = 0;
@@ -1364,6 +1453,13 @@ void releaseSeal(const char* why, uint32_t frame) noexcept {
     g_engagePending = false;
     sealed::clearTrigger(&g_sealState);   // the pad's motion memory stays: a release by motion makes the next seal wait its delay (built v14.4)
     g_mechArm.reset();
+    g_census.run = 0;   // built 2026-10-21 (temporary): the census counts from the next engage
+    g_census.reopen = false;
+    if (g_census.open) {
+        g_census.open = false;
+        Log::get().note("optimized station: culled near the bay: no dump for seal %u (frame %u): the seal was released before the census pass closed.",
+                        g_census.sealNo, g_census.stamp);
+    }
     g_sealedFlag.store(false, std::memory_order_release);
     // the latch is kept across a release (built v14.16): undock, a hangar change and a ship change clear it
 }
@@ -1567,6 +1663,133 @@ void sealStatus(const sealed::OwnCell& cell, uint32_t frame) noexcept {
                     static_cast<double>(cell.boxHalf[0] * 2.0f), static_cast<double>(cell.boxHalf[1] * 2.0f),
                     static_cast<double>(cell.boxHalf[2] * 2.0f), static_cast<double>(belowFor(cell.size)),
                     g_shellValid ? g_shellName : "none (the pad's motion is not checked)", lat, yaw);
+}
+
+// ---- Built 2026-10-21 (temporary instrument): the census of records culled near the bay; the tick's half (the callbacks' half is above) ---------
+const char* censusClassWord(sealed::NameClass c) noexcept {
+    switch (c) {
+        case sealed::NameClass::kPad: return "pad";
+        case sealed::NameClass::kExplicit: return "explicit";
+        case sealed::NameClass::kOther: return "other";
+        default: return "unnamed";
+    }
+}
+
+// One census line. The centre is written in box coordinates (U along the length, V across the width, W up the shaft, metres from the box's centre), and
+// outside-by is how far each coordinate lies beyond the half-extent (0 within it).
+void censusLine(const sealed::OwnCell& cell, const char* name, const char* cls, const char* via, uint32_t instances, const float centre[3],
+                float radius) noexcept {
+    float o[3] = {};
+    float out[3] = {};
+    sealed::boxCoords(centre, cell, o);
+    sealed::outsideByBox(o, cell.boxHalf, out);
+    Log::get().note("optimized station: culled near the bay: %s [class %s] via %s x%u: centre %.1f,%.1f,%.1f m, radius %.1f m, outside by %.1f,%.1f,%.1f m",
+                    name, cls, via, static_cast<unsigned>(instances), static_cast<double>(o[0]), static_cast<double>(o[1]), static_cast<double>(o[2]),
+                    static_cast<double>(radius), static_cast<double>(out[0]), static_cast<double>(out[1]), static_cast<double>(out[2]));
+}
+
+// The report, on the tick after the census pass: once the drain has closed the pass with every writer gone (closedThrough), the array holds the pass's
+// hits and nothing writes it. A lifecycle point since the pass was named, or a pass that held no store callback or culled nothing, writes its own line.
+void censusReport() noexcept {
+    CensusState& c = g_census;
+    if (!c.open) return;
+    if (static_cast<int32_t>(c.closedThrough - c.stamp) < 0) return;   // a writer of the pass may still be inside: the next tick asks again
+    c.open = false;
+    if (c.classGen != g_classGen.load(std::memory_order_relaxed)) {
+        Log::get().note("optimized station: culled near the bay: no dump for seal %u (frame %u): a lifecycle point (undock, hangar change, ship change or "
+                        "setting toggle) passed before the census pass closed, so node names cannot be trusted.", c.sealNo, c.stamp);
+        return;
+    }
+    const uint32_t claimed = c.n.load(std::memory_order_relaxed);
+    const uint32_t stored = claimed < kCensusCap ? claimed : static_cast<uint32_t>(kCensusCap);
+    const uint32_t dropped = claimed - stored;
+    const uint32_t culledAll = c.culled.load(std::memory_order_relaxed);
+    if ((culledAll == 0 || !g_passInformative) && c.retries < kCensusRetriesMax) {
+        ++c.retries;
+        c.reopen = true;
+        Log::get().note("optimized station: culled near the bay: seal %u, frame %u: the census pass held no store callback or culled no record (%u culled); "
+                        "naming the next informative sealed pass (try %u of %u).", c.sealNo, c.stamp, culledAll, c.retries,
+                        static_cast<unsigned>(kCensusRetriesMax));
+        return;
+    }
+    ++c.dumps;
+    const sealed::OwnCell& cell = c.cell;
+    float padO[3] = {};
+    sealed::boxCoords(cell.centre, cell, padO);
+    char target[120] = "target none";
+    float u[3] = {};
+    if (cell.capsule && sealed::unitBetween(cell.capA, cell.capB, u)) {   // the shaft's end is the target plus kCapsuleExtendM along the axis
+        const float q[3] = {cell.capB[0] - u[0] * sealed::kCapsuleExtendM, cell.capB[1] - u[1] * sealed::kCapsuleExtendM,
+                            cell.capB[2] - u[2] * sealed::kCapsuleExtendM};
+        float qo[3] = {};
+        sealed::boxCoords(q, cell, qo);
+        std::snprintf(target, sizeof(target), "target %s at %.1f,%.1f,%.1f", cell.capTarget, static_cast<double>(qo[0]), static_cast<double>(qo[1]),
+                      static_cast<double>(qo[2]));
+    }
+    Log::get().note("optimized station: culled near the bay (seal %u, frame %u): box half-extents U +/-%.1f, V +/-%.1f, W +/-%.1f m; %s; pad at %.1f,%.1f,%.1f "
+                    "(box coordinates U,V,W: metres from the box centre)", c.sealNo, c.stamp, static_cast<double>(cell.boxHalf[0]),
+                    static_cast<double>(cell.boxHalf[1]), static_cast<double>(cell.boxHalf[2]), target, static_cast<double>(padO[0]),
+                    static_cast<double>(padO[1]), static_cast<double>(padO[2]));
+    const size_t nodes = sealed::foldCensusHits(c.hits, stored, c.folded, kCensusCap);
+    const size_t shown = nodes < kCensusLines ? nodes : kCensusLines;
+    for (size_t i = 0; i < shown; ++i) {
+        const sealed::CensusNode& n = c.folded[i];
+        char nm[sealed::NodeCache<kNodeCacheSlots>::kNameBytes] = {};
+        const char* name = "(unreadable)";
+        const char* cls = "unnamed";
+        if (n.node != 0) {
+            const NodeInfo ni = nodeInfo(n.node, nm);   // guarded reads; a node freed since the pass shows as unreadable or unnamed
+            if (ni.validator != 0 && ni.cls != sealed::NameClass::kUnnamed && nm[0] != '\0') {
+                name = nm;
+                cls = censusClassWord(ni.cls);
+            } else if (ni.validator != 0) {
+                name = "(unnamed)";
+            }
+        }
+        censusLine(cell, name, cls, n.path == sealed::kCensusProducer ? "producer" : "store", n.instances, n.centre, n.radius);
+    }
+    if (c.rigsDone) {
+        Log::get().note("optimized station: culled near the bay: rig veto: %u rigs vetoed in the publication of the census pass, %u of them within %.0f m of "
+                        "the box (listed below, at most %u)", c.rigsVetoed, c.rigsNear, static_cast<double>(kCensusRigGapM),
+                        static_cast<unsigned>(kCensusRigLines));
+        const size_t rigShown = c.rigsNear < kCensusRigLines ? c.rigsNear : kCensusRigLines;
+        for (size_t i = 0; i < rigShown; ++i) {
+            const CensusRig& r = c.rigs[i];
+            censusLine(cell, r.name[0] != '\0' ? r.name : "(unnamed)", censusClassWord(sealed::classifyName(r.name[0] != '\0', r.name)), "rig", 1, r.centre,
+                       r.radius);
+        }
+    } else {
+        Log::get().note("optimized station: culled near the bay: rig veto: no rig publication was made for the census pass, so the rig veto is not measured.");
+    }
+    if (stored == 0) {
+        Log::get().note("optimized station: culled near the bay: none of the %u records culled in that pass overlaps the box", culledAll);
+    } else {
+        Log::get().note("optimized station: culled near the bay: %u records from %u nodes overlap the box (%u dropped)%s; %u records culled in that pass in all",
+                        stored, static_cast<unsigned>(nodes), dropped, nodes > kCensusLines ? ", the largest 24 nodes listed" : "", culledAll);
+    }
+}
+
+// The census pass is named 60 informative sealed passes after the engage (about 1 s), or again after an empty one (at most kCensusRetriesMax). The tick
+// that names it resets the array; the snapshot published at the end of that tick, and of the next (the pass's own), carries its stamp. On the pass's own
+// tick the box is taken again, as that tick's snapshot will carry it.
+void censusTick(uint32_t frameNow) noexcept {
+    CensusState& c = g_census;
+    if (c.open && frameNow == c.stamp) c.cell = g_cellPrev;
+    if (!g_heldValid || !g_sealedFlag.load(std::memory_order_acquire) || !g_passInformative) return;
+    ++c.run;
+    if (c.open || c.dumps >= kCensusDumpsMax || !g_heldCell.box) return;
+    if (c.run != kCensusPasses && !c.reopen) return;
+    c.reopen = false;
+    c.n.store(0, std::memory_order_relaxed);
+    c.culled.store(0, std::memory_order_relaxed);
+    c.stamp = frameNow + 1;
+    c.sealNo = g_sealCount;
+    c.classGen = g_classGen.load(std::memory_order_relaxed);
+    c.cell = g_heldCell;
+    c.rigsDone = false;
+    c.rigsVetoed = c.rigsNear = 0;
+    c.open = true;
+    Log::get().note("optimized station: culled near the bay: census pass named for seal %u (frame %u); the dump follows once the pass has closed.", c.sealNo, c.stamp);
 }
 
 // The 30 s summary: what the station did in the window. A user's log shows the station's work here.
@@ -1982,6 +2205,7 @@ void drainGather() {
     g_passVerdictLast = v == sealed::PassVerdict::kInformative ? sealed::TraceVerdict::kInformative
                         : v == sealed::PassVerdict::kEmpty   ? sealed::TraceVerdict::kEmpty
                                                              : sealed::TraceVerdict::kUnfinished;
+    if (d.complete && d.passes > 0) g_census.closedThrough = d.lastStamp;   // built 2026-10-21 (temporary): every writer of the passes up to this one has left
     g_passCalls = d.calls;
     g_recordsLast = static_cast<uint32_t>(d.calls > 0xFFFFFFFFull ? 0xFFFFFFFFull : d.calls);
     // A loss keeps every record in the next publication; it ends with the first informative pass that lost nothing.
@@ -2100,6 +2324,9 @@ void promoteFrame(uint32_t stamp, uint32_t frame) {
             g_heldValid = true;
             snapshotSealPose();              // built v14.24: each latched record's pose at the seal (v14.33: taken again when the mechanism release arms)
             g_mechArm.reset();               // built v14.33: mechanism motion neither releases nor counts until 60 still passes
+            g_census.run = 0;                // built 2026-10-21 (temporary): the census pass is named 60 informative sealed passes after the engage
+            g_census.retries = 0;
+            g_census.reopen = false;
             setHeldFrame(g_heldCell, frame);
             g_engagePending = false;
             g_sealedFlag.store(true, std::memory_order_release);
@@ -2185,6 +2412,8 @@ void publishSnapshot() noexcept {
     s.ownLiveRadius = g_ownLiveRadius;
     s.lost = g_lossPublished;
     s.engagePending = g_engagePending;
+    // Built 2026-10-21 (temporary): the census pass is named in the snapshots of the tick before it and of its own tick (callbacks of the pass read either).
+    s.censusStamp = g_census.open && static_cast<int32_t>(g_census.stamp - s.frameStamp) >= 0 ? g_census.stamp : 0u;
     g_engagePublished = g_engagePending;
     g_snapRing.publish();
 }
@@ -2350,7 +2579,10 @@ void afterStoreJudge(uintptr_t bucket, uintptr_t record, bool judge) noexcept {
     if (keep) {
         ++tc.kept;
     } else {
-        if (cullCounted(record, containing)) ++tc.culled;
+        if (cullCounted(record, containing)) {
+            ++tc.culled;
+            if (s.censusStamp != 0 && s.censusStamp == stamp) censusNote(s, sealed::kCensusStore, node, centre, radius);   // built 2026-10-21 (temporary)
+        }
     }
 }
 
@@ -2537,6 +2769,7 @@ void optimizedStationFrameBody(uint32_t frame) {
     TimedStateLock lock;
     prodSync();   // built v14.26: the producer generation moves with the frame (the callbacks never move it)
     drainGather();          // the entries of the passes the stamp just closed, if every writer of them has left (built v14.27)
+    censusReport();         // built 2026-10-21 (temporary): the census pass, once the drain has closed it
     resolveTickView();      // the camera from the pass's busiest context; held when the pass is empty or unfinished (built v14.27)
     ++g_winFrames;
     if (g_dockedNow.load(std::memory_order_acquire)) ++g_winDockedFrames;
@@ -2874,6 +3107,7 @@ void optimizedStationFrameBody(uint32_t frame) {
     }
     // Built v14.27: the rig verdicts are republished from an informative pass only; the last publication stands otherwise. Without a held cell the
     // publication is emptied at once (the veto answers only while sealed).
+    censusTick(g_frameStamp.load(std::memory_order_relaxed));   // built 2026-10-21 (temporary): before the rig publication and the snapshot that name the pass
     if (g_passInformative || !g_heldValid) refreshRigVerdicts();
     publishSnapshot();   // built v14.25: the tick's view for the per-record path (under the lock)
     {

@@ -186,7 +186,10 @@ minutes after a flight finally reproduced the effect being chased.
   `compile_only.py` for the fingerprint, so the two cannot disagree). It
   prints that the build is not Windows validated and writes `"build":
   "compile-only"` into the install receipt; `--verify-only` compares the game
-  directory to that build and only warns about a moved tree. The toolchain
+  directory to that build and only warns about a moved tree. A real install
+  runs under the host `python3`, which checks `/proc` for a running
+  `EliteDangerous6*` (Proton); do not run it through the Wine Python, which
+  cannot see Proton's processes and passes that check vacuously. The toolchain
   compiles the checkout it lives in; to fly a worktree, compile with
   `build-dlls --root <worktree>` (output `<worktree>/build/compile-build`)
   and install with `--root <worktree> --compile-only`. `--root` is a local

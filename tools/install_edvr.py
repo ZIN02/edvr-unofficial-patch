@@ -145,6 +145,10 @@ def native_paths(root, target):
 
 
 GAME_PROBE_ATTEMPTS = 4
+# Which kind of host the stopped-game probe reads: Windows asks Toolhelp32 or
+# tasklist; anything else (the Linux test-flight path, where Elite runs under
+# Proton) reads /proc. A Wine-hosted Python cannot see Proton's processes.
+GAME_PROBE_WINDOWS = os.name == "nt"
 GAME_PROBE_PAUSE = 0.4
 _LAST_PROBE_REASON = ""
 
@@ -259,9 +263,40 @@ def _game_pids_toolhelp(exe=None):
         k32.CloseHandle(snap)
 
 
+def _game_pids_proc(exe=None, proc="/proc"):
+    """PIDs of the game from /proc (Linux, Proton). The kernel truncates a
+    process name to 15 characters, so EliteDangerous64.exe is the comm
+    "EliteDangerous6"; match that prefix, any case. `exe` and `proc` are
+    the self-test's."""
+    want = (exe or GAME_EXE)[:15].lower()
+    pids, seen = [], 0
+    try:
+        names = os.listdir(proc)
+    except OSError as exc:
+        raise _ProbeError("cannot list %s: %s" % (proc, exc))
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc, name, "comm"), "r", encoding="utf-8", errors="replace") as f:
+                comm = f.read().strip()
+        except FileNotFoundError:
+            continue                    # exited between the listing and the read
+        except OSError as exc:
+            raise _ProbeError("cannot read process %s: %s" % (name, exc))
+        seen += 1
+        if comm.lower() == want:
+            pids.append(int(name))
+    if not seen:
+        raise _ProbeError("%s lists no processes" % proc)
+    return pids
+
+
 def _game_pids():
     """Game PIDs by the first method that reads the list; both failing raises
     with both reasons."""
+    if not GAME_PROBE_WINDOWS:
+        return _game_pids_proc()
     reasons = []
     for name, probe in (("toolhelp", _game_pids_toolhelp),
                         ("tasklist", _game_pids_tasklist)):
@@ -280,7 +315,9 @@ def _probe_game_once(target):
         pids = _game_pids()
     except _ProbeError as exc:
         return False, False, str(exc)
-    if target is None:
+    if target is None or not GAME_PROBE_WINDOWS:
+        # /proc has no Windows image path to compare with a target: any running
+        # game counts, the conservative direction for a tool that replaces DLLs.
         return True, bool(pids), ""
     images = [_process_image_path(pid) for pid in pids]
     known, running = game_running_in(target, images)
@@ -3268,11 +3305,13 @@ def _game_probe_self_test():
     # strict_game_running: retries, reasons, and the refusal that must stay.
     tmp = tempfile.mkdtemp(prefix="edvr_gameprobe_test_")
     saved = {n: globals()[n] for n in ("_game_pids_toolhelp", "_game_pids_tasklist",
-                                       "_process_image_path", "GAME_PROBE_PAUSE")}
+                                       "_process_image_path", "GAME_PROBE_PAUSE",
+                                       "GAME_PROBE_WINDOWS")}
     try:
         mine = os.path.join(tmp, "mine"); other = os.path.join(tmp, "other")
         os.makedirs(mine); os.makedirs(other)
         globals()["GAME_PROBE_PAUSE"] = 0
+        globals()["GAME_PROBE_WINDOWS"] = True      # these cases script the Windows probes
         calls = []
         def script(results):
             """A pid-lister answering from a list; the last result repeats."""
@@ -3314,6 +3353,37 @@ def _game_probe_self_test():
         check(run([[10]], images=[None]) == (False, False), "unresolved game did not fail closed")
         check("pid 10" in probe_reason(), "unresolved reason missing the pid: %r" % probe_reason())
         check(run([[10]], images=[here], target=None) == (True, True), "targetless probe missed the game")
+
+        # Linux (Proton): /proc, comm truncated to 15 characters, any running game refuses.
+        proc = os.path.join(tmp, "proc")
+        def fake_proc(*comms):
+            shutil.rmtree(proc, ignore_errors=True)
+            for pid, comm in comms:
+                os.makedirs(os.path.join(proc, str(pid)))
+                with open(os.path.join(proc, str(pid), "comm"), "w") as f:
+                    f.write(comm + "\n")
+            os.makedirs(os.path.join(proc, "sys"))           # not a pid: ignored
+        fake_proc((1, "systemd"), (20, "EliteDangerous6"), (21, "eliteDANGEROUS6"), (30, "EDLaunch.exe"))
+        check(sorted(_game_pids_proc(proc=proc)) == [20, 21],
+              "/proc probe did not find the truncated comm in any case: %r" % _game_pids_proc(proc=proc))
+        fake_proc((1, "systemd"), (30, "EliteDangerous"), (31, "Elite"))
+        check(_game_pids_proc(proc=proc) == [], "/proc probe matched a name that is not the game")
+        fake_proc()
+        try: _game_pids_proc(proc=proc); check(False, "an empty /proc did not raise")
+        except _ProbeError as exc: check("lists no processes" in str(exc), "empty /proc reason %r" % str(exc))
+        try: _game_pids_proc(proc=os.path.join(tmp, "absent")); check(False, "a missing /proc did not raise")
+        except _ProbeError as exc: check("cannot list" in str(exc), "missing /proc reason %r" % str(exc))
+        globals()["GAME_PROBE_WINDOWS"] = False
+        real_proc = _game_pids_proc
+        try:
+            for comms, want in (([(1, "systemd")], (True, False)), ([(1, "systemd"), (20, "EliteDangerous6")], (True, True)),
+                                ([], (False, False))):
+                fake_proc(*comms)
+                globals()["_game_pids_proc"] = lambda exe=None, _p=proc: real_proc(exe, _p)
+                got = strict_game_running(os.path.join(tmp, "any-target"))
+                check(got == want, "Linux strict_game_running(%r) = %r, want %r" % (comms, got, want))
+        finally:
+            globals()["_game_pids_proc"] = real_proc
     finally:
         globals().update(saved)
         shutil.rmtree(tmp, ignore_errors=True)

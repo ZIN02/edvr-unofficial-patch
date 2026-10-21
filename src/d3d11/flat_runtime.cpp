@@ -7,6 +7,7 @@
 #include "flat_runtime_model.h"
 #include "flat_hdr_route.h"
 #include "flat_copy_structure.h"
+#include "flat_noscene_spatial.h"
 #include "flat_scene_log.h"   // TEMPORARY: the scene picker's candidates (docs/sky-flicker-2026-10-13.md)
 #include "flat_hdr_crumbs.h"
 #include "flat_context_state.h"
@@ -673,6 +674,14 @@ struct State {
     // The copy route's weapon support (flat_copy_structure.h, flatWeaponRoute): cohort draws flagged, glow draws admitted as
     // alternate HDR writers, frames selected mixed-camera and the foreground contract's H qualification at the copy.
     FlatCopyWeaponWindow copyWeaponWindow{};
+    // The spatial recovery at the output copy of a frame with no 3D scene (flat_noscene_spatial.h): its 5 s window, and the flag a
+    // watched no-scene frame raises when the recovery treated it. The stood-down frames that follow take the same recovery at their copy
+    // while the stand-down's standing reason is still no-scene (noScenePausedReady); any watched copy that was not so treated lowers it.
+    FlatNoSceneSpatialWindow noSceneWindow{};
+    bool noSceneFlag = false;
+    bool noScenePausedReady() const {
+        return noSceneFlag && standDown.standing && standDown.standReason == FlatMonoReason::NoScene;
+    }
     bool copyFirstLogged = false;    // the once-a-session first admission line
     uint32_t copyDeclineLines = 0;   // bounded per-session decline lines, each cause once
     const char* copyDeclineSeen[12]{};
@@ -965,15 +974,7 @@ static void reportForegroundNoCandidate(State& s,const FlatForegroundMotion::Cap
 // cover every distinct pair.
 // A selected, source-free scene with no world: nothing on its depth but inert full-screen filters (flatProjectionDrawUnchanged: no
 // geometry, no projection), or nothing at all. A loading or menu screen. Ground and sky have geometry draws on that depth, so are not blank.
-static bool blankScene(const FlatMonoFrame& sel) {
-    if(!sel.selected() || !sel.sourceFree) return false;
-    const auto& n=sel.sourceless;
-    if(!n.draws) return true;
-    if(n.distinctPairs>n.topCount) return false;   // a pair beyond the named four is unclassified
-    for(uint32_t i=0;i<n.topCount;++i)
-        if(n.top[i].pool || !flatProjectionDrawUnchanged(n.top[i].vs,n.top[i].ps)) return false;
-    return true;
-}
+static bool blankScene(const FlatMonoFrame& sel) { return flatFrameBlankScene(sel); }   // flat_copy_structure.h: the copy route asks it too
 static void noteSourceFreeContent(State& s, const FlatMonoFrame& sel) {
     if(!sel.selected() || !sel.sourceFree) return;
     if(s.sourceFreeLastFrame==s.prefix.frame) return;   // the copy and HDR selections of one frame count once
@@ -3089,6 +3090,7 @@ void endStandDown(State& s, uint64_t frame, const char* why) {
     s.frameSeen = FlatFrameSeen::None;
     s.frameReason = FlatMonoReason::NoOutputCopy;
     s.frameLive = false;
+    s.noSceneFlag = false;   // the recovery's stood-down question is asked again only after a watched no-scene frame treated
     applyWork(s, FlatWork::Full);
     publishRefusal(s, false);
 }
@@ -3900,7 +3902,10 @@ static FlatMonoFrame copyAdmit(State& s, const FlatRuntimeDraw& d, const FlatMon
     policy.routeLatched = s.hdrLatch.tripped;
     FlatCopyDiag diag;
     const FlatMonoFrame out = flatCopyAdmit(s.prefix, s.hdr, d, whitelist, policy, &diag);
-    if (whitelist.selected()) s.copyWindow.noteWhitelist(); else s.copyWindow.note(diag);
+    // A selected frame is the whitelist's, except a blank scene the copy route calls no-scene (flatCopyAdmit).
+    if (whitelist.selected() && diag.outcome != FlatCopyOutcome::NoScene) s.copyWindow.noteWhitelist(); else s.copyWindow.note(diag);
+    // The blank scene the whitelist selected is still a source-free frame the 5 s content line counts (it counted it before it was no-scene).
+    if (whitelist.selected() && diag.outcome == FlatCopyOutcome::NoScene) noteSourceFreeContent(s, whitelist);
     // The scene's size for the panel, from every final copy that has a scene: the admission's own facts where it looked, the
     // prefix model's where it did not (a frame the whitelist selected, or refused for another reason), so the F8 words never
     // read sizes older than the refusal they name.
@@ -4742,6 +4747,11 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
             flatCopyWeaponFormatWindow(weaponText, sizeof(weaponText), flatMonoResolveModeName(s.engine), s.copyWeaponWindow);
             Log::get().note("%s", weaponText);
             s.copyWeaponWindow.reset();
+            // The spatial recovery at the output copy of a no-scene frame (flat_noscene_spatial.h), every window, zeros included.
+            char noSceneText[900];
+            flatNoSceneSpatialFormatWindow(noSceneText, sizeof(noSceneText), s.noScenePausedReady(), s.noSceneWindow);
+            Log::get().note("%s", noSceneText);
+            s.noSceneWindow.reset();
         }
         // Part B coverage census: always printed, even when every field is
         // zero -- that is how "code never ran" (line absent) differs from
@@ -5739,6 +5749,14 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         foreignWork.store(true, std::memory_order_release);
         return;
     }
+    // A stood-down frame at the output copy of a no-scene screen the recovery was treating (flat_noscene_spatial.h, THE STAND-DOWN): the
+    // one question a paused draw is asked, answered from the flag and the binding shadow. Everything else on a paused frame is as it was.
+    if (s.work == FlatWork::Paused && s.noScenePausedReady() &&
+        flatNoScenePausedCopyDraw(kind, count, instances, bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps))) {
+        ctx = context;
+        if (!treatNoScene(true)) ctx = nullptr;
+        return;
+    }
     // The census's whole-frame GPU span opens at the frame's first game draw, watched or not.
     if (!s.gpuFrameTried) gpuFrameOpen(s, context);
     // A Paused frame (flat_standdown.h) watches nothing: the scope is a no-op, ctx stays
@@ -5933,6 +5951,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     }
     const auto oldTargets = s.prefix.targetsUsed;
     const uint32_t oldImageAccepted=s.prefix.imageCopiesAccepted,oldImageRefused=s.prefix.imageCopiesRefused;
+    const uint32_t oldImageFirstWrite=s.prefix.imageCopiesFirstWrite;
     const uint32_t oldMenuAccepted=s.prefix.menuCopiesAccepted,oldMenuRefused=s.prefix.menuCopiesRefused;
     const uint32_t cameraProbeAttempt=[&] {
         flatcpu::Scope checks(flatcpu::kCopyChecks);   // F10-only unless it is the camera-conflict draw
@@ -6108,6 +6127,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         forwardRefusal(s,forward_light::Reason::Issue,k.color);
         forwardIssue={};
     }
+    bool noSceneDone = false;   // the spatial recovery treated this copy (flat_noscene_spatial.h)
     FlatMonoFrame selected = [&]() -> FlatMonoFrame {
         flatcpu::Scope reduce(flatcpu::kReduce);   // the reducer: the online prefix model and the selector
         return copy
@@ -6203,6 +6223,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         }
     s.hdrCopiesAccepted+=s.prefix.imageCopiesAccepted-oldImageAccepted;
     s.hdrCopiesRefused+=s.prefix.imageCopiesRefused-oldImageRefused;
+    s.noSceneWindow.firstWriteCopies+=s.prefix.imageCopiesFirstWrite-oldImageFirstWrite;
     s.menuCopiesAccepted+=s.prefix.menuCopiesAccepted-oldMenuAccepted;
     s.menuCopiesRefused+=s.prefix.menuCopiesRefused-oldMenuRefused;
     if (s.prefix.targetsUsed > oldTargets) {
@@ -6223,6 +6244,10 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         // What the view held when it had no motion source (section 104); the line names it.
         if (selected.reason == FlatMonoReason::NoSupportedSource) { s.sourcelessLast = selected.sourceless; s.sourcelessLastFrame = s.prefix.frame; }
         noteSourceFreeContent(s, selected);
+        // A frame with no 3D scene gets the spatial recovery at this copy (flat_noscene_spatial.h), on a Probe frame as on a Full one.
+        // The flag the stood-down frames ask follows this copy: up only while the recovery treated it.
+        noSceneDone = selected.reason == FlatMonoReason::NoScene && !s.hdrTreated && treatNoScene(false);
+        s.noSceneFlag = noSceneDone;
     }
     // The HDR route's selection at its trigger (and, with the key auto, its verdict into the stand-down): a Probe frame
     // runs it too, so a probe that finds the route's consumer ends the stand-down, as a probe that selects a copy does.
@@ -6698,6 +6723,9 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         flatOffscreenRecord(s, d, pairFact, offscreenArgs, auditing, plain, offscreenTargetsBefore, offscreenUncertainBefore);
         return;
     }
+    // The spatial recovery treated this copy (above, at the verdict): the frame is the recovery's, and nothing below resolves, refuses or
+    // counts it. The UI layer's composite (uiComposite, set above) still runs at the issue, over the picture the copy now reads.
+    if (noSceneDone) return;
     if (s.hdrTreated) {
         // The frame was treated before the post chain, so nothing here resolves again (the contract observation above
         // still ran for the trace). fix.render_sharpness stays at the copy, on the game's own LDR image, and only where
@@ -7050,6 +7078,63 @@ bool FlatRuntimeDrawScope::recover(const char* temporalReason) {
     if(s.spatialFallbackFailures<=8)Log::get().note("flat runtime early fallback refused: frame=%llu temporal=%s spatial=%s; next frame returns to zero phase",
         (unsigned long long)s.prefix.frame,temporalReason,reason?reason:"unknown");
     return false;
+}
+// The spatial recovery at the output copy of a frame with no 3D scene (flat_noscene_spatial.h): SMAA 1x on the render-size picture the
+// copy reads, then EASU up to the display, in place of the game's bilinear stretch; the maps' recovery (flatRuntimeMapTemporalOff), on
+// the same function and resources. `stoodDown`: the call is a paused frame's (nothing was watched; the stand-down's standing reason is
+// no-scene), so the facts come from the context alone.
+// No jitter and no history, as on a map frame: the resolver is told its history is invalid, nothing is accepted and the previous
+// frame is forgotten, so the first scene frame after this one starts or keeps history exactly as it does after a refused one (a refused
+// frame resets the same state at the Present). Not a refusal, so it is not counted as one. The copy's first binding is kept in `original`
+// and put back by the destructor after the game's draw.
+bool FlatRuntimeDrawScope::treatNoScene(bool stoodDown) {
+    auto& s=state();FlatComputeInternalScope guard;
+    s.noSceneWindow.noteFrame(stoodDown);
+    Ptr<ID3D11VertexShader> vs;Ptr<ID3D11PixelShader> ps;
+    Ptr<ID3D11RenderTargetView> rt;Ptr<ID3D11DepthStencilView> ds;
+    Ptr<ID3D11Resource> outResource,inResource;Ptr<ID3D11Texture2D> texture;
+    ctx->VSGetShader(&vs,nullptr,nullptr);ctx->PSGetShader(&ps,nullptr,nullptr);
+    ctx->OMGetRenderTargets(1,&rt,&ds);
+    if(!original)ctx->PSGetShaderResources(0,1,&original);
+    if(rt)rt->GetResource(&outResource);
+    D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{};
+    if(original){original->GetDesc(&viewDesc);original->GetResource(&inResource);}
+    if(inResource)inResource.As(&texture);
+    D3D11_TEXTURE2D_DESC desc{};if(texture)texture->GetDesc(&desc);
+    UINT viewports=1;D3D11_VIEWPORT vp{};ctx->RSGetViewports(&viewports,&vp);
+    FlatNoSceneSpatialFacts facts;
+    facts.temporalOn=true;   // the draw scope runs only while a temporal engine does (flatRuntimeActive)
+    facts.noScene=true;      // the callers ask only for a copy the copy route ruled no-scene, or a stood-down no-scene screen's
+    facts.copyVs=lookupShaderHash(vs.Get());facts.copyPs=lookupShaderHash(ps.Get());
+    facts.toOutput=outResource.Get()==s.output.Get() && !ds && viewports==1 && vp.TopLeftX==0 && vp.TopLeftY==0 &&
+        vp.Width==float(s.prefix.width) && vp.Height==float(s.prefix.height) && vp.MinDepth==0 && vp.MaxDepth==1;
+    facts.outputWidth=s.prefix.width;facts.outputHeight=s.prefix.height;
+    facts.srcViewFormat=texture?static_cast<uint32_t>(viewDesc.Format):0u;
+    facts.srcWidth=desc.Width;facts.srcHeight=desc.Height;
+    facts.jittered=s.phase.applied!=0;
+    s.noSceneWindow.noteSize(desc.Width,desc.Height,s.prefix.width,s.prefix.height);
+    const FlatNoSceneSpatialWhy why=flatNoSceneSpatialAdmit(facts);
+    const auto giveUp=[&] {
+        if(original){original->Release();original=nullptr;}   // nothing replaced: later paths read the binding afresh
+        return false;
+    };
+    if(why!=FlatNoSceneSpatialWhy::Treat) {s.noSceneWindow.noteDecline(why);return giveUp();}
+    FlatMonoResolveFrame f{};
+    f.color=original;f.renderWidth=desc.Width;f.renderHeight=desc.Height;
+    f.outputWidth=s.prefix.width;f.outputHeight=s.prefix.height;f.frame=s.prefix.frame;f.mode=s.engine;
+    f.easu=true;   // EASU after SMAA 1x (the frame's smaa flag defaults on, below native only): the map frames' pair
+    Ptr<ID3D11ShaderResourceView> outputView;const char* reason=nullptr;
+    if(!flatMonoResolveSpatialFallback(s.device.Get(),ctx,f,&outputView,&reason)) {
+        s.noSceneWindow.noteRefused(reason);
+        return giveUp();
+    }
+    const bool easu=flatMonoResolveLastSpatialWasEasu();
+    const bool smaa=easu&&flatMonoResolveLastSpatialWasSmaa();
+    ID3D11ShaderResourceView* spatial=easu?outputView.Get():flatSharpenView(ctx,outputView.Get());
+    ctx->PSSetShaderResources(0,1,&spatial);replaced=true;
+    s.treated=true;s.temporalAccepted=false;s.havePrevious=false;s.streak=0;s.reason="no-scene-spatial";
+    s.noSceneWindow.noteTreated(easu,smaa);
+    return true;
 }
 // The HDR route's treatment (flat_hdr_route.h, design section 81). The same checks as the copy route's, for the same
 // reasons, then the resolve of H itself: `hdr` frames write the result back into H, so nothing is bound for the caller

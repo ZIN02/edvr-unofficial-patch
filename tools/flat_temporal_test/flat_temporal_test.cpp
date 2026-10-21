@@ -53,6 +53,7 @@
 #include "flat_deferred_witness_tests.h"
 #include "flat_copy_structure_tests.h"
 #include "flat_copy_weapon_tests.h"
+#include "flat_noscene_spatial_tests.h"
 #include "flat_covered_draw_wiring_tests.h"
 #include "flat_hdr_crumbs_tests.h"
 #include "flat_no_candidate_tests.h"
@@ -4133,6 +4134,7 @@ int main(int argc, char** argv) {
     failures += flatCopyStructureTests();
     failures += flatCopyWeaponTests();
     failures += flatCopyWeaponWiringTests();
+    failures += flatNoSceneSpatialTests();
     failures += flatCoveredDrawWiringTests();
     failures += flatHdrCrumbTests();
     failures += flatHdrCrumbWiringTests();

@@ -133,6 +133,11 @@ struct FlatRuntimeTarget {
     bool hdrBad = false, hdrCamera = false, hdrLayoutChanged = false, imageSourceBad = false;
     bool menuInherited = false;
     bool imageHasCamera = false;
+    // The target's first write was a verified HDR image copy (the glow layer of a screen with no scene, drawn before anything else
+    // into the HDR). That copy is not recorded as a write (it carries no depth and no camera, so as the HDR's first record it could
+    // only make the HDR unselectable), and while it stands alone the HDR is a 2D image. Any later write into the HDR by a pair that
+    // reads b1 turns the copy into the image-copy-source conflict it was before this flag existed.
+    bool imageCopyFirst = false;
     bool overlayOpen = false;
     const void* overlayDepth = nullptr;
     uint32_t tones = 0;
@@ -216,6 +221,8 @@ struct FlatRuntimePrefix {
     bool witnessOverflow = false;
     uint32_t targetsUsed = 0, sourcesUsed = 0, sequence = 0, copies = 0;
     uint32_t imageCopiesAccepted = 0, imageCopiesRefused = 0;
+    // Verified image copies that were the first write into their HDR and so conflicted with nothing (FlatRuntimeTarget::imageCopyFirst).
+    uint32_t imageCopiesFirstWrite = 0;
     uint32_t menuCopiesAccepted = 0, menuCopiesRefused = 0;
     uint64_t frame = 0;
     const void* output = nullptr;
@@ -831,6 +838,17 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
             t->writes.key.depthFormat == source->writes.key.depthFormat &&
             cameraCurrent(t->tone, p.frame) &&
             fullViewport(k, k.width, k.height) && !k.depth && !k.dsv;
+        // The copy is the first write into this HDR: nothing drew into it before, so there is no scene camera for the copy to
+        // continue, and nothing it could contradict. It is the glow layer of a screen with no scene (a loading screen's hologram,
+        // drawn into a cleared HDR before anything else). Not recorded and not a conflict; the HDR is whatever its later writes
+        // make it. Every other refused copy (a prior write that carries no camera, a bad HDR, an unverified or misshapen copy) is
+        // refused exactly as before.
+        if (!valid && !t->writes.draws && !t->hdrBad && d.hdrCopyVerified && k.srvView[0] && k.srvResource[0] &&
+            k.srvResource[0] != k.color && fullViewport(k, k.width, k.height) && !k.depth && !k.dsv) {
+            ++p.imageCopiesFirstWrite;
+            t->imageCopyFirst = true;
+            return out;
+        }
         if (!valid) {
             ++p.imageCopiesRefused;
             const bool firstConflict = t->firstBad.cause == FlatRuntimeConflict::None;
@@ -847,6 +865,8 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
         return out;
     }
     if (k.format == 26) {
+        if (t->imageCopyFirst && !flatProjectionB1Unread(k.vs, k.ps))
+            bad(*t, FlatRuntimeConflict::ImageCopySource, t->writes);
         if (!hdrViewport(k, k.width, k.height)) bad(*t, FlatRuntimeConflict::Viewport, t->writes);
         if (!k.depth || !k.dsv || k.depthWidth != k.width || k.depthHeight != k.height)
             bad(*t, FlatRuntimeConflict::MissingDepth, t->writes);

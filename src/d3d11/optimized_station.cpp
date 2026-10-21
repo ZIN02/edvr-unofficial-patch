@@ -24,6 +24,8 @@
 #include "station_pass_core.h"
 #include "station_seal_trace.h"
 #include "pad_state_probe.h"
+#include "station_sun_probe.h"
+#include "flat_station_probe.h"
 #include "store_hook.h"
 #include "view_source.h"
 
@@ -1275,6 +1277,17 @@ bool g_flagHangarChanged = false;          // promote saw the held pad go or ano
 // Built v14.13: the sun inside the hangar (its own state, the skip read by the draw), the hangar watch, the names near a pad with no sized shell.
 sealed::SunState g_sun;
 std::atomic<bool> g_sunOff{false};
+// Built 2026-10-21 (TEMPORARY A/B; docs\optimized-station-2026-10-12.md, Status): diag.station_sun_skip = on | off, read at install and every kSettingPollFrames
+// frames with fix.optimized_stations. Off lets every sun draw through; g_sun, its log lines, the seal and the counters go on exactly as with it on.
+// Removed with the Orbis cockpit arc.
+std::atomic<bool> g_sunSkipAB{true};
+// Built 2026-10-21 (TEMPORARY, log-only): the sun skip probe (station_sun_probe.h). The tick arms one sampled frame every 5 s while the skip is
+// skipping; the draw path (vscreen.cpp, flat profile) records that frame's skipped draws only while armed; the next tick writes the line.
+std::atomic<bool> g_sunProbeArmed{false};
+std::atomic<uint32_t> g_sunTick{0};        // advanced by each tick before it looks at the record: a record stamped with an earlier count is a finished frame
+sunprobe::Sampler g_sunSampler;            // the tick's thread only
+sunprobe::Frame g_sunRec;                  // guarded by g_sunRecBusy
+std::atomic_flag g_sunRecBusy = ATOMIC_FLAG_INIT;
 sealed::HangarWatch g_hangarWatch;
 char g_hangarWhy[160] = "searching for a hangar shell";
 struct NameNote {
@@ -1401,6 +1414,67 @@ constexpr uint64_t kSummaryMs = 30000;
 constexpr uint32_t kEngageTries = 90;
 constexpr float kLoweredToleranceM = 15.0f;
 constexpr uint32_t kRigRefreshFramesMax = 30;   // (the rig verdict refresh cadence is sealed::kRigRefreshN; kept here for the docs)
+
+// Built 2026-10-21 (TEMPORARY): reads diag.station_sun_skip. The first call (install) says the value in force; later calls say it when it changes.
+void pollSunSkipAB(bool first) {
+    const std::string text = Config::get().getString("diag.station_sun_skip", "on");
+    const bool on = text != "off";
+    if (!first && on == g_sunSkipAB.load(std::memory_order_relaxed)) return;
+    g_sunSkipAB.store(on, std::memory_order_release);
+    Log::get().note("optimized station: sun skip A/B: %s (diag.station_sun_skip; temporary)", on ? "on" : "off");
+}
+
+// Built 2026-10-21 (TEMPORARY): the probe's record is shared by the draw thread (one record call) and the tick (one copy or clear).
+void sunRecLock() noexcept {
+    while (g_sunRecBusy.test_and_set(std::memory_order_acquire)) {
+    }
+}
+void sunRecUnlock() noexcept { g_sunRecBusy.clear(std::memory_order_release); }
+void sunProbeClear() noexcept {
+    g_sunProbeArmed.store(false, std::memory_order_release);
+    sunRecLock();
+    g_sunRec = sunprobe::Frame{};
+    sunRecUnlock();
+}
+
+// The probe's tick: arm one sampled frame every 5 s while the skip is skipping, and write the line once that frame is over. The flat conflict
+// is read from the runtime here, on its owner thread, after the Present that cleared the frame's own state (flat_station_probe.h keeps it).
+void sunProbeTick(uint64_t now) {
+    const uint32_t tick = g_sunTick.fetch_add(1, std::memory_order_acq_rel) + 1;
+    sunprobe::Frame rec;
+    sunRecLock();
+    rec = g_sunRec;
+    sunRecUnlock();
+    const bool live = g_sunOff.load(std::memory_order_acquire) && g_sunSkipAB.load(std::memory_order_acquire);
+    switch (g_sunSampler.step(rec, tick, now, live)) {
+        case sunprobe::Sampler::Act::kArm:
+            g_sunProbeArmed.store(true, std::memory_order_release);
+            break;
+        case sunprobe::Sampler::Act::kLog: {
+            sunProbeClear();
+            sunprobe::Conflict conflict;
+            FlatStationProbeConflict flat;
+            if (flatRuntimeStationProbeConflict(rec.frame, &flat)) {
+                conflict.have = true;
+                conflict.frame = flat.frame;
+                conflict.cause = flat.cause;
+                conflict.hdr = reinterpret_cast<uintptr_t>(flat.hdr);
+                conflict.refQ = flat.refQ;
+                conflict.curQ = flat.curQ;
+            }
+            char line[1100];
+            sunprobe::formatLine(line, sizeof(line), rec, conflict);
+            Log::get().note("%s", line);
+            break;
+        }
+        case sunprobe::Sampler::Act::kStale:
+            Log::get().note("optimized station: sun skip probe: armed for %llu s with no skipped draw recorded (skip live now: %s)",
+                            static_cast<unsigned long long>(sunprobe::kStaleAfterMs / 1000), live ? "yes" : "no");
+            break;
+        default:
+            break;
+    }
+}
 
 const char* sizeWord(sealed::PadSize s) noexcept {
     switch (s) {
@@ -2604,6 +2678,7 @@ void optimizedStationInstall(bool flatProfile) {
     const bool on = text != "off";
     g_setting.store(on, std::memory_order_release);
     g_summaryStartMs = GetTickCount64();
+    pollSunSkipAB(true);   // built 2026-10-21 (TEMPORARY A/B): the value in force goes in the log
     if (on) applySetting(true, 0);
     Log::get().note("optimized station: fix.optimized_stations = %s (%s).", on ? "on" : "off",
                     flatProfile ? "flat profile" : "VR profile");
@@ -2616,8 +2691,17 @@ bool optimizedStationSealed() noexcept { return g_sealedFlag.load(std::memory_or
 // The draw path asks: while sealed, the sun pair is not drawn.
 bool optimizedStationSkipsDraw(uint64_t vs, uint64_t ps) noexcept {
     if (!g_sunOff.load(std::memory_order_acquire) || vs != kSunVs || ps != kSunPs) return false;   // the sun skip follows the pad, not the seal (built v14.13)
+    if (!g_sunSkipAB.load(std::memory_order_acquire)) return false;   // built 2026-10-21 (TEMPORARY A/B): diag.station_sun_skip = off lets the draw through
     g_winSunDrawsSkipped.fetch_add(1, std::memory_order_relaxed);   // built v14.34: the 30 s line says how many (a flat flight shows 0 if the flat hashes differ)
     return true;
+}
+
+// Built 2026-10-21 (TEMPORARY, log-only): the draw path asks, after a skip, whether this frame is the sampled one, and if so hands over the draw's bindings.
+bool optimizedStationSunProbeWants() noexcept { return g_sunProbeArmed.load(std::memory_order_relaxed); }
+void optimizedStationSunProbeNote(uint64_t frame, const sunprobe::Draw& draw) noexcept {
+    if (g_sunRecBusy.test_and_set(std::memory_order_acquire)) return;   // the tick is copying the record: this draw is not sampled
+    sunprobe::record(&g_sunRec, g_sunTick.load(std::memory_order_acquire), frame, draw);
+    g_sunRecBusy.clear(std::memory_order_release);
 }
 
 // The store calls this after it has written a record (bucket = the collection, record = its record). While sealed it judges the record; while
@@ -2764,7 +2848,9 @@ void optimizedStationFrameBody(uint32_t frame) {
         if (on != g_setting.load(std::memory_order_acquire)) {
             g_setting.store(on, std::memory_order_release);
             applySetting(on, frame);
+            if (!on) sunProbeClear();   // built 2026-10-21 (TEMPORARY): a sample waiting for its line is dropped with the setting
         }
+        pollSunSkipAB(false);   // built 2026-10-21 (TEMPORARY A/B): a change in the F8 menu applies within kSettingPollFrames frames
     }
     const uint64_t now = GetTickCount64();
     if (!g_setting.load(std::memory_order_acquire)) {
@@ -2772,6 +2858,7 @@ void optimizedStationFrameBody(uint32_t frame) {
         return;
     }
     if (g_summaryStartMs == 0) g_summaryStartMs = now;
+    sunProbeTick(now);   // built 2026-10-21 (TEMPORARY, log-only): the sun skip probe's sampled frame
     // Built v14.2: the frame advances here, once per tick. The observer's promote and view resolve run once per frame off this stamp.
     g_frameStamp.fetch_add(1, std::memory_order_seq_cst);   // built v14.27: the callbacks that read the old stamp are the old pass's writers
     TimedStateLock lock;

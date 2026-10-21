@@ -47,6 +47,7 @@
 #include "flat_negotiated_eval.h"
 #include "flat_camera_producer_probe.h"
 #include "flat_standdown.h"
+#include "flat_station_probe.h"   // the optimized station's sun-skip probe: two read-only views (TEMPORARY, 2026-10-21)
 #include "flat_witness_bound.h"
 #include "flat_cpu.h"
 #include "flat_issue_epoch.h"
@@ -691,6 +692,7 @@ struct State {
     bool gpuFrameTried = false;                   // this frame already tried to open its span
     bool censusHooked = false;                    // the resolver's span hooks are installed
     bool crumbGateRead = false;                   // the HDR route's breadcrumbs gate has been set from the DXMT markers (once, first)
+    FlatStationProbeConflict stationProbeConflict; // the last conflict reportConflict saw, kept for the optimized station's sun-skip probe (TEMPORARY, log-only), owner thread
 };
 
 static void observePassiveSceneDraw(State& s, const FlatRuntimeDraw& d) {
@@ -2685,6 +2687,9 @@ void reportConflict(State& s) {
     const auto index = static_cast<uint32_t>(w.cause);
     if (!index || index >= static_cast<uint32_t>(FlatRuntimeConflict::Count)) return;
     ++s.conflictWindow[flatRuntimeConflictName(w.cause)];
+    // Kept for the optimized station's sun-skip probe (flat_station_probe.h), before the detail line's rate limit; a record, not a decision.
+    s.stationProbeConflict.frame = s.prefix.frame; s.stationProbeConflict.cause = flatRuntimeConflictName(w.cause);
+    s.stationProbeConflict.hdr = w.hdr; s.stationProbeConflict.refQ = w.reference.first; s.stationProbeConflict.curQ = w.current.first;
     const uint64_t now = GetTickCount64();
     if (s.conflictDetails[index] >= 4 ||
         (s.conflictDetails[index] && now - s.lastConflictDetailMs[index] < 10000)) return;
@@ -4812,6 +4817,22 @@ void flatRuntimeViewport(UINT n, const D3D11_VIEWPORT* vp) {
     if (!owner()) return;
     flatcpu::Scope tracker(flatcpu::kTrackers);
     auto& s = state(); s.viewportCount = n; if (n == 1 && vp) s.viewport = *vp;
+}
+// The optimized station's sun-skip probe (flat_station_probe.h; TEMPORARY, log-only): owner thread only, read from nothing that is not already there.
+bool flatRuntimeStationProbeSequence(uint64_t* frame, uint32_t* q) {
+    if (!frame || !q || !flatRuntimeActive() || !owner()) return false;
+    const auto& s = state();
+    if (s.work == FlatWork::Paused) return false;
+    *frame = s.prefix.frame;
+    *q = s.prefix.sequence;
+    return true;
+}
+bool flatRuntimeStationProbeConflict(uint64_t frame, FlatStationProbeConflict* out) {
+    if (!out || !owner()) return false;
+    const auto& c = state().stationProbeConflict;
+    if (!c.frame || c.frame != frame) return false;
+    *out = c;
+    return true;
 }
 void flatRuntimeConstantBuffers(UINT start, UINT count, ID3D11Buffer* const* buffers) {
     if (owner() && start <= 1 && 1-start < count && buffers && buffers[1-start]) {

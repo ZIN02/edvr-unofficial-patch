@@ -43,6 +43,9 @@ inline bool flatProfileReadsKey(const char* key) {
         std::strcmp(key, "fix.sharp_weapons") == 0 ||
         // The optimized station (optimized_station.cpp), on in flat as in VR (built v14.34). Unlisted, getString answers "off" here and the station never starts.
         std::strcmp(key, "fix.optimized_stations") == 0 ||
+        // TEMPORARY A/B (2026-10-21; optimized_station.cpp): the station's sun skip alone, on | off, a flat Debug-tab row. Remove with the Orbis cockpit arc.
+        // Unlisted, getString answers the default "on" here whatever the file says, and the F8 row could never switch the skip off.
+        std::strcmp(key, "diag.station_sun_skip") == 0 ||
         // The flat jitter cycle's length (flat_runtime.cpp, FlatLivePhase::phaseCount; temporal_math.h). Developer tier, no flat panel
         // row. Unlisted, getInt answers 0 here whatever the file says, which the reader takes for out of range and reads as 8.
         std::strcmp(key, "advanced.temporal_aa_jitter_phases") == 0 ||

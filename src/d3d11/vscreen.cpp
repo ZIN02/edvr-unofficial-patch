@@ -1,6 +1,7 @@
 #include "vscreen.h"
 #include "gpu_timing.h"
 #include "optimized_station.h"   // the station's sun skip while sealed (optimized_station.cpp)
+#include "flat_station_probe.h"   // the flat runtime's draw sequence for the sun skip probe (TEMPORARY, log-only)
 #include "gpu_frame_timing.h"
 #include "gpu_census.h"       // issue #38: the per-feature GPU cost census
 #include "gpu_pass_profile.h" // TEMPORARY GPU pass profiler (hotkey.gpu_pass_profile): one bool read per hook unarmed
@@ -4928,10 +4929,45 @@ static void flatCensusDraw(ID3D11DeviceContext* self, char kind, uint32_t count,
     if (drawCensusArmed()) drawCensusOffDraw(self, kind, count, instances, args);
 }
 
+// Built 2026-10-21 (TEMPORARY, log-only; docs\optimized-station-2026-10-12.md, Status): what a skipped sun draw was bound to, for the station's sun skip
+// probe. Reached only on the sampled frame (optimizedStationSunProbeWants), on the skip's own draw, owner context: it reads bindings and changes none.
+// after-q is the flat runtime's draw sequence when the draw was skipped (the draw has no q of its own: it returned before the runtime's scope).
+static void stationSunProbeNote(ID3D11DeviceContext* self) {
+    sunprobe::Draw d;
+    uint64_t gameFrame = 0;
+    uint32_t q = 0;
+    d.qKnown = flatRuntimeStationProbeSequence(&gameFrame, &q);
+    d.afterQ = d.qKnown ? q : 0;
+    void* const rtv = bindingGet(BindSlot::Rtv0);
+    d.rtv = reinterpret_cast<uintptr_t>(rtv);
+    d.dsv = reinterpret_cast<uintptr_t>(bindingGet(BindSlot::Dsv0));
+    ResourceInfo info;
+    if (rtv && bindingResolveProbe(rtv, &info) && info.isTexture2D) {
+        d.sized = true;
+        d.tex = reinterpret_cast<uintptr_t>(info.resource);
+        d.fmt = info.fmt;
+        d.width = info.a;
+        d.height = info.b;
+    }
+    D3D11_VIEWPORT vp[1] = {};
+    UINT vpCount = 1;
+    self->RSGetViewports(&vpCount, vp);
+    d.vpCount = vpCount;
+    if (vpCount > 0) {
+        d.vp[0] = vp[0].TopLeftX;
+        d.vp[1] = vp[0].TopLeftY;
+        d.vp[2] = vp[0].Width;
+        d.vp[3] = vp[0].Height;
+    }
+    optimizedStationSunProbeNote(d.qKnown ? gameFrame : 0, d);
+}
 // Built v14.34: the optimized station's sun skip in the flat profile. Flat draws never reach beginPanelOverride (VR's verdict makes the same call after its
 // foreign-context return), so the four draw kinds ask here, first, in their flat branch: owner context only, one atomic load while the sun is on.
+// Built 2026-10-21 (TEMPORARY, log-only): on the sampled frame the skipped draw is also handed to the station's sun skip probe (stationSunProbeNote above).
 static inline bool flatStationSkipsDraw(ID3D11DeviceContext* self) {
-    return self == g_state->ownerCtx && optimizedStationSkipsDraw(bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps));
+    if (self != g_state->ownerCtx || !optimizedStationSkipsDraw(bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps))) return false;
+    if (optimizedStationSunProbeWants()) stationSunProbeNote(self);
+    return true;
 }
 
 void STDMETHODCALLTYPE hookedDraw(ID3D11DeviceContext* self, UINT count, UINT start) {

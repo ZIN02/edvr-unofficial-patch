@@ -294,7 +294,8 @@ void panelTable(const std::string& root, const std::string& gen) {
     check(!vrDims.empty() && !sourceGatesSharpenRow(vrDims), "control: a row asking about a profile other than the running one is caught");
 
     // THE DEBUG TAB (2026-10-16). Exactly two tabs, Performance then Debug, Debug last; the Performance rows are the ones the panel always had,
-    // in their order; the Debug rows are the two toggles, each read through the gate and built from the table.
+    // in their order; the Debug rows are the two toggles and (2026-10-21) the temporary Station sun skip choice, each read through the gate and built
+    // from the table, in the generated schema's order ([diag] before [advanced]).
     check(kFlatTabCount == 2 && std::strcmp(kFlatTabNames[0], "Performance") == 0 && std::strcmp(kFlatTabNames[kFlatTabCount - 1], "Debug") == 0,
           "the flat panel has exactly two tabs: Performance, then Debug last");
     {
@@ -305,9 +306,10 @@ void panelTable(const std::string& root, const std::string& gen) {
             same = std::strcmp(kFlatPageRows[i].section, order[i][0]) == 0 && std::strcmp(kFlatPageRows[i].key, order[i][1]) == 0;
         check(same, "the Performance tab keeps the flat page's seven rows in their order (Sharp weapons directly under UI quality)");
     }
-    check(kFlatDebugRowCount == 2 && flatDebugHasRow("advanced", "flat_cpu_timing") && flatDebugHasRow("advanced", "flat_refusal_view") &&
-              std::strcmp(kFlatDebugRows[0].key, "flat_cpu_timing") == 0 && std::strcmp(kFlatDebugRows[1].key, "flat_refusal_view") == 0,
-          "the Debug tab has CPU timing, then the motion source view");
+    check(kFlatDebugRowCount == 3 && flatDebugHasRow("advanced", "flat_cpu_timing") && flatDebugHasRow("advanced", "flat_refusal_view") &&
+              flatDebugHasRow("diag", "station_sun_skip") && std::strcmp(kFlatDebugRows[0].key, "station_sun_skip") == 0 &&
+              std::strcmp(kFlatDebugRows[1].key, "flat_cpu_timing") == 0 && std::strcmp(kFlatDebugRows[2].key, "flat_refusal_view") == 0,
+          "the Debug tab has the station sun skip A/B, then CPU timing, then the motion source view");
     check(!flatPageHasRow("advanced", "flat_cpu_timing") && !flatDebugHasRow("fix", "temporal_aa"),
           "no key is on both tabs");
     check(sourceBuildsFlatDebugFromTable(menuCpp), "menu.cpp builds the Debug tab, after Performance, from kFlatDebugRows and the `menu debug` rows");
@@ -336,6 +338,13 @@ void panelTable(const std::string& root, const std::string& gen) {
         };
         const FlatPageRow* t2 = flatPageFirstRefused(lacksView);
         check(t2 && std::strcmp(t2->key, "flat_refusal_view") == 0, "control: a gate without advanced.flat_refusal_view is caught, by name");
+        const auto lacksSunSkip = [](const char* dotted) {
+            return runtimeProfileAllowsKey(dotted) && std::strcmp(dotted, "diag.station_sun_skip") != 0;
+        };
+        const FlatPageRow* t3 = flatPageFirstRefused(lacksSunSkip);
+        check(t3 && std::strcmp(t3->key, "station_sun_skip") == 0, "control: a gate without diag.station_sun_skip is caught, by name");
+        check(runtimeProfileAllowsKey("diag.station_sun_skip") && !runtimeProfileAllowsKey("diag.sky_ring") && !runtimeProfileAllowsKey("diag.station_sun_skip_x"),
+              "the flat gate reads diag.station_sun_skip and still refuses the other [diag] keys");
         check(runtimeProfileAllowsKey("advanced.flat_cpu_timing") && runtimeProfileAllowsKey("advanced.flat_refusal_view") &&
                   !runtimeProfileAllowsKey("advanced.slow_test_ms"),
               "the flat gate reads the two Debug keys and still refuses the other [advanced] keys");
@@ -364,6 +373,16 @@ void panelTable(const std::string& root, const std::string& gen) {
         for (size_t at = schema.find(std::string("{\"advanced\", \"") + e.key + "\","); at != std::string::npos;
              at = schema.find(std::string("{\"advanced\", \"") + e.key + "\",", at + 1)) ++count;
         check(count == 1, (name + " appears once (no second row in the developer tier)").c_str());
+    }
+    {   // The temporary A/B row as generated: a choice of on | off shipped on, live, Fix tier, page `debug`, one row, labelled for the panel.
+        const std::string row = schemaRow(schema, "diag", "station_sun_skip");
+        check(row.find("\"Station sun skip\"") != std::string::npos, "the generated Debug row diag.station_sun_skip is labelled 'Station sun skip'");
+        check(row.find("MenuKind::Choice, \"on\", \"\", \"\", 2, \"on|off\", false, false, 1,") != std::string::npos,
+              "the generated Debug row diag.station_sun_skip is a choice of on | off, shipped on, live");
+        check(row.find("MenuTier::Fix, \"debug\",") != std::string::npos, "the generated Debug row diag.station_sun_skip is a Fix-tier row of the page 'debug'");
+        size_t count = 0;
+        for (size_t pos = schema.find("{\"diag\", \"station_sun_skip\","); pos != std::string::npos; pos = schema.find("{\"diag\", \"station_sun_skip\",", pos + 1)) ++count;
+        check(count == 1, "the generated Debug row diag.station_sun_skip appears once");
     }
     check(schemaRow(schema, "advanced", "slow_test_ms").find("MenuTier::Advanced") != std::string::npos,
           "control: another [advanced] key is still a developer-tier row");

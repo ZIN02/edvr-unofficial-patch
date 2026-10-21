@@ -9,6 +9,7 @@
 #include "../../src/d3d11/station_lockfree_core.h"
 #include "../../src/d3d11/station_pass_core.h"
 #include "../../src/d3d11/station_seal_trace.h"
+#include "../../src/d3d11/station_sun_probe.h"
 #include "../../src/common/flat_profile_keys.h"
 #include "../../src/d3d11/menu_flat_rows.h"
 #include "../../src/d3d11/view_source.h"
@@ -3097,6 +3098,133 @@ int main(int argc, char** argv) {
         check(se::foldCensusHits(h, 0, out, 8) == 0, "census fold: no hits, no nodes");
         se::CensusNode two[2];
         check(se::foldCensusHits(h, 6, two, 2) == 2, "census fold: no more nodes than the output holds");
+    }
+
+    // ---- Built 2026-10-21 (TEMPORARY): the sun skip A/B row and the sun skip probe (station_sun_probe.h) --------------------------------------------------------
+    {
+        // The A/B key: on the flat key list (unlisted, getString answers "on" and the F8 row could never switch the skip off), a row of the flat Debug tab
+        // (not the Performance page), passing the gate with every other row, and a near name stays off.
+        check(edvr::flatProfileReadsKey("diag.station_sun_skip"), "sun skip A/B: diag.station_sun_skip is on the flat key list");
+        check(!edvr::flatProfileReadsKey("diag.station_sun_skip_x") && !edvr::flatProfileReadsKey("diag.sky_ring") && !edvr::flatProfileReadsKey("fix.station_sun_skip"),
+              "sun skip A/B: only that key was added (a near name, another [diag] key and the key under [fix] stay off the list)");
+        check(edvr::flatDebugHasRow("diag", "station_sun_skip") && !edvr::flatPageHasRow("diag", "station_sun_skip"),
+              "sun skip A/B: the F8 flat Debug tab has the Station sun skip row, the Performance page does not");
+        check(edvr::flatPageFirstRefused([](const char* k) { return edvr::flatProfileReadsKey(k); }) == nullptr,
+              "sun skip A/B: every row of the flat panel, the Debug tab included, passes the flat key list");
+        check(edvr::flatPageFirstRefused([](const char* k) { return edvr::flatProfileReadsKey(k) && std::strcmp(k, "diag.station_sun_skip") != 0; }) != nullptr,
+              "control: a flat key list without diag.station_sun_skip is caught");
+    }
+    {
+        namespace sp = edvr::sunprobe;
+        // The Orbis flight's conflict: hdr 0xBBD04F00, ref-q 1463, cur-q 1467.
+        sp::Conflict conflict;
+        conflict.have = true;
+        conflict.frame = 24042;
+        conflict.cause = "image-copy-source";
+        conflict.hdr = 0xBBD04F00ull;
+        conflict.refQ = 1463;
+        conflict.curQ = 1467;
+        const auto draw = [](bool qKnown, uint32_t afterQ, uint64_t tex) {
+            sp::Draw d;
+            d.qKnown = qKnown;
+            d.afterQ = afterQ;
+            d.rtv = 0x1000 + afterQ;
+            d.tex = tex;
+            d.dsv = 0x2000;
+            d.sized = tex != 0;
+            d.fmt = 9;
+            d.width = 960;
+            d.height = 600;
+            d.vpCount = 1;
+            d.vp[2] = 960.0f;
+            d.vp[3] = 600.0f;
+            return d;
+        };
+        // The comparisons: a draw is on the HDR target when its texture is the conflict's, between q when ref-q <= after-q < cur-q.
+        check(sp::onHdr(draw(true, 1464, 0xBBD04F00ull), conflict) && !sp::onHdr(draw(true, 1464, 0xBBD05000ull), conflict) && !sp::onHdr(draw(true, 1464, 0), conflict),
+              "sun probe: a draw is on the HDR target when its texture is the conflict's hdr (an unresolved texture never is)");
+        sp::Conflict zeroHdr = conflict;
+        zeroHdr.hdr = 0;
+        check(!sp::onHdr(draw(true, 1464, 0), zeroHdr), "sun probe: an unresolved texture (0) never matches a conflict whose hdr is 0 either");
+        check(sp::betweenQ(draw(true, 1463, 1), conflict) && sp::betweenQ(draw(true, 1466, 1), conflict) && !sp::betweenQ(draw(true, 1462, 1), conflict) &&
+                  !sp::betweenQ(draw(true, 1467, 1), conflict),
+              "sun probe: between ref-q and cur-q means ref-q <= after-q < cur-q (a draw after the ref draw and before the cur draw)");
+        check(!sp::betweenQ(draw(false, 1465, 1), conflict), "sun probe: a draw whose q is unknown is never between");
+        sp::Conflict none;
+        check(!sp::onHdr(draw(true, 1464, 0xBBD04F00ull), none) && !sp::betweenQ(draw(true, 1464, 1), none), "sun probe: with no conflict nothing is on the HDR target or between");
+        // Recording: the first draw fixes the frame and the tick, a draw of another tick is refused, the list stops at six and the total goes on.
+        sp::Frame rec;
+        check(sp::record(&rec, 7, 24042, draw(true, 1464, 0xBBD04F00ull)) && rec.total == 1 && rec.n == 1 && rec.tick == 7 && rec.frame == 24042,
+              "sun probe: the first draw fixes the tick and the game frame");
+        check(!sp::record(&rec, 8, 24043, draw(true, 1500, 1)) && rec.total == 1 && rec.n == 1, "sun probe: a draw stamped with another tick is refused (one sampled frame, never a mix)");
+        for (int i = 0; i < 8; ++i) sp::record(&rec, 7, 24042, draw(true, 1465 + i, 0xBBD05000ull));
+        check(rec.total == 9 && rec.n == sp::kMaxDraws && sp::kMaxDraws == 6, "sun probe: six draws are carried, the total counts them all");
+        // The line: one frame, the draws in order, each with its verdicts, then the conflict.
+        sp::Frame two;
+        sp::record(&two, 3, 24042, draw(true, 1464, 0xBBD04F00ull));
+        sp::record(&two, 3, 24042, draw(true, 1470, 0xBBD05000ull));
+        char line[1100];
+        const size_t n = sp::formatLine(line, sizeof(line), two, conflict);
+        const std::string text(line);
+        check(n == text.size() && text.rfind("optimized station: sun skip probe (frame 24042): 2 draws skipped this frame: after-q=1464 ", 0) == 0,
+              "sun probe line: the header names the frame and the count, the first draw starts with after-q");
+        check(text.find(" after-q=1464 rtv=00000000000015B8 tex=00000000BBD04F00 fmt=9 960x600 dsv=0000000000002000 vp=1(0,0,960,600) [hdr=yes between-q=yes]") != std::string::npos,
+              "sun probe line: a draw carries rtv, tex, format, size, dsv, viewport and its two verdicts");
+        check(text.find("; after-q=1470 rtv=00000000000015BE tex=00000000BBD05000 fmt=9 960x600 dsv=0000000000002000 vp=1(0,0,960,600) [hdr=no between-q=no]") != std::string::npos,
+              "sun probe line: the second draw follows after a semicolon with its own verdicts");
+        const std::string tail = "; flat conflict (frame 24042): cause=image-copy-source hdr=00000000BBD04F00 ref-q=1463 cur-q=1467";
+        check(text.size() > tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0,
+              "sun probe line: the conflict closes the line as the runtime's own conflict line gives it");
+        // No conflict, an unknown q, an unresolved target.
+        sp::Frame odd;
+        sp::record(&odd, 1, 0, draw(false, 0, 0));
+        sp::formatLine(line, sizeof(line), odd, none);
+        const std::string oddText(line);
+        check(oddText.find("(frame ?)") != std::string::npos && oddText.find("after-q=?") != std::string::npos && oddText.find("fmt=? ?x?") != std::string::npos &&
+                  oddText.find("[hdr=") == std::string::npos && oddText.find("; flat conflict: none recorded for this frame") != std::string::npos,
+              "sun probe line: no frame number, no q and no resolved target are said as ?, and without a conflict there are no verdicts");
+        // Six draws and the "more not listed" count fit the log's line (1200 characters with its prefix); a small buffer ends cleanly.
+        sp::Frame full;
+        for (int i = 0; i < 9; ++i) sp::record(&full, 5, 24042, draw(true, 1465 + i, 0xBBD05000ull));
+        const size_t fullN = sp::formatLine(line, sizeof(line), full, conflict);
+        const std::string fullText(line);
+        check(fullN == fullText.size() && fullN < 1100 && fullText.find("(+3 more not listed)") != std::string::npos && fullText.find("after-q=1470") != std::string::npos &&
+                  fullText.find("after-q=1471") == std::string::npos,
+              "sun probe line: six draws and the count of those not listed fit one log line");
+        char small[120];
+        const size_t smallN = sp::formatLine(small, sizeof(small), full, conflict);
+        check(smallN < sizeof(small) && std::strlen(small) == smallN, "sun probe line: a buffer too small ends the line cleanly (never past the buffer)");
+        check(sp::formatLine(small, 0, full, conflict) == 0, "sun probe line: a zero-size buffer writes nothing");
+        // The sampler: arm when due and skipping, log once the frame is over, wait 5 s.
+        sp::Sampler sam;
+        sp::Frame empty;
+        check(sam.step(empty, 1, 1000, false) == sp::Sampler::Act::kNone && !sam.armed, "sun probe sampler: not skipping, nothing is armed");
+        check(sam.step(empty, 2, 1000, true) == sp::Sampler::Act::kArm && sam.armed, "sun probe sampler: skipping and due, the next frame is armed");
+        check(sam.step(empty, 3, 1010, true) == sp::Sampler::Act::kNone, "sun probe sampler: armed and nothing recorded yet, wait");
+        sp::Frame midway;
+        sp::record(&midway, 3, 24042, draw(true, 1, 1));
+        check(sam.step(midway, 3, 1020, true) == sp::Sampler::Act::kNone, "sun probe sampler: the frame still being drawn is not logged");
+        check(sam.step(midway, 4, 1030, true) == sp::Sampler::Act::kLog && !sam.armed && sam.nextMs == 1030 + sp::kSampleEveryMs,
+              "sun probe sampler: the finished frame is logged once, the next sample is 5 s on");
+        check(sam.step(empty, 5, 1030 + sp::kSampleEveryMs - 1, true) == sp::Sampler::Act::kNone &&
+                  sam.step(empty, 6, 1030 + sp::kSampleEveryMs, true) == sp::Sampler::Act::kArm,
+              "sun probe sampler: re-armed at 5 s and not a millisecond before");
+        // An arm no draw answers is said after 10 s, again every 10 s, six times at most; an answered arm is never stale.
+        const uint64_t armedAt = 1030 + sp::kSampleEveryMs;
+        check(sam.step(empty, 7, armedAt + sp::kStaleAfterMs - 1, true) == sp::Sampler::Act::kNone &&
+                  sam.step(empty, 8, armedAt + sp::kStaleAfterMs, true) == sp::Sampler::Act::kStale,
+              "sun probe sampler: armed 10 s with no skipped draw recorded, it says so (the probe may never be reached)");
+        uint64_t t = armedAt + sp::kStaleAfterMs;
+        uint32_t said = 1;
+        for (int i = 0; i < 20; ++i) {
+            t += sp::kStaleAfterMs;
+            if (sam.step(empty, 9 + i, t, true) == sp::Sampler::Act::kStale) ++said;
+        }
+        check(said == sp::kMaxStaleLines && sam.step(empty, 99, t + 10 * sp::kStaleAfterMs, true) == sp::Sampler::Act::kNone,
+              "sun probe sampler: the stale line is said six times at most");
+        sp::Sampler quick;
+        check(quick.step(empty, 1, 0, true) == sp::Sampler::Act::kArm && quick.step(midway, 2, sp::kStaleAfterMs * 3, true) == sp::Sampler::Act::kLog,
+              "sun probe sampler: an armed frame that was recorded is logged, not called stale");
     }
 
     std::printf("optimized_station_test: %d checks, %d failures\n", g_checks, g_failures);

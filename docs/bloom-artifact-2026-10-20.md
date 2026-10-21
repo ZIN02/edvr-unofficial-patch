@@ -2,8 +2,10 @@
 
 ## Status
 
-- **State (2026-10-20 21:30): the artifact is undithered 8-bit banding of
-  Elite's own bloom, at Bloom Medium, High and Ultra; nothing built.** Base
+- **State (2026-10-20 22:40): the artifact is undithered 8-bit banding of
+  Elite's own bloom, at Bloom Medium, High and Ultra. Fix A is built and
+  installed for a test flight: `fix.smooth_gradients` (commit `a97d7abb`,
+  local compile `v0.20.0-15-ga97d7abb`), flat only.** Base
   Elite with EDVR's AA off: the flat System Map and loading screens, on
   builds 332841 and 334473. The chain was dumped on the 20:49
   flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
@@ -39,11 +41,15 @@
     code 60.
   - Temporal threshold instability: the artifact is in still frames.
   - The 4.4.2.0 update: see above.
-- **Next:** build fix A and fly the same loading screen, lossless, AA off
-  (see "Flight evidence before building").
+- **Next flight:** the same loading screen, lossless, AA off, with Smooth
+  gradients on and then off (F8, live). Expect no bands when on, block
+  means within half a code of off, and log lines "smooth gradients:
+  dithering tone pixel shader E8948389…" and "smooth gradients 30s".
 - **Fix:** A, dither the tone write by swapping the known tone pixel
-  shaders. Bloom stays everywhere. B (a dense tent) is not needed. See "Fix
-  proposal".
+  shaders (`smooth_gradients_ps.h`, `smooth_gradients.cpp`; rig
+  `tools/smooth_gradients_test`, 101 checks passing under Wine's D3D11).
+  Bloom stays everywhere. VR waits for its tone shader's bytecode (one VR
+  launch with the shader dump on). B is not needed.
 - **Environment:** flat, 1920x1200 output, DoF 2, Elite AA off. The map
   flight ran at SSAA 0.65 (HDR 1248x780, first bloom level 624x390) and
   Bloom Ultra. The lossless loading screens and the 332841 one ran at HDR

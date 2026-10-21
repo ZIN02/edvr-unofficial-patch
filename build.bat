@@ -3689,6 +3689,23 @@ if errorlevel 1 ( echo [edvr] ERROR: billboard facing test build failed & exit /
 "%OBJ%\billboardfacing\billboard_facing_test.exe" --self-test "%ROOT%" || exit /b 1
 exit /b 0
 
+:rig_smooth_gradients_test
+echo [edvr] === smooth_gradients_test.exe ===
+REM The smooth gradients' five tone transcriptions (src\d3d11\smooth_gradients_ps.h; docs\bloom-artifact-2026-10-20.md) against the game's own bytecode
+REM (tools\smooth_gradients_test\fixtures, held to their hash names) on a WARP device with the D3D debug layer: each original and its no-dither transcription
+REM draw the same full-screen triangle on the same inputs and agree on every channel of every pixel across four constant sets, with the tone curve live and
+REM the 64500 clamp bound in one of them; the production transcription's dither stays within one code of the unrounded result (plus the 0.6 the
+REM float-to-UNORM conversion may round by), exact zeros stay zero, and alpha is untouched.
+if not exist "%OBJ%\smoothgradients" mkdir "%OBJ%\smoothgradients"
+%CC% /nologo /O2 /MT /std:c++17 /EHsc /W4 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I"src\d3d11" ^
+    /Fo"%OBJ%\smoothgradients\\" /Fe"%OBJ%\smoothgradients\smooth_gradients_test.exe" ^
+    "tools\smooth_gradients_test\smooth_gradients_test.cpp" ^
+    /link /INCREMENTAL:NO d3d11.lib d3dcompiler.lib dxguid.lib
+if errorlevel 1 ( echo [edvr] ERROR: smooth gradients test build failed & exit /b 1 )
+"%OBJ%\smoothgradients\smooth_gradients_test.exe" --dry-run || exit /b 1
+"%OBJ%\smoothgradients\smooth_gradients_test.exe" --self-test "%ROOT%" || exit /b 1
+exit /b 0
+
 :rig_panel_curve_test
 echo [edvr] === panel_curve_test.exe ===
 REM The curved screen's strip (src\d3d11\panel_curve.cpp; fix.panel_curvature) compiled for real with the real Config, Log and fault

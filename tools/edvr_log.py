@@ -283,6 +283,11 @@ import statistics
 import sys
 import tempfile
 
+try:
+    from tools import steam_library
+except ImportError:
+    import steam_library
+
 GAME_EXE = "EliteDangerous64.exe"
 LOG_RE = re.compile(r"^edvr_(?P<tag>[a-z0-9]+)_(?P<stamp>\d{8}_\d{6})"
                     r"(?:_(?P<ms>\d{3})_(?P<pid>\d+))?\.log$",
@@ -4315,26 +4320,21 @@ def resolve_target(spec):
     if spec not in ("steam", "frontier"):
         p = os.path.abspath(spec)
         if os.path.isdir(p):
-            return p
+            # The game's own directory, or the `Elite Dangerous` folder above
+            # its Products/<product>: the logs are in the product's edvr_logs.
+            leaves = [] if os.path.isdir(os.path.join(p, "edvr_logs")) \
+                else _products_under(p)
+            return leaves[0] if len(leaves) == 1 else p
         raise SystemExit("[edvr] no such directory: %s" % p)
-    # Deliberately shares no code with install_edvr.py's fuller search:
-    # this one only has to find a log, and a wrong guess here costs a
-    # message rather than an overwritten DLL.
     if spec == "frontier":
         local = os.environ.get("LOCALAPPDATA", "")
         found = _products_under(os.path.join(local, "Frontier_Developments")) \
             if local else []
     else:
-        found = []
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                r"Software\Valve\Steam") as k:
-                steam = winreg.QueryValueEx(k, "SteamPath")[0]
-        except (ImportError, OSError):
-            steam = r"C:\Steam"
-        found = _products_under(os.path.join(steam, "steamapps", "common",
-                                             "Elite Dangerous"))
+        # steam_library.py is the one Steam search: the registry and the
+        # libraryfolders.vdf libraries on Windows, ~/.local/share/Steam and
+        # ~/.steam/steam on Linux.
+        found = steam_library.steam_dirs(GAME_EXE)
     if not found:
         raise SystemExit("[edvr] no %s install found; pass a path to "
                          "--target." % spec)
@@ -11014,6 +11014,39 @@ def self_test():
         if main(["--dir", logs, "--tag", "openxr", "--version"]) != 0:
             print("native --version discovery failed")
             ok = False
+
+        # --target: a game directory is itself; the `Elite Dangerous` folder above
+        # Products/<product> resolves to the one product; `steam` is the shared
+        # steam_library search (Linux layout covered by steam_library --self-test).
+        elite = os.path.join(tmp, "Elite Dangerous")
+        leaf = os.path.join(elite, "Products", "elite-dangerous-odyssey-64")
+        os.makedirs(os.path.join(leaf, "edvr_logs"))
+        with open(os.path.join(leaf, GAME_EXE), "wb") as f:
+            f.write(b"GAME")
+        if resolve_target(game) != os.path.abspath(game):
+            print("resolve_target changed a game directory")
+            ok = False
+        if resolve_target(elite) != os.path.normpath(leaf):
+            print("resolve_target did not find the product under an Elite Dangerous folder")
+            ok = False
+        _seen = []
+        _real_dirs = steam_library.steam_dirs
+        steam_library.steam_dirs = lambda exe: (_seen.append(exe), [leaf])[1]
+        try:
+            if resolve_target("steam") != leaf or _seen != [GAME_EXE]:
+                print("resolve_target('steam') did not use steam_library.steam_dirs(%s)" % GAME_EXE)
+                ok = False
+            steam_library.steam_dirs = lambda exe: []
+            try:
+                resolve_target("steam")
+                print("resolve_target('steam') with no install did not stop")
+                ok = False
+            except SystemExit as stop:
+                if "no steam install found" not in str(stop):
+                    print("resolve_target('steam') with no install said %r" % str(stop))
+                    ok = False
+        finally:
+            steam_library.steam_dirs = _real_dirs
 
         # Newest first, and the tag filter separates the two halves.
         found = find_logs(logs, "gfx")

@@ -163,6 +163,37 @@ minutes after a flight finally reproduced the effect being chased.
   gates; do not bypass those gates or use compile-only outputs as
   release assets. See `.toolchains/windows/README.md` for setup and
   limits.
+- **Linux test flight (Steam Deck, Proton): a compile-only build.** For a
+  build Sean will fly, CI first is not required; CI is for a merge or
+  release. Commit to the branch before compiling: a dirty tree compiles as
+  `vX.Y.Z-dirty`, which `edvr_log.py --expect-build HEAD` will not match.
+  Close Elite, then:
+
+  ```bash
+  .toolchains/windows/host/powershell/pwsh -Command "python3 .toolchains/windows/toolchain.py build-dlls"
+  python3 tools/install_edvr.py --target steam --scope flat --xess --compile-only --dry-run
+  python3 tools/install_edvr.py --target steam --scope flat --xess --compile-only
+  python3 tools/install_edvr.py --target steam --scope flat --xess --compile-only --verify-only
+  python3 tools/edvr_log.py --target steam --expect-build HEAD --version
+  ```
+
+  `--target steam` finds the game on Linux (`tools/steam_library.py`:
+  `~/.local/share/Steam`, `~/.steam/steam`, then every library in
+  `libraryfolders.vdf`). `--compile-only` installs from
+  `.toolchains/windows/compile-build/` instead of `build/`, and refuses
+  without that build's `compile_only_receipt.json`, when an output no longer
+  matches it, or when the tree has been edited or committed since (it asks
+  `compile_only.py` for the fingerprint, so the two cannot disagree). It
+  prints that the build is not Windows validated and writes `"build":
+  "compile-only"` into the install receipt; `--verify-only` compares the game
+  directory to that build and only warns about a moved tree. The toolchain
+  compiles the checkout it lives in; to fly a worktree, compile with
+  `build-dlls --root <worktree>` (output `<worktree>/build/compile-build`)
+  and install with `--root <worktree> --compile-only`. `--root` is a local
+  change to the device-local `compile_only.py`, and a copy without it refuses
+  the flag: test-fly from the main checkout there. `tools/worktree.py` makes
+  junctions and is Windows-only; on Linux symlink the ignored `third_party`
+  folders from the main checkout by hand.
 - For C++ changes on a non-native host, commit and push the candidate
   branch so Actions can validate that exact commit. The `release.yml`
   workflow is active on `main`; dispatch it with `gh workflow run

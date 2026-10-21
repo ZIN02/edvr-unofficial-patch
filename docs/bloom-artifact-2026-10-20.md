@@ -2,61 +2,49 @@
 
 ## Status
 
-- **State (2026-10-21 06:20): the artifact is undithered 8-bit banding of
-  Elite's own bloom, at Bloom Medium, High and Ultra. Fix A,
-  `fix.smooth_gradients` (commit `a97d7abb`, local compile), is FLOWN flat:
-  the bands are gone on a loading screen (see "Fix A flown").** Base
-  Elite with EDVR's AA off: the flat System Map and loading screens, on
-  builds 332841 and 334473. The chain was dumped on the 20:49
-  flight (log `edvr_gfx_20261020_204909`) with commit `4675c3c5`, which
-  lets flat read `advanced.glare_shader_dump`. See "The chain's bytecode".
+- **State (2026-10-21): FIXED in flat and merged to main.** The artifact
+  was undithered 8-bit banding of Elite's own bloom, at Bloom Medium, High
+  and Ultra. `fix.smooth_gradients` (on by default, live, F8) dithers the
+  tone write. It was flown flat and the bands are gone (see "Fix A
+  flown"). The release's full build validates it; CI was skipped at
+  merge by Sean's choice. Base Elite, EDVR's AA off, flat System Map and
+  loading screens, builds 332841 and 334473.
+- **What looked ugly on Sean's laptop was mostly the display.** KDE ran
+  its AMOLED panel (AMS881KB01) in HDR, mapping SDR to 485 nits with 33%
+  software brightness. That rendered the glow's faint tail as blotches
+  and a hard rim. With HDR off it looks fine, as the same files did on a
+  phone (see "The display").
 - **The halo is not offset.** The star's halo sits within 1 px of its
-  disc. The map's "lower right" is a separate cyan-white glow from the
-  station marker, the belt and the planets, centred on them.
-- **The chain is a standard pyramid.** It has a Karis-weighted 13-tap first
-  downsample with a soft threshold and a luma clamp, 13-tap downsamples,
-  and upsamples that average two 3x3 tents (`8826CACC`). Every UV is the
-  vertex UV plus a CPU offset from cb2.
-- **4.4.2.0 did not introduce it.** A 332841 loading screen shows the same
-  banded glow, and the named bloom shaders have the same hashes on both
-  builds.
-- **Hypotheses:**
-  1. **Confirmed:** output quantization. The tone pass writes 8-bit with no
-     dither, so a wide, dim glow on black falls in clean one-code bands,
-     up to 99 px wide at codes 1 and 2 (see "Lossless loading screens").
-  2. Ruled out: tent taps spread by FilterRadius. The three lossless shots
-     (Medium, High, Ultra) show no texel-grid lumps at 8-10x gain, and
-     Medium, which has no FilterRadius, bands like the others. The far star
-     halo's diagonal excess (5-20%) is the ordinary squarish shape of a
-     tent pyramid, not a defect.
+  disc. The map's "lower right" is the station marker's, belt's and
+  planets' own glow.
+- **The chain is a standard pyramid:** a Karis-weighted 13-tap first
+  downsample with a soft threshold and luma clamp, 13-tap downsamples,
+  and two averaged 3x3 tents per upsample (`8826CACC`). UVs are the
+  vertex UV plus CPU offsets.
 - **Ruled out:**
-  - Half-texel offset accumulating toward a corner: the halo fits at
-    (+0.5, +0.5) px.
-  - Lumps from a single-tap bilinear upsample: `8826CACC` is an 18-tap
-    dual tent.
-  - Odd-size rounding as a scale about the corner: no chain shader uses
-    SV_Position or a size, and the UVs span each target whatever its size.
+  - Half-texel drift to a corner: the halo fits at (+0.5, +0.5) px.
+  - Tent taps spread by FilterRadius, and single-tap upsample lumps: no
+    texel-grid lumps at any tier, and `8826CACC` is an 18-tap dual tent.
+  - Odd-size rounding: no chain shader uses SV_Position or a size.
   - Lens ghost or flare: the lobe has the marker's colour and centre.
-  - R11G11B10 precision as the band source: under half a code below
-    code 60.
-  - Temporal threshold instability: the artifact is in still frames.
-  - The 4.4.2.0 update: see above.
-  - The glow's sharp outer edge as banding: it is the stock tone curve's
-    black floor (E8948389's fitted curve clamps inputs below about 0.0013
-    to 0), which no dither can change (see "Fix A flown").
-- **Next:** optional same-frame on/off pair for brightness (the rig
-  measures block means within 0.09 of a code); one VR launch with the
-  shader dump on, for VR's tone shader; CI before any merge.
-- **Fix:** A, dither the tone write by swapping the known tone pixel
-  shaders (`smooth_gradients_ps.h`, `smooth_gradients.cpp`; rig
-  `tools/smooth_gradients_test`, 101 checks passing under Wine's D3D11).
-  Bloom stays everywhere. VR waits for its tone shader's bytecode (one VR
-  launch with the shader dump on). B is not needed.
+  - R11G11B10 precision: under half a code below code 60.
+  - Temporal threshold instability: still frames show it.
+  - The 4.4.2.0 update: a 332841 loading screen bands the same, and the
+    named bloom shaders have the same hashes on both builds.
+  - The glow's outer rim as banding: it is the stock tone curve's black
+    floor (E8948389's fitted curve clamps inputs below about 0.0013 to
+    0). A soft-toe experiment was built and discarded once HDR-off
+    showed the rim was not the problem.
+- **Next:** one VR launch with `glare_shader_dump = 1` for VR's tone
+  shader (`99C21CEB`, and `D0A16B9E` at another tier); EDHM's and the old
+  map tone's bytecode the same way. Until then those draw stock.
+- **Fix:** `smooth_gradients_ps.h` and `smooth_gradients.cpp`, with the rig
+  `tools/smooth_gradients_test` (101 checks passing under Wine's D3D11).
+  Bloom stays everywhere.
 - **Environment:** flat, 1920x1200 output, DoF 2, Elite AA off. The map
-  flight ran at SSAA 0.65 (HDR 1248x780, first bloom level 624x390) and
-  Bloom Ultra. The lossless loading screens and the 332841 one ran at HDR
-  1920x1200. Not tested: VR, where
-  Elite's VR presets ship BloomQuality 0.
+  flight ran at SSAA 0.65 (HDR 1248x780); the lossless loading screens
+  ran at HDR 1920x1200. Not tested: VR, where Elite's VR presets ship
+  BloomQuality 0.
 
 ---
 
@@ -388,3 +376,19 @@ by `div_sat`, so every input below x of about 0.0013 maps to 0. That is
 the crushed-black part of Elite's look, present in stock too. Removing
 it would lift blacks everywhere, a change to the look rather than a fix,
 so it is not proposed.
+
+## The display (2026-10-21)
+
+The same lossless screenshots looked fine on Sean's phone and ugly on the
+laptop. `kscreen-doctor -o` showed the laptop running in HDR mode:
+
+- HDR on, wide colour gamut on, colour profile from the EDID.
+- SDR content mapped to 485-nit white.
+- Brightness done in software at 33%; the panel's `intel_backlight` sat
+  at its maximum.
+
+That puts a glow's faint tail at a fraction of a nit to a few nits, where
+this OLED in HDR mode renders near-black unevenly and cuts it hard to off.
+With HDR off it looked fine. A screenshot is taken before the compositor
+and the panel, so it cannot show this. Before chasing near-black on this
+machine again, check `kscreen-doctor -o` first.

@@ -38,7 +38,6 @@ inline constexpr FlatPageRow kFlatPageRows[] = {
     {"fix", "render_sharpness",  FlatRowRead::Allowlist},
     {"fix", "ui_quality",        FlatRowRead::Allowlist},
     {"fix", "sharp_weapons",     FlatRowRead::Allowlist},   // directly under UI quality, as in VR (2026-10-16)
-    {"fix", "smooth_gradients",  FlatRowRead::Allowlist},   // the flat tone pass's dither, under Sharp weapons (2026-10-20)
     {"fix", "optimized_stations", FlatRowRead::Allowlist},
 };
 inline constexpr size_t kFlatPageRowCount = sizeof(kFlatPageRows) / sizeof(kFlatPageRows[0]);

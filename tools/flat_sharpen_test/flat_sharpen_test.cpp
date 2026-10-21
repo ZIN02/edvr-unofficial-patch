@@ -299,12 +299,11 @@ void panelTable(const std::string& root, const std::string& gen) {
           "the flat panel has exactly two tabs: Performance, then Debug last");
     {
         const char* const order[][2] = {{"fix", "intro_video"}, {"fix", "temporal_aa"}, {"fix", "temporal_aa_model"},
-                                        {"fix", "render_sharpness"}, {"fix", "ui_quality"}, {"fix", "sharp_weapons"}, {"fix", "smooth_gradients"},
-                                        {"fix", "optimized_stations"}};
-        bool same = kFlatPageRowCount == 8;
-        for (size_t i = 0; same && i < 8; ++i)
+                                        {"fix", "render_sharpness"}, {"fix", "ui_quality"}, {"fix", "sharp_weapons"}, {"fix", "optimized_stations"}};
+        bool same = kFlatPageRowCount == 7;
+        for (size_t i = 0; same && i < 7; ++i)
             same = std::strcmp(kFlatPageRows[i].section, order[i][0]) == 0 && std::strcmp(kFlatPageRows[i].key, order[i][1]) == 0;
-        check(same, "the Performance tab keeps the flat page's eight rows in their order (Sharp weapons directly under UI quality, smooth gradients under it)");
+        check(same, "the Performance tab keeps the flat page's seven rows in their order (Sharp weapons directly under UI quality)");
     }
     check(kFlatDebugRowCount == 2 && flatDebugHasRow("advanced", "flat_cpu_timing") && flatDebugHasRow("advanced", "flat_refusal_view") &&
               std::strcmp(kFlatDebugRows[0].key, "flat_cpu_timing") == 0 && std::strcmp(kFlatDebugRows[1].key, "flat_refusal_view") == 0,

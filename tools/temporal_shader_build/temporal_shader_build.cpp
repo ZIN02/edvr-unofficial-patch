@@ -109,7 +109,6 @@ struct LegacyContract {
 #include "fixed_facing_shader_variants.h"
 #include "fixed_sharp_weapons_variants.h"
 #include "fixed_shield_ripple_variants.h"
-#include "fixed_smooth_gradients_variants.h"
 
 static bool compile(CompileFn fn, const char* source, Variant& v, bool quiet = false) {
     v.bytes.clear();
@@ -329,8 +328,6 @@ static std::vector<Variant> fixedVariants(const std::string& core) {
     variants.insert(variants.end(), sharpWeapons.begin(), sharpWeapons.end());
     const auto shieldRipple = shieldRippleVariants();
     variants.insert(variants.end(), shieldRipple.begin(), shieldRipple.end());
-    const auto smoothGradients = smoothGradientsVariants();
-    variants.insert(variants.end(), smoothGradients.begin(), smoothGradients.end());
     return variants;
 }
 
@@ -593,8 +590,8 @@ static void selfTest() {
     coreLegacy.insert(coreLegacy.end(), originalCore.begin(), originalCore.end());
     coreLegacy.insert(coreLegacy.end(), originalExtra.begin(), originalExtra.end());
     auto coreFixed = fixedVariants(extractCore(edvr::kTemporalCsHlsl));
-    check(originalCore.size() == 28 && originalExtra.size() == 12 && coreFixed.size() == 76 && coreLegacy.size() + 29 == coreFixed.size(),
-          "all original fixed shader contracts, three bounded diagnostics, six flat foreground shaders, the supercruise bars' geometry shader, the foreground map's four sibling-pass compute shaders (donor, fit and the shadow's two), the sky ring's compute shader, the UI layer's in-place composite, the explosion billboards' five facing transcriptions the sharp weapons' two source-pass shaders and the shield ripple's door pass and the smooth gradients' five tone transcriptions are registered");
+    check(originalCore.size() == 28 && originalExtra.size() == 12 && coreFixed.size() == 71 && coreLegacy.size() + 24 == coreFixed.size(),
+          "all original fixed shader contracts, three bounded diagnostics, six flat foreground shaders, the supercruise bars' geometry shader, the foreground map's four sibling-pass compute shaders (donor, fit and the shadow's two), the sky ring's compute shader, the UI layer's in-place composite, the explosion billboards' five facing transcriptions the sharp weapons' two source-pass shaders and the shield ripple's door pass are registered");
     for(size_t i=0;i<coreFixed.size();++i)for(size_t j=0;j<i;++j)
         check(std::strcmp(coreFixed[i].symbol,coreFixed[j].symbol)!=0,"generated shader symbols do not collide");
     using ReflectFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, REFIID, void**);
@@ -913,65 +910,6 @@ static void selfTest() {
                 }
                 check(ok && desc.BoundResources == expected,
                       "each facing transcription keeps the game's b0[12], b1[280] (and b2[3] or b2[1] where the original has one) and ours at b3[2], and binds nothing else");
-            }
-        }
-    }
-
-    // The smooth gradients' five tone transcriptions (src/d3d11/smooth_gradients_ps.h): new, held to their own contract -- the symbol, source name, entry,
-    // profile and flags, the text each compiles (the production text: no macro, so the dither is in), and the pixel stage's reflected bindings: the game's cb2
-    // at b2 with the rows its original declares, and exactly the samplers and textures its original reads, each at its slot and dimension, and nothing else.
-    // tools/smooth_gradients_test holds their behaviour against the game's own bytecode.
-    {
-        struct Tone { const char* symbol; const char* sourceName; const char* source; UINT cbRows; UINT samplers; std::vector<D3D_SRV_DIMENSION> textures; };
-        const Tone tone[5] = {
-            {"kSmoothGradientsE894Bytecode", "smooth_gradients_E894_ps", edvr::kSmoothGradientsE894PS, 16, 3,
-             {D3D_SRV_DIMENSION_TEXTURE3D, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2D}},
-            {"kSmoothGradients9270Bytecode", "smooth_gradients_9270_ps", edvr::kSmoothGradients9270PS, 11, 2,
-             {D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2D}},
-            {"kSmoothGradientsFEE7Bytecode", "smooth_gradients_FEE7_ps", edvr::kSmoothGradientsFEE7PS, 16, 2,
-             {D3D_SRV_DIMENSION_TEXTURE3D, D3D_SRV_DIMENSION_TEXTURE2D}},
-            {"kSmoothGradientsDE65Bytecode", "smooth_gradients_DE65_ps", edvr::kSmoothGradientsDE65PS, 16, 2,
-             {D3D_SRV_DIMENSION_TEXTURE2D, D3D_SRV_DIMENSION_TEXTURE2D}},
-            {"kSmoothGradients6E83Bytecode", "smooth_gradients_6E83_ps", edvr::kSmoothGradients6E83PS, 16, 1,
-             {D3D_SRV_DIMENSION_TEXTURE2D}},
-        };
-        for (size_t i = 0; i < 5; ++i) {
-            const Tone& t = tone[i];
-            auto& shader = coreFixed[coreLegacy.size() + 24 + i];
-            check(!std::strcmp(shader.symbol, t.symbol) && !std::strcmp(shader.sourceName, t.sourceName) &&
-                  !std::strcmp(shader.entry, "main") && !std::strcmp(shader.profile, "ps_5_0") && shader.alternate == t.source &&
-                  shader.macros == nullptr && !shader.flags1 && !shader.flags2,
-                  "each smooth gradients transcription has its distinct symbol and exact source/stage contract");
-            check(compile(compiler.fn, shader.alternate, shader, true) && shader.bytes.size() > 4 && !std::memcmp(shader.bytes.data(), "DXBC", 4),
-                  "each smooth gradients transcription compiles to fixed DXBC");
-            if (reflect && !shader.bytes.empty()) {
-                ComPtr<ID3D11ShaderReflection> reflection;
-                D3D11_SHADER_DESC desc{};
-                const HRESULT hr = reflect(shader.bytes.data(), shader.bytes.size(), __uuidof(ID3D11ShaderReflection),
-                                           reinterpret_cast<void**>(reflection.GetAddressOf()));
-                bool ok = SUCCEEDED(hr) && reflection && SUCCEEDED(reflection->GetDesc(&desc)) &&
-                          D3D11_SHVER_GET_TYPE(desc.Version) == D3D11_SHVER_PIXEL_SHADER && D3D11_SHVER_GET_MAJOR(desc.Version) == 5;
-                D3D11_SHADER_INPUT_BIND_DESC bind{};
-                if (ok) {
-                    ok = SUCCEEDED(reflection->GetResourceBindingDescByName("CB2", &bind)) && bind.Type == D3D_SIT_CBUFFER && bind.BindPoint == 2;
-                    ID3D11ShaderReflectionConstantBuffer* cbuffer = ok ? reflection->GetConstantBufferByName("CB2") : nullptr;
-                    D3D11_SHADER_BUFFER_DESC bufferDesc{};
-                    ok = ok && cbuffer && SUCCEEDED(cbuffer->GetDesc(&bufferDesc)) && bufferDesc.Size == t.cbRows * 16;
-                }
-                for (UINT s = 0; ok && s < t.samplers; ++s) {
-                    char name[8];
-                    std::snprintf(name, sizeof name, "s%u", s);
-                    ok = SUCCEEDED(reflection->GetResourceBindingDescByName(name, &bind)) && bind.Type == D3D_SIT_SAMPLER && bind.BindPoint == s;
-                }
-                for (size_t s = 0; ok && s < t.textures.size(); ++s) {
-                    char name[8];
-                    std::snprintf(name, sizeof name, "t%zu", s);
-                    ok = SUCCEEDED(reflection->GetResourceBindingDescByName(name, &bind)) && bind.Type == D3D_SIT_TEXTURE &&
-                         bind.BindPoint == s && bind.Dimension == t.textures[s];
-                }
-                const UINT expected = 1 + t.samplers + static_cast<UINT>(t.textures.size());
-                check(ok && desc.BoundResources == expected,
-                      "each smooth gradients transcription is a pixel shader that reads the game's cb2 at b2 and exactly its own samplers and textures at their slots and dimensions, and nothing else");
             }
         }
     }

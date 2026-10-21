@@ -85,7 +85,6 @@
 #include "journal_watch.h"  // gameplay started, for the low-peak notice
 #include "loader_panel.h"
 #include "splash_dim.h"
-#include "smooth_gradients.h"
 #include "quad_probe.h"
 #include "remlok_fix.h"
 #include "scrim_fix.h"
@@ -4952,11 +4951,7 @@ void STDMETHODCALLTYPE hookedDraw(ID3D11DeviceContext* self, UINT count, UINT st
         }
         FlatRuntimeDrawScope flatDraw(self, 1, 'D', count, 0, static_cast<int32_t>(start));
         if (flatDraw.needsActualDraw()) flatDraw.beginActualDraw();
-        // The smooth gradients' dithered tone shader (smooth_gradients.h): bound for the game's own draw only, after the scope has read
-        // the game's shaders, and put back before the UI re-issue, which draws the HUD layer with the game's own shader.
-        const bool smoothTone = self == g_state->ownerCtx && smoothGradientsBegin(self, 'D', count, 1, 0);
         g_state->realDraw(self, count, start);
-        if (smoothTone) smoothGradientsEnd(self);
         if (flatDraw.needsActualDraw()) flatDraw.endActualDraw();
         flatDraw.uiReissue([&] { g_state->realDraw(self, count, start); });
         return;
@@ -5103,10 +5098,7 @@ void STDMETHODCALLTYPE hookedDrawInstanced(ID3D11DeviceContext* self, UINT perIn
         FlatRuntimeDrawScope flatDraw(self, instances, 'N', perInstance, 0,
                                       static_cast<int32_t>(startVertex), startInstance);
         if (flatDraw.needsActualDraw()) flatDraw.beginActualDraw();
-        // The smooth gradients' dithered tone shader (smooth_gradients.h), as in hookedDraw's flat branch.
-        const bool smoothTone = self == g_state->ownerCtx && smoothGradientsBegin(self, 'N', perInstance, instances, startInstance);
         g_state->realDrawInstanced(self, perInstance, instances, startVertex, startInstance);
-        if (smoothTone) smoothGradientsEnd(self);
         if (flatDraw.needsActualDraw()) flatDraw.endActualDraw();
         flatDraw.uiReissue([&] { g_state->realDrawInstanced(self, perInstance, instances, startVertex, startInstance); });
         return;
@@ -5909,7 +5901,6 @@ static void vScreenRefreshConfigBody(bool forced) {
     temporalPassConfigure(cfg);
     screenMotionConfigure(cfg);
     nightVisionConfigure(cfg);
-    smoothGradientsConfigure(cfg);
     depthProbeConfigure(cfg);
     backdropConfigure(cfg);
     fssPanelConfigure(cfg);
@@ -6967,7 +6958,6 @@ void installVScreenFixes(ID3D11Device* device, HookMode mode) {
     temporalPassConfigure(cfg);
     screenMotionConfigure(cfg);
     nightVisionConfigure(cfg);
-    smoothGradientsConfigure(cfg);
     depthProbeConfigure(cfg);
     backdropConfigure(cfg);
     fssPanelConfigure(cfg);
@@ -7321,7 +7311,6 @@ void shutdownVScreenFixes() {
     screenMotionShutdown();
     celestialMotionShutdown();
     nightVisionShutdown();
-    smoothGradientsShutdown();
     scrimShutdown();
     quadProbeShutdown();
     wakePulseShutdown();

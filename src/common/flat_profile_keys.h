@@ -41,8 +41,6 @@ inline bool flatProfileReadsKey(const char* key) {
         // The weapons fire and the shield ripple after the upscale (ui_layer.cpp's weapons and ripple halves, flat_ui_layer.cpp's adapter), on in flat as in VR:
         // on | plain | off. Unlisted, getString answers "off" here and neither is ever taken.
         std::strcmp(key, "fix.sharp_weapons") == 0 ||
-        // The smooth gradients' dithered tone pass (smooth_gradients.h), flat only. Unlisted, getBool answers false here and the dither never runs.
-        std::strcmp(key, "fix.smooth_gradients") == 0 ||
         // The optimized station (optimized_station.cpp), on in flat as in VR (built v14.34). Unlisted, getString answers "off" here and the station never starts.
         std::strcmp(key, "fix.optimized_stations") == 0 ||
         // The flat jitter cycle's length (flat_runtime.cpp, FlatLivePhase::phaseCount; temporal_math.h). Developer tier, no flat panel

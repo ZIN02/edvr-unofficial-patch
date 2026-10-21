@@ -16,8 +16,9 @@ struct FlatStationProbeConflict {
 };
 
 // The flat runtime's frame in progress (the number its `flat runtime conflict` line prints) and its draw sequence now: the q of the last draw its
-// scope numbered this frame. A draw skipped before the scope has no q of its own; it sits after this one. False off the owner thread, with the
-// runtime inactive, or while its work is paused.
+// scope numbered this frame. Read before a draw's scope is built and again after it, the second is the draw's own q when it is one more than the first
+// (the scope numbered it); otherwise the draw has no q of its own and sits after the first. False off the owner thread, with the runtime inactive, or
+// while its work is paused.
 bool flatRuntimeStationProbeSequence(uint64_t* frame, uint32_t* q);
 
 // The conflict the runtime reported for `frame` (the frame in which its image copy was judged), kept past the Present that clears the frame's

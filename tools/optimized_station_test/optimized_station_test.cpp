@@ -9,6 +9,7 @@
 #include "../../src/d3d11/station_lockfree_core.h"
 #include "../../src/d3d11/station_pass_core.h"
 #include "../../src/d3d11/station_seal_trace.h"
+#include "../../src/d3d11/station_draw_mask.h"   // d3d11.h types only: the rig links nothing of D3D
 #include "../../src/d3d11/station_sun_probe.h"
 #include "../../src/common/flat_profile_keys.h"
 #include "../../src/d3d11/menu_flat_rows.h"
@@ -23,6 +24,7 @@
 #include <vector>   // the build-334473 PE identity constants (store hook gate)
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -2970,8 +2972,8 @@ int main(int argc, char** argv) {
               "census chain: a world centre reads in box coordinates and is outside by 10 m along U");
         check(!se::sphereOverlapsBox(o, 9.9f, cell.boxHalf) && se::sphereOverlapsBox(o, 10.0f, cell.boxHalf), "census chain: the overlap follows the box's own axes");
     }
-    // ---- Built 2026-10-21: the reach rule. In box mode a record whose centre lies outside the box is kept (why reach) when its sphere overlaps the box and
-    // does not contain the camera. The box is the large carrier bay of the flight log (half-extents U 223, V 74, W 163.9), axis-aligned at the origin, so a box
+    // ---- Built 2026-10-21: the reach rule. In box mode a record whose centre lies outside the box is kept (why reach) when its sphere overlaps the box,
+    // whether or not the sphere contains the camera (the carrier's DoorA1 and DoorA2 do). The box is the large carrier bay of the flight log (half-extents U 223, V 74, W 163.9), axis-aligned at the origin, so a box
     // coordinate is a world coordinate; the door panels are the log's DoorA2 (centre -8.3,-88.6,-9.0, radius 72.5 m, outside the width face by 14.6 m) ----------
     {
         se::OwnCell box;
@@ -2992,11 +2994,11 @@ int main(int argc, char** argv) {
               "reach: a door whose centre is 14.6 m outside the width face and whose sphere (72.5 m) reaches in is kept, by reach");
         const float cameraNearDoor[3] = {-8.3f, -60.0f, -9.0f};   // inside the box and inside the door's sphere (28.6 m from its centre)
         v = se::keepNamedCell(door, 72.5f, cameraNearDoor, R, box, none, 0, 0x1000);
-        check(!v.keep && v.why == se::KeepWhy::kNone && v.containing,
-              "reach: the same record is culled when its sphere contains the camera (the station's enclosing structure stays culled)");
+        check(v.keep && v.why == se::KeepWhy::kReach && v.containing,
+              "reach: the same record is kept, by reach, when its sphere contains the camera (the carrier's DoorA1 and DoorA2 at the pad)");
         const float deck[3] = {0.0f, -400.0f, 0.0f};   // a hull or deck mesh: centre missing outside, a radius that overlaps the box and holds the camera
         v = se::keepNamedCell(deck, 450.0f, camera, R, box, none, 0, 0x2000);
-        check(!v.keep && v.containing, "reach: a big record that overlaps the box and contains the camera is culled");
+        check(v.keep && v.why == se::KeepWhy::kReach && v.containing, "reach: a big record that overlaps the box and contains the camera is kept, by reach");
         v = se::keepNamedCell(deck, 340.0f, camera, R, box, none, 0, 0x2000);   // reaches 14 m into the box, 412 m from the camera
         check(v.keep && v.why == se::KeepWhy::kReach && !v.containing,
               "reach: a big record that overlaps the box and does not contain the camera is kept (the rule is the sphere's, not its size)");
@@ -3022,7 +3024,7 @@ int main(int argc, char** argv) {
         check(v.keep && v.why == se::KeepWhy::kExplicit, "reach: an explicit part's nearest instance is kept, as before");
         v = se::keepNamedCell(door, 72.5f, camera, R, box, explicitSet, 1, 0x6000);
         check(v.keep && v.why == se::KeepWhy::kExplicit, "reach: an explicit part that also reaches into the box keeps its explicit label (the reach count is the new keeps only)");
-        check(!se::keepNamedCell(door, 72.5f, cameraNearDoor, R, box, explicitSet, 1, 0x7000).keep, "reach: another address is not the explicit part");
+        check(!se::keepNamedCell(missing, 72.5f, cameraNearDoor, R, box, explicitSet, 1, 0x7000).keep, "reach: another address is not the explicit part");
         check(!se::keepNamedCell(door, std::nanf(""), camera, R, box, none, 0, 0x1000).keep && !se::keepNamedCell(door, INFINITY, camera, R, box, none, 0, 0x1000).keep,
               "reach: a non-finite radius is never kept by reach");
         // A box turned and moved: the rule follows the box's own axes. U along world y, V along world -x, W along world z, centre (1000, 2000, 3000).
@@ -3100,6 +3102,62 @@ int main(int argc, char** argv) {
         check(se::foldCensusHits(h, 6, two, 2) == 2, "census fold: no more nodes than the output holds");
     }
 
+    // ---- Built 2026-10-21: the flat sun draw issued with every write masked (station_draw_mask.h; the states' descriptions: Mask itself needs a device) ------
+    {
+        namespace sm = edvr::stationmask;
+        const D3D11_BLEND_DESC b = sm::blendDesc();
+        bool allOff = true, noBlend = true;
+        for (UINT i = 0; i < sm::kTargets; ++i) {
+            allOff = allOff && b.RenderTarget[i].RenderTargetWriteMask == 0;
+            noBlend = noBlend && !b.RenderTarget[i].BlendEnable;
+        }
+        check(sm::kTargets == 8 && allOff && noBlend && b.IndependentBlendEnable && !b.AlphaToCoverageEnable,
+              "sun mask: the blend state writes no colour to any of the eight targets, each by its own entry, with no blending or alpha-to-coverage");
+        D3D11_DEPTH_STENCIL_DESC bound = {};
+        bound.DepthEnable = TRUE;
+        bound.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        bound.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+        bound.StencilEnable = TRUE;
+        bound.StencilReadMask = 0x0F;
+        bound.StencilWriteMask = 0xF0;
+        bound.FrontFace = {D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_INCR, D3D11_STENCIL_OP_ZERO, D3D11_COMPARISON_EQUAL};
+        bound.BackFace = {D3D11_STENCIL_OP_DECR, D3D11_STENCIL_OP_INVERT, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_NOT_EQUAL};
+        const D3D11_DEPTH_STENCIL_DESC masked = sm::maskedDepthStencilDesc(bound);
+        D3D11_DEPTH_STENCIL_DESC restored = masked;   // put back the two writes the mask turns off: nothing else may differ from the bound state
+        restored.DepthWriteMask = bound.DepthWriteMask;
+        restored.StencilWriteMask = bound.StencilWriteMask;
+        check(masked.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ZERO && masked.StencilWriteMask == 0 && sm::sameDepthStencilDesc(restored, bound) &&
+                  !sm::sameDepthStencilDesc(masked, bound),
+              "sun mask: the depth-stencil state is the bound one with the depth write and the stencil write mask off and nothing else changed");
+        check(masked.DepthEnable && masked.StencilEnable && masked.DepthFunc == bound.DepthFunc && masked.StencilReadMask == 0x0F,
+              "sun mask: the depth test and the stencil test still run (only the writes are off)");
+        check(sm::sameDepthStencilDesc(sm::maskedDepthStencilDesc(masked), masked), "sun mask: masking a masked state changes nothing (the cache key is stable)");
+        const D3D11_DEPTH_STENCIL_DESC dflt = sm::defaultDepthStencilDesc();
+        check(dflt.DepthEnable && dflt.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL && dflt.DepthFunc == D3D11_COMPARISON_LESS && !dflt.StencilEnable &&
+                  dflt.StencilReadMask == 0xFF && dflt.StencilWriteMask == 0xFF && dflt.FrontFace.StencilFunc == D3D11_COMPARISON_ALWAYS &&
+                  dflt.FrontFace.StencilPassOp == D3D11_STENCIL_OP_KEEP,
+              "sun mask: a context with no depth-stencil state bound (null) is D3D's default state: depth on, writes on, LESS, stencil off");
+        const D3D11_DEPTH_STENCIL_DESC maskedDefault = sm::maskedDepthStencilDesc(dflt);
+        check(maskedDefault.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ZERO && maskedDefault.StencilWriteMask == 0 && maskedDefault.DepthEnable,
+              "sun mask: the default state is masked the same way");
+        // The comparison ignores the structure's padding (a desc read back from a state does not define it).
+        static_assert(offsetof(D3D11_DEPTH_STENCIL_DESC, FrontFace) == offsetof(D3D11_DEPTH_STENCIL_DESC, StencilWriteMask) + 3, "two padding bytes before FrontFace");
+        D3D11_DEPTH_STENCIL_DESC a, c;
+        a = bound;
+        c = bound;
+        std::memset(reinterpret_cast<unsigned char*>(&a) + offsetof(D3D11_DEPTH_STENCIL_DESC, StencilWriteMask) + 1, 0xAA, 2);   // the two bytes before FrontFace
+        std::memset(reinterpret_cast<unsigned char*>(&c) + offsetof(D3D11_DEPTH_STENCIL_DESC, StencilWriteMask) + 1, 0x55, 2);
+        check(sm::sameDepthStencilDesc(a, c), "sun mask: two descs that differ only in padding compare the same");
+        D3D11_DEPTH_STENCIL_DESC d2 = bound;
+        d2.BackFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+        check(!sm::sameDepthStencilDesc(d2, bound), "sun mask: a difference in a back-face stencil operation compares different");
+        // Mask holds nothing until a draw asks.
+        sm::Mask idle;
+        check(!idle.active() && !idle.begin(nullptr, nullptr, nullptr), "sun mask: without a context nothing is bound and begin() declines");
+        idle.end(nullptr);
+        check(!idle.active(), "sun mask: end() without a begin() does nothing");
+    }
+
     // ---- Built 2026-10-21 (TEMPORARY): the sun skip A/B row and the sun skip probe (station_sun_probe.h) --------------------------------------------------------
     {
         // The A/B key: on the flat key list (unlisted, getString answers "on" and the F8 row could never switch the skip off), a row of the flat Debug tab
@@ -3175,6 +3233,23 @@ int main(int argc, char** argv) {
         const std::string tail = "; flat conflict (frame 24042): cause=image-copy-source hdr=00000000BBD04F00 ref-q=1463 cur-q=1467";
         check(text.size() > tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0,
               "sun probe line: the conflict closes the line as the runtime's own conflict line gives it");
+        // Built 2026-10-21: a draw the flat runtime's scope numbered carries its own q (the line says `q=`); the comparison is the same one, so the
+        // reference draw itself (q = ref-q) is in the range and the current draw (q = cur-q) is not.
+        const auto own = [&](uint32_t q, uint64_t tex) {
+            sp::Draw d = draw(true, q, tex);
+            d.ownQ = true;
+            return d;
+        };
+        check(sp::betweenQ(own(1463, 1), conflict) && sp::betweenQ(own(1466, 1), conflict) && !sp::betweenQ(own(1467, 1), conflict) && !sp::betweenQ(own(1462, 1), conflict),
+              "sun probe: a draw with its own q is between ref-q and cur-q when ref-q <= q < cur-q");
+        sp::Frame ownFrame;
+        sp::record(&ownFrame, 4, 24042, own(1463, 0xBBD04F00ull));
+        sp::record(&ownFrame, 4, 24042, draw(true, 1470, 0xBBD05000ull));
+        sp::formatLine(line, sizeof(line), ownFrame, conflict);
+        const std::string ownText(line);
+        check(ownText.find("2 draws skipped this frame: q=1463 rtv=00000000000015B7 tex=00000000BBD04F00 ") != std::string::npos && ownText.find("after-q=1463") == std::string::npos &&
+                  ownText.find("; after-q=1470 rtv=") != std::string::npos && ownText.find(" [hdr=yes between-q=yes]") != std::string::npos,
+              "sun probe line: a draw numbered by the scope prints q=, one that was not still prints after-q=, and the verdicts follow either");
         // No conflict, an unknown q, an unresolved target.
         sp::Frame odd;
         sp::record(&odd, 1, 0, draw(false, 0, 0));
@@ -3191,10 +3266,10 @@ int main(int argc, char** argv) {
         check(fullN == fullText.size() && fullN < 1100 && fullText.find("(+3 more not listed)") != std::string::npos && fullText.find("after-q=1470") != std::string::npos &&
                   fullText.find("after-q=1471") == std::string::npos,
               "sun probe line: six draws and the count of those not listed fit one log line");
-        char small[120];
-        const size_t smallN = sp::formatLine(small, sizeof(small), full, conflict);
-        check(smallN < sizeof(small) && std::strlen(small) == smallN, "sun probe line: a buffer too small ends the line cleanly (never past the buffer)");
-        check(sp::formatLine(small, 0, full, conflict) == 0, "sun probe line: a zero-size buffer writes nothing");
+        char tinyBuf[120];   // not `small`: windows.h (through d3d11.h) defines it as a macro
+        const size_t tinyN = sp::formatLine(tinyBuf, sizeof(tinyBuf), full, conflict);
+        check(tinyN < sizeof(tinyBuf) && std::strlen(tinyBuf) == tinyN, "sun probe line: a buffer too small ends the line cleanly (never past the buffer)");
+        check(sp::formatLine(tinyBuf, 0, full, conflict) == 0, "sun probe line: a zero-size buffer writes nothing");
         // The sampler: arm when due and skipping, log once the frame is over, wait 5 s.
         sp::Sampler sam;
         sp::Frame empty;

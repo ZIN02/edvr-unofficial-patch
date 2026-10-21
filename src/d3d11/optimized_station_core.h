@@ -875,7 +875,8 @@ inline size_t pickExplicitSegment(const ExplicitObs* obs, size_t n, const float 
     return written;
 }
 
-// Why a record is kept in named mode. kReach (built 2026-10-21): a box cell only; the centre lies outside the box but the sphere reaches into it.
+// Why a record is kept in named mode. kReach (built 2026-10-21): a box cell only; the centre lies outside the box but the sphere reaches into it (whether
+// or not it contains the camera).
 enum class KeepWhy : uint8_t { kNone = 0, kCell = 1, kExplicit = 2, kSphere = 3, kReach = 4 };
 
 struct NamedKeep {
@@ -892,11 +893,13 @@ inline bool inAddrSet(const uintptr_t* set, size_t n, uintptr_t addr) noexcept {
 }
 
 // The named rule for one record (Built v8.3b). No own cell: the sphere rule for the frame. With one: kept when the record's centre lies within
-// the cell radius of the cell centre (why cell), or when it is an explicit part's nearest instance (why explicit). Otherwise culled, including a
-// record whose sphere contains the camera. Built 2026-10-21: in box mode a record that those two would cull is also kept (why reach) when its
-// sphere overlaps the box and does not contain the camera: a bay door's panels have their centres to one side of the box and reach well into it
-// (flight log, fleet carrier, large bay: DoorA0 to DoorA3, radius 72.5 m, centres up to 42 m outside, culled by the centre rule). A sphere that
-// contains the camera is the station's own enclosing structure and is still culled. The capsule and sphere cells judge the centre alone.
+// the cell radius of the cell centre (why cell), or when it is an explicit part's nearest instance (why explicit). Otherwise culled. Built 2026-10-21:
+// in box mode a record that those two would cull is also kept (why reach) when its sphere overlaps the box: a bay door's panels have their centres to
+// one side of the box and reach well into it (flight log, fleet carrier, large bay: DoorA0 to DoorA3, radius 72.5 m, centres up to 42 m outside,
+// culled by the centre rule). A sphere that contains the camera is kept too: the first form of this rule culled it as the station's enclosing
+// structure, but DoorA1 and DoorA2 (radius 72.5 m) contain the camera at the pad and were still culled, and at a station where the seal engaged
+// (box 446 x 148 x 556 m) the census found none of 246 culled records overlapping the box, so the exception protected nothing. The capsule and
+// sphere cells judge the centre alone.
 inline NamedKeep keepNamedCell(const float centre[3], float radius, const float camera[3], float R, const OwnCell& cell,
                                const uintptr_t* explicitSet, size_t explicitN, uintptr_t addr) noexcept {
     NamedKeep v;
@@ -921,7 +924,7 @@ inline NamedKeep keepNamedCell(const float centre[3], float radius, const float 
         v.why = KeepWhy::kExplicit;
         return v;
     }
-    if (cell.box && !v.containing) {
+    if (cell.box) {
         float o[3];
         boxCoords(centre, cell, o);
         if (sphereOverlapsBox(o, radius, cell.boxHalf)) {

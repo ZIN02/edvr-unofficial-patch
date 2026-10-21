@@ -16,6 +16,11 @@ bool optimizedStationGathers() noexcept;
 bool optimizedStationSealed() noexcept;
 // The draw path asks: true skips the draw (the sun pair, while the sun skip is on).
 bool optimizedStationSkipsDraw(uint64_t vs, uint64_t ps) noexcept;
+// Built 2026-10-21: how the flat draw path carried out a skipped sun draw (the VR path never issues it and does not report). kNotIssued: the real draw call was
+// not made (the flat runtime's scope planned nothing around it). kMasked: the scope had planned work around the issue, so the draw was made with every
+// colour, depth and stencil write off. The flat profile's 30 s line splits `sun draws skipped` by it; a path that never ran reads 0.
+enum class SunDrawPath : uint8_t { kNotIssued = 0, kMasked = 1 };
+void optimizedStationNoteSunDraw(SunDrawPath path) noexcept;
 // Built 2026-10-21 (TEMPORARY, log-only; docs\optimized-station-2026-10-12.md, Status): the sun-skip probe. After a skip the draw path asks whether this
 // frame is the sampled one (one relaxed load) and, if so, hands over the skipped draw's bindings. Neither changes a draw.
 bool optimizedStationSunProbeWants() noexcept;

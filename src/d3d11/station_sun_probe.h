@@ -10,9 +10,11 @@
 // it was bound to (view, texture, format, size), the depth view, the viewport and where it fell in the flat runtime's draw numbering, and then
 // says whether that texture is the conflict's `hdr=` and whether the draw fell between the conflict's ref-q and cur-q.
 //
-// q. The flat runtime numbers a draw (`q`) when its draw scope observes it; a skipped sun draw returns before the scope, so it has no q of its
-// own. The probe records `after-q`: the highest q numbered when the skip happened. The skipped draw therefore sits after the draw q=after-q and
-// before the draw q=after-q+1, and "between ref-q and cur-q" means ref-q <= after-q < cur-q.
+// q. The flat runtime numbers a draw (`q`) when its draw scope observes it. Since the sun skip no longer returns before the scope (2026-10-21), the
+// skipped draw is observed like any draw and carries its own q: the line prints `q=N` and "between ref-q and cur-q" means ref-q <= q < cur-q (the
+// draw is the reference draw itself or falls between). When the scope did not number the draw (a paused or inactive frame, a draw the scope serves
+// without observing) the probe records `after-q`, the highest q numbered when the draw was met: the draw then sits after the draw q=after-q and before
+// q=after-q+1, and "between" means ref-q <= after-q < cur-q.
 #pragma once
 
 #include <cstddef>
@@ -28,7 +30,8 @@ constexpr uint32_t kMaxStaleLines = 6;     // and at most this many times in a s
 
 // One skipped draw's bindings. Identities are compared, never dereferenced.
 struct Draw {
-    bool qKnown = false;       // the flat runtime's sequence was readable on this thread (else after-q is not known)
+    bool qKnown = false;       // the flat runtime's sequence was readable on this thread (else q is not known)
+    bool ownQ = false;         // the scope numbered this draw: afterQ holds its own q (the line says `q=`); else afterQ is the last q numbered (`after-q=`)
     uint32_t afterQ = 0;
     uint64_t rtv = 0;          // render target view in slot 0
     uint64_t tex = 0;          // its texture (what the flat runtime calls the HDR target is a texture)
@@ -104,7 +107,7 @@ inline size_t formatLine(char* out, size_t cap, const Frame& f, const Conflict& 
         const Draw& d = f.d[i];
         char one[256];
         int n = 0;
-        if (d.qKnown) n = std::snprintf(one, sizeof(one), "%s after-q=%u", i ? ";" : "", d.afterQ);
+        if (d.qKnown) n = std::snprintf(one, sizeof(one), d.ownQ ? "%s q=%u" : "%s after-q=%u", i ? ";" : "", d.afterQ);
         else n = std::snprintf(one, sizeof(one), "%s after-q=?", i ? ";" : "");
         n += std::snprintf(one + n, sizeof(one) - static_cast<size_t>(n), " rtv=%016llX tex=%016llX", static_cast<unsigned long long>(d.rtv),
                            static_cast<unsigned long long>(d.tex));

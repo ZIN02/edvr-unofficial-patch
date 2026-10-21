@@ -224,6 +224,9 @@ uint64_t g_prodCalls = 0, g_prodVetoed = 0, g_prodKept = 0, g_prodStyle = 0, g_p
 sealed::NodeCache<kNodeCacheSlots> g_nodeCache;   // built v14.31: one entry per node and lifecycle generation (a node's name does not change while it lives)
 std::atomic<uint64_t> g_nodeNameReads{0}, g_nodeCacheFull{0}, g_nodeReuseCaught{0};
 std::atomic<uint64_t> g_winSunDrawsSkipped{0};   // built v14.34: sun-pair draws skipped in the window (the summary line)   // the window's name reads and uncached reads (the cost line)
+// Built 2026-10-21: the flat draw path's report of how it carried out those skips (optimizedStationNoteSunDraw); both stay 0 in the VR profile, which never issues the draw.
+std::atomic<uint64_t> g_winSunNotIssued{0}, g_winSunMasked{0};
+std::atomic<bool> g_flatProfile{false};   // set at install: the 30 s line splits the skips by path only where there is more than one
 std::atomic<uint32_t> g_classGen{0};   // moves at every lifecycle point (bumpRigEpoch): every node's class and name are read afresh
 
 bool readMem(void* dst, uintptr_t src, size_t n) noexcept {
@@ -602,8 +605,8 @@ bool cachedName(uintptr_t record, char* out, size_t cap) noexcept {
 // and the tick names them ("culled near the bay" lines). No key, no menu row. A callback appends only when the snapshot it pinned names the pass
 // (PadSnapshot::censusStamp) and its own Writer's stamp equals it. A Writer is counted busy, so the drain that closes the pass has waited for every
 // appender before the tick reads the array; the tick resets the array before it publishes the snapshot that names the pass.
-// Since the reach rule (keepNamedCell, same day) the box keeps a record whose sphere reaches into it unless the sphere contains the camera, so the census
-// lists only records that contain the camera; each line says so.
+// Since the reach rule (keepNamedCell, same day) the box keeps every record whose sphere reaches into it, containing the camera or not, so the census
+// should list none; a line that appears names a record the rule did not keep (a non-finite radius, or a cell that is not a box).
 constexpr size_t kCensusCap = 1024;       // hits kept in the pass (past it they are counted as dropped)
 constexpr uint32_t kCensusPasses = 60;    // informative sealed passes after the engage before the census pass is named (about 1 s)
 constexpr uint32_t kCensusDumpsMax = 6;   // dumps in a session
@@ -1877,13 +1880,25 @@ void censusTick(uint32_t frameNow) noexcept {
 void summaryLine(uint64_t now) noexcept {
     // Built v14.31: the lines are written for a window in which the commander was docked or sealed (a flight in space writes none); the window resets either way.
     const bool quiet = g_winDockedFrames == 0 && g_winSealedFrames == 0;
+    // Built 2026-10-21: read and reset here, outside the note, so a window that writes no line starts the next one at 0. In the flat profile the skips are split by
+    // how the draw path carried them out (a path that never ran reads 0; skipped above 0 with both at 0 means the report was never reached).
+    char sunText[96];
+    {
+        const unsigned long long skipped = g_winSunDrawsSkipped.exchange(0, std::memory_order_relaxed);
+        const unsigned long long notIssued = g_winSunNotIssued.exchange(0, std::memory_order_relaxed);
+        const unsigned long long masked = g_winSunMasked.exchange(0, std::memory_order_relaxed);
+        if (g_flatProfile.load(std::memory_order_relaxed))
+            std::snprintf(sunText, sizeof(sunText), "%llu (not issued %llu, masked %llu)", skipped, notIssued, masked);
+        else
+            std::snprintf(sunText, sizeof(sunText), "%llu", skipped);
+    }
 #define SUMMARY_NOTE(...) \
     do {                  \
         if (!quiet) Log::get().note(__VA_ARGS__); \
     } while (0)
     SUMMARY_NOTE("optimized station: last %llu s: sealed for %llu of %llu frames; rigs vetoed early %llu, records vetoed early %llu, "
                     "records culled after the store %llu, records kept by reach %llu, records kept unread %llu, faults %llu (unreadable bucket %llu, cull read %llu, cull restored "
-                    "%llu, cull torn %llu, tick view %llu; callbacks before the first camera %llu, not faults); sun draws skipped %llu.",
+                    "%llu, cull torn %llu, tick view %llu; callbacks before the first camera %llu, not faults); sun draws skipped %s.",
                     static_cast<unsigned long long>((now - g_summaryStartMs) / 1000), static_cast<unsigned long long>(g_winSealedFrames),
                     static_cast<unsigned long long>(g_winFrames), static_cast<unsigned long long>(g_winRigVetoes),
                     static_cast<unsigned long long>(g_winProducerVetoes), static_cast<unsigned long long>(g_winCulled),
@@ -1892,7 +1907,7 @@ void summaryLine(uint64_t now) noexcept {
                     static_cast<unsigned long long>(g_winFaultBy[kFaultCullRestored].load()),
                     static_cast<unsigned long long>(g_winFaultBy[kFaultCullTorn].load()),
                     static_cast<unsigned long long>(g_winFaultBy[kFaultTickView].load()), static_cast<unsigned long long>(g_winNoCamera.load()),
-                    static_cast<unsigned long long>(g_winSunDrawsSkipped.exchange(0, std::memory_order_relaxed)));
+                    sunText);
     // Built v14.27: the passes the tick read, and what it did with them; the rig veto's lookups. A dead veto or a flapping pad shows here.
     {
         const sealed::PassGate& g = g_passGate;
@@ -2678,6 +2693,7 @@ void optimizedStationInstall(bool flatProfile) {
     const bool on = text != "off";
     g_setting.store(on, std::memory_order_release);
     g_summaryStartMs = GetTickCount64();
+    g_flatProfile.store(flatProfile, std::memory_order_relaxed);
     pollSunSkipAB(true);   // built 2026-10-21 (TEMPORARY A/B): the value in force goes in the log
     if (on) applySetting(true, 0);
     Log::get().note("optimized station: fix.optimized_stations = %s (%s).", on ? "on" : "off",
@@ -2694,6 +2710,10 @@ bool optimizedStationSkipsDraw(uint64_t vs, uint64_t ps) noexcept {
     if (!g_sunSkipAB.load(std::memory_order_acquire)) return false;   // built 2026-10-21 (TEMPORARY A/B): diag.station_sun_skip = off lets the draw through
     g_winSunDrawsSkipped.fetch_add(1, std::memory_order_relaxed);   // built v14.34: the 30 s line says how many (a flat flight shows 0 if the flat hashes differ)
     return true;
+}
+
+void optimizedStationNoteSunDraw(SunDrawPath path) noexcept {
+    (path == SunDrawPath::kMasked ? g_winSunMasked : g_winSunNotIssued).fetch_add(1, std::memory_order_relaxed);
 }
 
 // Built 2026-10-21 (TEMPORARY, log-only): the draw path asks, after a skip, whether this frame is the sampled one, and if so hands over the draw's bindings.

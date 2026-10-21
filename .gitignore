@@ -34,3 +34,6 @@ third_party/openxr/loader/
 # Review write-ups (design and code reviews) stay local: the doc they review
 # carries what the repo needs, the review's own ledger does not ship.
 reviews/
+
+# Agent working folder. Files already tracked here stay tracked; new files need `git add -f`.
+.agents/

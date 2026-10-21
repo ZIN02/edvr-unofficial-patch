@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open.
+- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), every jittered frame refused; source-free camera witness in progress (last entry).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
@@ -17943,3 +17943,57 @@ both shapes.
 
 Not covered by this flight: planetary flight (the second scene in the
 report), and the transition back out of supercruise.
+
+## 2026-10-21: suit/weapon loadout screen, no deferred donor
+
+Sean, same rig (`v0.20.1-17-g6b8f62c1`, `edvr_gfx_20261021_143902`):
+the commander and weapons on the loadout screen are not upscaled, and the
+Motion source view flickers there, and only there. Home pressed at
+14:48:15 (census `frame=36976`, two frames).
+
+Runtime, from 14:42:01 on the loadout screen: per 5 s, 150 treated and
+150 refused. Refusals are 75 `deferred-inverse-unproven` and 75
+`engine-source-not-ready`; the treated frames are `treated-zero-jitter`.
+So XeSS never accumulates jittered history. The refusal view draws only on
+treated frames, which explains the flicker: no separate fault in the view.
+
+Cause. The deferred HDR camera logs `relation=unavailable` with
+`donor=0000000000000000 donor-role=unavailable`.
+`flatRuntimeDeferredDonor` finds no `kFlatContractPool` record on the
+deferred depth at all (`sources=0/32`, `eligible-draws(pool,...)=0`).
+- **Draws on that depth:** the 74 G-buffer draws are pairs flat does not
+  key. 114AF608, D99AFDC2, 8B589D25 and 7B0DC42D are `vrOnly` in
+  `engine_velocity_families.h`; F516BF02 (depth prepass), CFCA8FFC,
+  6D2158CF, FC1193AF and E8FDC0D9 are not in the table.
+- **Source-free:** the selector marks the scene source-free and treats
+  it, but the deferred verifier still requires a pool donor.
+- **SRV0:** the deferred SRV0 is the same resource the G-buffer draws
+  write, so the lineage is right; no writer qualifies as a source.
+- **Comparison:** the supercruise census (13:40:36) had about 9 keyed
+  pool draws on its deferred depth.
+
+`engine-source-not-ready` is downstream. A refused frame never
+snapshots its scene constants, so the next source-free frame has no
+previous constants (`no previous scene constants 450` of 1349 asked,
+one frame in four).
+
+Prediction, from the CB2 alone (no donor bytes exist): the loadout CB2's
+forward rows satisfy the translation identity with the logged camera
+origin to 5e-8. The forward x inverse product misses by 5.56e-4 at [1][2],
+which equals the applied phase (0, -1/6 px) at 600 rows: the inverse-only
+omission the shipped repair covers. Once a pool scene returns (14:51:48),
+the same H and CB2 log `inverse-mismatch accepted=1 repair=inverse`.
+
+Rejected options:
+- Keying the `vrOnly` pairs for flat: it changes the on-foot weapon path,
+  which has only been flown with them unkeyed, and those draws may
+  classify as first-person cohort and still not become sources.
+- Withholding jitter when there is no donor: compensation.
+
+Chosen: a source-free camera witness. When the depth has no pool record,
+a camera-current writer of SRV0 on the same depth, dsv and extent, all
+sharing one camera, may stand as the donor. The existing strict matcher,
+the inverse and whole-camera repairs, and the upload certification
+decide as before. The build also logs the witness's writer count,
+distinct camera count and relation, so a refusal is explained from the
+log.

@@ -522,6 +522,7 @@ struct State {
     uint32_t hdrCaptureWriteEvictions = 0;
     uint64_t deferredCameraChecks = 0, deferredCameraAccepted = 0, deferredCameraRefused = 0;
     uint64_t deferredCameraLastLog = 0, deferredInverseLastLog = 0, deferredInverseExecutions = 0;
+    uint64_t deferredWitnessCalls = 0, deferredWitnessLastLog = 0;
     bool deferredInverseLastBound = false;
     // The prepared clone this draw is about to execute rewrites the whole camera, not just the rays.
     bool deferredRepairWhole = false, deferredInverseLastWhole = false;
@@ -1929,7 +1930,7 @@ uint32_t captureCameraConflict(State& s, const FlatRuntimeDraw& draw) {
     return attempt;
 }
 void recordDeferredFailure(State& s,const FlatContractObservation& k,const char* reason,
-        bool actual,bool input,const FlatContractRecord* donor,bool firstWitness,
+        bool actual,bool input,const FlatDeferredDonor& donor,bool firstWitness,
         const FlatDeferredFailureWitness* sameCall=nullptr) {
     // Freeze the call's phase and donor before the pre-existing ownership
     // queries/logging, which must not turn this into a later State sample.
@@ -1938,10 +1939,10 @@ void recordDeferredFailure(State& s,const FlatContractObservation& k,const char*
         witness.phaseX=s.phase.currentX;witness.phaseY=s.phase.currentY;witness.applied=s.phase.applied;}
     witness.hdr=k.color;witness.depth=k.depth;witness.vs=k.vs;witness.ps=k.ps;
     unsigned char donorCamera[kFlatCameraBytes]{};
-    if(donor){witness.donorColor=donor->key.color;witness.donorB1=donor->key.b1;
-        witness.donorWriteFrame=donor->lastWriteEpoch;witness.donorWriteQ=donor->lastWriteSeq;
-        witness.donorHash=donor->key.cameraHash;witness.donorFirst=donor->first;witness.donorLast=donor->last;
-        if(donor->key.camera){std::memcpy(donorCamera,donor->camera,sizeof(donorCamera));witness.donorCamera=donorCamera;}}
+    if(donor){witness.donorColor=donor.color;witness.donorB1=donor.b1;
+        witness.donorWriteFrame=donor.lastWriteEpoch;witness.donorWriteQ=donor.lastWriteSeq;
+        witness.donorHash=donor.cameraHash;witness.donorFirst=donor.first;witness.donorLast=donor.last;
+        if(donor.camera){std::memcpy(donorCamera,donor.camera,sizeof(donorCamera));witness.donorCamera=donorCamera;}}
     witness.calls=++s.deferredFailureCalls;
     const uint64_t now=GetTickCount64();
     if(flatDeferredFailureWitnessDue(s.deferredFailureCalls,now,s.deferredFailureLastLog)) {
@@ -1956,8 +1957,8 @@ void recordDeferredFailure(State& s,const FlatContractObservation& k,const char*
             m.tracked && m.shadowPresent && !m.mapped?1u:0u,
             m.writeFrame==s.prefix.frame && m.writeSequence && m.writeSequence<=s.prefix.sequence+1?1u:0u,
             buffer.Get(),first,count,(unsigned long long)m.writeFrame,m.writeSequence,
-            donor?donor->key.color:nullptr,donor?donor->key.b1:nullptr,donor?"qualified-pool":"unavailable",
-            (unsigned long long)(donor?donor->key.cameraHash:0),firstWitness?1u:0u,s.phase.currentX,s.phase.currentY,
+            donor.color,donor.b1,flatDeferredDonorOwnershipName(donor.role),
+            (unsigned long long)donor.cameraHash,firstWitness?1u:0u,s.phase.currentX,s.phase.currentY,
             (unsigned long long)s.deferredFailureCalls);
         // Same existing first-call/5s detail budget. Verifier bytes precede
         // failPhase and any private binding; no additional pipeline reads.
@@ -2020,7 +2021,7 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     D3D11_SHADER_RESOURCE_VIEW_DESC view{};if(srv)srv->GetDesc(&view);
     D3D11_TEXTURE2D_DESC desc{};if(sourceTexture)sourceTexture->GetDesc(&desc);
     k.srvView[0]=srv.Get();k.srvResource[0]=source.Get();
-    const auto* donor=flatRuntimeDeferredDonor(s.prefix,k,s.prefix.sequence+1);
+    const auto donor=flatRuntimeDeferredDonor(s.prefix,k,s.prefix.sequence+1);
     Ptr<ID3D11Buffer> buffer;UINT first=0,count=0;
     if(s.projectionContext)s.projectionContext->VSGetConstantBuffers1(2,1,&buffer,&first,&count);
     const auto metadata=s.projection?s.projection->constantsMetadata(buffer.Get()):FlatProjectionShadowMetadata{};
@@ -2044,7 +2045,7 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         view.Texture2D.MostDetailedMip==0 && view.Texture2D.MipLevels==1 &&
         desc.Width==k.width && desc.Height==k.height && desc.Format==DXGI_FORMAT_R10G10B10A2_TYPELESS &&
         desc.ArraySize==1 && desc.SampleDesc.Count==1;
-    const auto match=donor && copied?flatMatchDeferredCamera(donor->camera,raw):FlatDeferredCameraMatch::Unavailable;
+    const auto match=donor && copied?flatMatchDeferredCamera(donor.camera,raw):FlatDeferredCameraMatch::Unavailable;
     const bool qualified=actual && input && donor && copied && !foreignWork.load(std::memory_order_acquire);
     const float requestedPhaseX=s.phase.currentX,requestedPhaseY=s.phase.currentY;
     const uint64_t requestedApplied=s.phase.applied,requestedFrame=s.prefix.frame;
@@ -2067,8 +2068,8 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         flatProjectionJitter(s.phase.currentX,s.phase.currentY,k.width,k.height,jitter);
     // Two certified omissions, mutually exclusive by their strict relation:
     // the rays alone lack the phase (Inverse), or the whole camera does (Forward).
-    const bool missingPhase=repairable && flatRepairDeferredMissingPhase(donor->camera,raw,jitter,certified);
-    const bool wholeOmission=repairable && !missingPhase && flatRepairDeferredWholeOmission(donor->camera,raw,jitter,certified);
+    const bool missingPhase=repairable && flatRepairDeferredMissingPhase(donor.camera,raw,jitter,certified);
+    const bool wholeOmission=repairable && !missingPhase && flatRepairDeferredWholeOmission(donor.camera,raw,jitter,certified);
     const bool repairing=missingPhase || wholeOmission;
     const char* repairName=wholeOmission?"whole":missingPhase?"inverse":"none";
     const FlatProjectionBindingPlan* deferredPlan=nullptr;
@@ -2106,7 +2107,7 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
             prepared=deferredPlan && deferredPlan->copyUploadedConstants(FlatProjectionStage::Vertex,kFlatDeferredCameraSlot,
                 kFlatDeferredCameraFirstRow*16,kFlatDeferredCameraBytes,uploaded) &&
                 std::memcmp(uploaded,certified,sizeof(uploaded))==0 &&
-                flatMatchDeferredCamera(donor->camera,uploaded,wholeOmission)==FlatDeferredCameraMatch::Match;
+                flatMatchDeferredCamera(donor.camera,uploaded,wholeOmission)==FlatDeferredCameraMatch::Match;
             if(!prepared)deferredPlan=nullptr;
         }
         if(repairing && !prepared) {
@@ -2137,15 +2138,26 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         projection.copied=sizeof(raw);projection.writeEpoch=metadata.writeFrame;projection.writeSeq=metadata.writeSequence;
         projection.status=FlatProjectionStatus::Available;
         uint32_t hash=2166136261u;for(unsigned char byte:raw){hash^=byte;hash*=16777619u;}projection.hash=hash;
-        std::memcpy(draw.camera,donor->camera,kFlatCameraBytes);k.cameraHash=donor->key.cameraHash;
+        std::memcpy(draw.camera,donor.camera,kFlatCameraBytes);k.cameraHash=donor.cameraHash;
         ++s.deferredCameraAccepted;
     } else ++s.deferredCameraRefused;
     const uint64_t now=GetTickCount64();
+    // The pool rule found no record on this depth: the witness of the G-buffer writers was the only donor to be had, and this says what it
+    // saw. First occurrence, then at most once per 5 s, the ownership report's budget.
+    if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,s.deferredWitnessLastLog)) {
+        Log::get().note("flat deferred witness: frame=%llu q=%u H=%p depth=%p SRV0=%p entry=%u writers=%u entries-on-depth=%u distinct-cameras=%u conflict=%s overflow=%u camera=%016llX b1=%p veto=%p veto-b1=%p veto-camera=%016llX donor-role=%s why=%s relation=%s accepted=%u calls=%llu; no source record on this depth, the G-buffer writers' camera stands in only where every writer on the depth agrees",
+            (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.depth,k.srvResource[0],donor.entry?1u:0u,donor.writers,
+            donor.witnessEntries,donor.witnessCameras,flatWitnessConflictName(donor.conflict),donor.overflow?1u:0u,
+            (unsigned long long)donor.entryCameraHash,donor.entryB1,donor.vetoColor,donor.vetoB1,(unsigned long long)donor.vetoHash,
+            flatDeferredDonorRoleName(donor.role),flatDeferredDonorWhyName(donor.why),
+            flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredWitnessCalls);
+        s.deferredWitnessLastLog=now;
+    }
     if(s.deferredCameraChecks<=8 ||
        (nonzero && !s.deferredCameraNonzeroLogged) || now-s.deferredCameraLastLog>=5000) {
-        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
+        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u donor-role=%s source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.b1,buffer.Get(),first,count,original?1u:0u,current?1u:0u,
-            (unsigned long long)metadata.writeFrame,metadata.writeSequence,donor?donor->key.b1:nullptr,donor?donor->last:0,source.Get(),
+            (unsigned long long)metadata.writeFrame,metadata.writeSequence,donor.b1,donor.last,flatDeferredDonorRoleName(donor.role),source.Get(),
             actual?1u:0u,input?1u:0u,flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,repairName,missingPhase?1u:0u,prepared?1u:0u,warmed?1u:0u,s.phase.currentX,s.phase.currentY,
             (unsigned long long)s.deferredCameraChecks,(unsigned long long)s.deferredCameraAccepted,(unsigned long long)s.deferredCameraRefused,flatWorkName(s.work));
         s.deferredCameraLastLog=now;if(nonzero)s.deferredCameraNonzeroLogged=true;

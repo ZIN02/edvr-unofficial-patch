@@ -173,9 +173,46 @@ struct FlatRuntimeUncertainWitness {
     uint64_t vs = 0, ps = 0;
     uint32_t detail = 0;
 };
+// The camera the writers of a colour target bound on a depth, kept for a scene with no motion source on that depth. A scene whose every
+// G-buffer writer is a pair the motion producer does not substitute (a character preview on the loadout screen) has no record in
+// FlatRuntimePrefix::sources, yet its writers still bound the scene constants. One entry per (depth, colour) written by a Screen-kind
+// draw that is not a supported pair, noted only while no source record exists on that depth. flatRuntimeDeferredDonor reads it where
+// the pool rule has no record at all on the depth, and nowhere else.
+enum class FlatWitnessConflict : uint8_t { None, Layout, Viewport, CameraProvenance, Camera, Written, Count };
+inline const char* flatWitnessConflictName(FlatWitnessConflict c) {
+    switch (c) {
+    case FlatWitnessConflict::Layout: return "layout";
+    case FlatWitnessConflict::Viewport: return "viewport";
+    case FlatWitnessConflict::CameraProvenance: return "camera-not-current";
+    case FlatWitnessConflict::Camera: return "second-camera";
+    case FlatWitnessConflict::Written: return "explicit-write";
+    default: return "none";
+    }
+}
+struct FlatRuntimeCameraWitness {
+    const void* depth = nullptr, *color = nullptr, *rtv = nullptr, *dsv = nullptr, *b1 = nullptr;
+    uint64_t cameraHash = 0, writeEpoch = 0, lastWriteEpoch = 0;
+    uint32_t writeSeq = 0, lastWriteSeq = 0, first = 0, last = 0, writers = 0;
+    uint32_t width = 0, height = 0, depthWidth = 0, depthHeight = 0, format = 0, depthFormat = 0;
+    bool fullViewport = false;    // the first writer's viewport; a later writer's partial one is a conflict
+    bool hasCamera = false;       // the first writer bound readable camera rows
+    bool cameraCurrent = false;   // flatRuntimeCameraCurrent of the first writer; a later writer's failing it is a conflict
+    FlatWitnessConflict conflict = FlatWitnessConflict::None;
+    unsigned char camera[kFlatCameraBytes]{};
+};
+static_assert(sizeof(FlatRuntimeCameraWitness) <= 256, "keep the camera witness table small: the prefix is rebuilt every frame");
+constexpr uint32_t kFlatRuntimeWitnesses = 16;
+inline bool flatRuntimeWitnessSameCamera(const FlatRuntimeCameraWitness& a, const FlatRuntimeCameraWitness& b) {
+    return a.hasCamera && b.hasCamera && a.b1 == b.b1 && a.cameraHash == b.cameraHash &&
+        std::memcmp(a.camera, b.camera, kFlatCameraBytes) == 0;
+}
 struct FlatRuntimePrefix {
     FlatRuntimeTarget targets[128]{};
     FlatContractRecord sources[32]{};
+    // The source-free camera witness (FlatRuntimeCameraWitness). A table that overflows fails closed: no witness that frame.
+    FlatRuntimeCameraWitness witnesses[kFlatRuntimeWitnesses]{};
+    uint32_t witnessesUsed = 0;
+    bool witnessOverflow = false;
     uint32_t targetsUsed = 0, sourcesUsed = 0, sequence = 0, copies = 0;
     uint32_t imageCopiesAccepted = 0, imageCopiesRefused = 0;
     uint32_t menuCopiesAccepted = 0, menuCopiesRefused = 0;
@@ -253,35 +290,176 @@ inline bool flatRuntimeCameraCurrent(const FlatRuntimeDraw& d, uint32_t q, uint6
     return q && k.b1 && k.camera && k.writeEpoch == frame && k.writeSeq && k.writeSeq <= q &&
         (d.cameraHashTrusted || k.cameraHash == flatCameraHash(d.camera));
 }
+// One Screen-kind writer that is not a supported pair, noted while no source record exists on its depth (a source record there means the
+// pool rule alone decides, now and for the rest of the frame: records are never removed). The first writer of a (depth, colour) makes the
+// entry; every later one either agrees with it or raises the entry's conflict, the first reason kept. The draw's camera rows are already in
+// d.camera (the runtime's camera table answers every draw), so nothing is copied here but the first writer's 96 bytes.
+inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& d, uint32_t q) {
+    const auto& k = d.key;
+    for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == k.depth) return;
+    FlatRuntimeCameraWitness* e = nullptr;
+    for (uint32_t i = 0; i < p.witnessesUsed; ++i)
+        if (p.witnesses[i].depth == k.depth && p.witnesses[i].color == k.color) { e = &p.witnesses[i]; break; }
+    if (e && e->conflict != FlatWitnessConflict::None) { ++e->writers; e->last = q; return; }
+    const bool full = flat_mono_detail::fullViewport(k, k.width, k.height);
+    const bool current = flatRuntimeCameraCurrent(d, q, p.frame);
+    if (!e) {
+        if (p.witnessesUsed == kFlatRuntimeWitnesses) { p.witnessOverflow = true; return; }
+        e = &p.witnesses[p.witnessesUsed++];
+        e->depth = k.depth; e->color = k.color; e->rtv = k.rtv; e->dsv = k.dsv; e->b1 = k.b1;
+        e->cameraHash = k.cameraHash; e->writeEpoch = e->lastWriteEpoch = k.writeEpoch;
+        e->writeSeq = e->lastWriteSeq = k.writeSeq; e->first = e->last = q; e->writers = 1;
+        e->width = k.width; e->height = k.height; e->depthWidth = k.depthWidth; e->depthHeight = k.depthHeight;
+        e->format = k.format; e->depthFormat = k.depthFormat;
+        e->fullViewport = full; e->hasCamera = k.camera != nullptr; e->cameraCurrent = current;
+        if (k.camera) std::memcpy(e->camera, d.camera, kFlatCameraBytes);
+        return;
+    }
+    ++e->writers; e->last = q;
+    const bool sameCamera = e->hasCamera && k.camera && e->b1 == k.b1 && e->cameraHash == k.cameraHash &&
+        std::memcmp(e->camera, d.camera, kFlatCameraBytes) == 0;
+    if (k.dsv != e->dsv || k.width != e->width || k.height != e->height || k.depthWidth != e->depthWidth ||
+        k.depthHeight != e->depthHeight || k.format != e->format || k.depthFormat != e->depthFormat)
+        e->conflict = FlatWitnessConflict::Layout;
+    else if (!full) e->conflict = FlatWitnessConflict::Viewport;
+    else if (!current) e->conflict = FlatWitnessConflict::CameraProvenance;
+    else if (!sameCamera) e->conflict = FlatWitnessConflict::Camera;
+    else { e->lastWriteEpoch = k.writeEpoch; e->lastWriteSeq = k.writeSeq; }
+}
+enum class FlatDeferredDonorRole : uint8_t { None, Pool, Witness };
+inline const char* flatDeferredDonorRoleName(FlatDeferredDonorRole r) {
+    return r == FlatDeferredDonorRole::Pool ? "pool" : r == FlatDeferredDonorRole::Witness ? "witness" : "none";
+}
+// The failure ownership line's older wording for the same three answers.
+inline const char* flatDeferredDonorOwnershipName(FlatDeferredDonorRole r) {
+    return r == FlatDeferredDonorRole::Pool ? "qualified-pool" : r == FlatDeferredDonorRole::Witness ? "witness" : "unavailable";
+}
+// Why no donor, for the witness line. Uncertain: the prefix is. Shape: the draw is not the deferred lighting pass the resolver can judge
+// (its pair, targets, views or viewport). PoolRule: a source record exists on the depth, so the pool rule alone decided and said no.
+enum class FlatDeferredDonorWhy : uint8_t {
+    None, Uncertain, Shape, PoolRule, NoEntry, Overflow, Conflict, SameColor, Layout, Viewport, Camera, Late, OtherCamera, Count
+};
+inline const char* flatDeferredDonorWhyName(FlatDeferredDonorWhy w) {
+    switch (w) {
+    case FlatDeferredDonorWhy::Uncertain: return "prefix-uncertain";
+    case FlatDeferredDonorWhy::Shape: return "not-the-deferred-pass-shape";
+    case FlatDeferredDonorWhy::PoolRule: return "pool-rule-refused";
+    case FlatDeferredDonorWhy::NoEntry: return "no-witness-entry";
+    case FlatDeferredDonorWhy::Overflow: return "witness-table-overflow";
+    case FlatDeferredDonorWhy::Conflict: return "witness-conflict";
+    case FlatDeferredDonorWhy::SameColor: return "witness-is-own-target";
+    case FlatDeferredDonorWhy::Layout: return "witness-layout";
+    case FlatDeferredDonorWhy::Viewport: return "witness-viewport";
+    case FlatDeferredDonorWhy::Camera: return "witness-camera-not-current";
+    case FlatDeferredDonorWhy::Late: return "witness-not-before-draw";
+    case FlatDeferredDonorWhy::OtherCamera: return "second-camera-on-depth";
+    default: return "accepted";
+    }
+}
+// What the deferred lighting pass is verified against: one camera, from one of two proofs, or none. The pool fields are a source record's;
+// the witness fields an entry's. camera is the 96 rows (null with no donor) and lives in the prefix. The diagnostic block is filled
+// whether or not a donor comes back.
+struct FlatDeferredDonor {
+    FlatDeferredDonorRole role = FlatDeferredDonorRole::None;
+    FlatDeferredDonorWhy why = FlatDeferredDonorWhy::Uncertain;
+    const void* color = nullptr, *b1 = nullptr;
+    const unsigned char* camera = nullptr;
+    uint64_t cameraHash = 0, writeEpoch = 0, lastWriteEpoch = 0;
+    uint32_t writeSeq = 0, lastWriteSeq = 0, first = 0, last = 0;
+    uint32_t poolRecords = 0;      // source records of any kind on the depth
+    uint32_t witnessEntries = 0;   // witness entries on the depth
+    uint32_t witnessCameras = 0;   // distinct cameras among them
+    uint32_t writers = 0;          // writers into the (depth, SRV0) entry
+    bool entry = false, overflow = false;
+    FlatWitnessConflict conflict = FlatWitnessConflict::None;
+    uint64_t entryCameraHash = 0;
+    const void* entryB1 = nullptr;
+    // The first other entry on the depth that carried another camera (why == OtherCamera): its colour, b1 and camera hash.
+    const void* vetoColor = nullptr, *vetoB1 = nullptr;
+    uint64_t vetoHash = 0;
+    explicit operator bool() const { return role != FlatDeferredDonorRole::None; }
+};
 // A laser-family H draw is normally an alternate-camera weapon draw. It may
 // establish the scene camera only when the already-qualified pool source on
 // this exact depth proves that its current b1 rows are the scene's own camera
 // from before H's first write, and the pending camera-independent image source
 // names the same scene depth. The image copy's bound b1 is never evidence.
-inline const FlatContractRecord* flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
+
+// The one donor resolver: the verifier, its binding-failure path and the model's qualification all ask it, so they cannot disagree.
+// (a) The pool rule is the single qualified source record on the depth, writing the draw's SRV0. (b) Only where no source record of any
+// kind exists on the depth does the witness stand in. (c) It must be an unconflicted entry for (depth, SRV0) of another target, of the
+// draw's dsv, depth format and extent, with a full viewport and a current camera, written before q; (d) and no other entry on the
+// depth may carry a different camera, so a second camera on the depth fails closed.
+inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
         const FlatContractObservation& k,uint32_t q) {
     using namespace flat_mono_detail;
-    if(p.uncertain || k.format!=kFlatDeferredHdrFormat || k.vs!=kFlatDeferredHdrVs || k.ps!=kFlatDeferredHdrPs ||
+    FlatDeferredDonor out;
+    if(k.depth)for(uint32_t i=0;i<p.sourcesUsed;++i)if(p.sources[i].key.depth==k.depth)++out.poolRecords;
+    out.overflow=p.witnessOverflow;
+    if(p.uncertain)return out;
+    out.why=FlatDeferredDonorWhy::Shape;
+    if(k.format!=kFlatDeferredHdrFormat || k.vs!=kFlatDeferredHdrVs || k.ps!=kFlatDeferredHdrPs ||
        !k.color || !k.rtv || !k.depth || !k.dsv || k.depthWidth!=k.width || k.depthHeight!=k.height ||
-       !k.srvView[0] || !k.srvResource[0] || !fullViewport(k,k.width,k.height))return nullptr;
-    const FlatContractRecord* donor=nullptr;
-    for(uint32_t i=0;i<p.sourcesUsed;++i) {
-        const auto& r=p.sources[i];if(r.key.depth!=k.depth)continue;
-        if(donor || r.key.kind!=kFlatContractPool || !r.key.color || !r.key.rtv ||
-           r.key.color!=k.srvResource[0] || r.key.color==k.color || r.key.dsv!=k.dsv ||
-           r.key.depthFormat!=k.depthFormat || r.key.width!=k.width || r.key.height!=k.height ||
-           r.key.depthWidth!=k.width || r.key.depthHeight!=k.height ||
-           !fullViewport(r.key,k.width,k.height) || !cameraCurrent(r,p.frame) || r.last>=q)return nullptr;
-        donor=&r;
+       !k.srvView[0] || !k.srvResource[0] || !fullViewport(k,k.width,k.height))return out;
+    if(out.poolRecords) {
+        out.why=FlatDeferredDonorWhy::PoolRule;
+        const FlatContractRecord* donor=nullptr;
+        for(uint32_t i=0;i<p.sourcesUsed;++i) {
+            const auto& r=p.sources[i];if(r.key.depth!=k.depth)continue;
+            if(donor || r.key.kind!=kFlatContractPool || !r.key.color || !r.key.rtv ||
+               r.key.color!=k.srvResource[0] || r.key.color==k.color || r.key.dsv!=k.dsv ||
+               r.key.depthFormat!=k.depthFormat || r.key.width!=k.width || r.key.height!=k.height ||
+               r.key.depthWidth!=k.width || r.key.depthHeight!=k.height ||
+               !fullViewport(r.key,k.width,k.height) || !cameraCurrent(r,p.frame) || r.last>=q)return out;
+            donor=&r;
+        }
+        if(!donor)return out;
+        out.role=FlatDeferredDonorRole::Pool;out.why=FlatDeferredDonorWhy::None;
+        out.color=donor->key.color;out.b1=donor->key.b1;out.camera=donor->key.camera?donor->camera:nullptr;
+        out.cameraHash=donor->key.cameraHash;out.writeEpoch=donor->key.writeEpoch;out.writeSeq=donor->key.writeSeq;
+        out.lastWriteEpoch=donor->lastWriteEpoch;out.lastWriteSeq=donor->lastWriteSeq;out.first=donor->first;out.last=donor->last;
+        return out;
     }
-    return donor;
+    const FlatRuntimeCameraWitness* e=nullptr;
+    for(uint32_t i=0;i<p.witnessesUsed;++i) {
+        const auto& w=p.witnesses[i];if(w.depth!=k.depth)continue;
+        ++out.witnessEntries;if(w.color==k.srvResource[0])e=&w;
+        bool seen=false;
+        if(w.hasCamera)for(uint32_t j=0;j<i&&!seen;++j)
+            seen=p.witnesses[j].depth==k.depth && flatRuntimeWitnessSameCamera(p.witnesses[j],w);
+        if(w.hasCamera && !seen)++out.witnessCameras;
+    }
+    if(e){out.entry=true;out.writers=e->writers;out.conflict=e->conflict;out.entryCameraHash=e->hasCamera?e->cameraHash:0;out.entryB1=e->b1;}
+    if(p.witnessOverflow){out.why=FlatDeferredDonorWhy::Overflow;return out;}
+    if(!e){out.why=FlatDeferredDonorWhy::NoEntry;return out;}
+    if(e->conflict!=FlatWitnessConflict::None){out.why=FlatDeferredDonorWhy::Conflict;return out;}
+    if(e->color==k.color){out.why=FlatDeferredDonorWhy::SameColor;return out;}
+    if(!e->rtv || e->dsv!=k.dsv || e->depthFormat!=k.depthFormat || e->width!=k.width || e->height!=k.height ||
+       e->depthWidth!=k.width || e->depthHeight!=k.height){out.why=FlatDeferredDonorWhy::Layout;return out;}
+    if(!e->fullViewport){out.why=FlatDeferredDonorWhy::Viewport;return out;}
+    if(!e->hasCamera || !e->cameraCurrent){out.why=FlatDeferredDonorWhy::Camera;return out;}
+    if(e->last>=q){out.why=FlatDeferredDonorWhy::Late;return out;}
+    for(uint32_t i=0;i<p.witnessesUsed;++i) {
+        const auto& w=p.witnesses[i];if(&w==e || w.depth!=k.depth)continue;
+        if(w.conflict==FlatWitnessConflict::Camera || w.conflict==FlatWitnessConflict::CameraProvenance ||
+           (w.hasCamera && !flatRuntimeWitnessSameCamera(w,*e))){
+            out.why=FlatDeferredDonorWhy::OtherCamera;
+            out.vetoColor=w.color;out.vetoB1=w.b1;out.vetoHash=w.hasCamera?w.cameraHash:0;
+            return out;
+        }
+    }
+    out.role=FlatDeferredDonorRole::Witness;out.why=FlatDeferredDonorWhy::None;
+    out.color=e->color;out.b1=e->b1;out.camera=e->camera;out.cameraHash=e->cameraHash;
+    out.writeEpoch=e->writeEpoch;out.writeSeq=e->writeSeq;out.lastWriteEpoch=e->lastWriteEpoch;out.lastWriteSeq=e->lastWriteSeq;
+    out.first=e->first;out.last=e->last;
+    return out;
 }
 inline bool flatRuntimeQualifiedDeferredCamera(const FlatRuntimePrefix& p,const FlatRuntimeTarget& t,
         const FlatRuntimeDraw& d,uint32_t q) {
     if(!d.deferredHdrVerified || d.key.camera || t.writes.draws || t.hdrBad || t.hdrCamera || t.hdrLayoutChanged)return false;
-    const auto* donor=flatRuntimeDeferredDonor(p,d.key,q);const auto& projection=d.key.projection[1];
-    return donor && d.key.cameraHash==donor->key.cameraHash &&
-        std::memcmp(d.camera,donor->camera,kFlatCameraBytes)==0 && projection.resource &&
+    const auto donor=flatRuntimeDeferredDonor(p,d.key,q);const auto& projection=d.key.projection[1];
+    return donor && d.key.cameraHash==donor.cameraHash &&
+        std::memcmp(d.camera,donor.camera,kFlatCameraBytes)==0 && projection.resource &&
         projection.status==FlatProjectionStatus::Available && projection.width>=kFlatDeferredCameraMinWidth &&
         projection.copied==kFlatDeferredCameraBytes && projection.hash && projection.writeEpoch==p.frame &&
         projection.writeSeq && projection.writeSeq<=q;
@@ -360,6 +538,14 @@ inline FlatRuntimeTarget* flatRuntimeTarget(FlatRuntimePrefix& p, const void* re
     }
     auto& t = p.targets[p.targetsUsed++]; t.resource = resource; return &t;
 }
+// A write to a witnessed depth or colour is content its writers did not draw: the entry no longer speaks for it.
+inline void flatRuntimeWitnessWritten(FlatRuntimePrefix& p, const void* resource) {
+    for (uint32_t i = 0; i < p.witnessesUsed; ++i) {
+        auto& w = p.witnesses[i];
+        if ((w.depth == resource || w.color == resource) && w.conflict == FlatWitnessConflict::None)
+            w.conflict = FlatWitnessConflict::Written;
+    }
+}
 inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource) {
     for (uint32_t i = 0; i < p.targetsUsed; ++i) {
         auto& t = p.targets[i];
@@ -374,6 +560,7 @@ inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource) {
         if (t.writes.key.format == 9) t.imageSourceBad = true;
     }
     for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == resource) p.sources[i].key.camera = nullptr;
+    flatRuntimeWitnessWritten(p, resource);
 }
 inline void flatRuntimeOverlayFailed(FlatRuntimePrefix& p, const void* resource = nullptr) {
     for (uint32_t i = 0; i < p.targetsUsed; ++i) {
@@ -423,6 +610,7 @@ inline void flatRuntimeDispatchObserveWritten(FlatRuntimePrefix& p, const void* 
     }
     for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == resource)
         flatRuntimeMarkUncertain(p, FlatRuntimeUncertainCause::SourceUavWrite, resource, p.sources[i].key.color);
+    flatRuntimeWitnessWritten(p, resource);
 }
 // Whether the selected frame's contract came through the verified menu HDR copy: the HDR the
 // tone pass reads (`hdr`, the selection's) is the copy's inherited destination. That is the 3D
@@ -659,10 +847,10 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
             t->hdrCamera=true;
         }
         if(flatRuntimeQualifiedDeferredCamera(p,*t,d,q)) {
-            const auto& donor=*flatRuntimeDeferredDonor(p,k,q);
-            t->tone=current();t->tone.deferredCamera=true;t->tone.deferredInverseRepaired=d.deferredInverseRepaired;t->tone.sceneCameraB1=donor.key.b1;
-            t->tone.sceneCameraWriteEpoch=donor.key.writeEpoch;t->tone.sceneCameraWriteSeq=donor.key.writeSeq;
-            t->tone.key.camera=donor.key.camera;
+            const auto donor=flatRuntimeDeferredDonor(p,k,q);
+            t->tone=current();t->tone.deferredCamera=true;t->tone.deferredInverseRepaired=d.deferredInverseRepaired;t->tone.sceneCameraB1=donor.b1;
+            t->tone.sceneCameraWriteEpoch=donor.writeEpoch;t->tone.sceneCameraWriteSeq=donor.writeSeq;
+            t->tone.key.camera=donor.camera;
             t->tone.key.writeEpoch=t->tone.firstWriteEpoch=t->tone.lastWriteEpoch=k.projection[1].writeEpoch;
             t->tone.key.writeSeq=t->tone.firstWriteSeq=t->tone.lastWriteSeq=k.projection[1].writeSeq;
             t->hdrCamera=true;
@@ -761,6 +949,9 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
                 source->key.camera = nullptr;
             ++source->draws; source->last = q; source->lastWriteEpoch = k.writeEpoch; source->lastWriteSeq = k.writeSeq; source->lastInstances = d.instances;
         }
+    } else if (!d.supported && k.kind == kFlatContractScreen && k.depth && k.dsv && k.rtv) {
+        // A Screen-kind writer no source record tracks: the witness of a scene with no motion source on this depth.
+        flatRuntimeNoteWitness(p, d, q);
     }
     return out;
 }

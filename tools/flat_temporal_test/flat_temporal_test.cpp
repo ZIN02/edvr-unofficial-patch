@@ -50,6 +50,7 @@
 #include "flat_deferred_camera_tests.h"
 #include "flat_deferred_failure_capture_tests.h"
 #include "flat_deferred_failure_payload_tests.h"
+#include "flat_deferred_witness_tests.h"
 #include "flat_copy_structure_tests.h"
 #include "flat_copy_weapon_tests.h"
 #include "flat_covered_draw_wiring_tests.h"
@@ -4093,6 +4094,7 @@ int main(int argc, char** argv) {
     check(deferred_camera_test::run() == 0, "actual deferred HDR camera proof");
     check(flatDeferredFailureCaptureTests() == 0, "completed failure-frame diagnostic snapshot");
     failures += deferred_failure_payload_test::run();
+    failures += deferred_witness_test::run();
     check(laser_scene_tone_test::run() == 0, "qualified laser scene tone preserves guarded HDR lineage");
     flatRuntimeMenuCopyTests();
     testFrameContractTrace();

@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair: in progress (last entry). Why the game drops the phase there: open.
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** Steam `a4a4e751` menu engagement/mode-switch fix visually PASS; carrier history and functional output guard PASS. External deferred-camera refusal remains open; paired witness awaits reproduction.
   Astra release-history review separates the two proven RC3 regressions from the older RC2 deferred matcher; no new FPS regression established. No admission-bound change; main remains unmerged (last entries).
@@ -17825,3 +17826,57 @@ The repair has been in `flat_deferred_camera.h` since `82dbf1b0`, after
 v0.19.1 and present in rc.2. This flight does not time the mouse, and it does
 not show whether the delayed shipyard preview is the same refusal. The
 confirmation flight of Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
+
+## 2026-10-21: shuttle supercruise and planetary flight, the whole deferred camera unphased
+
+Sean, flat `/novr` on the Panther Lake handheld under Proton (Intel Arc B390,
+XeSS requested, game SS render 960×600), in a shuttle: AA visibly disengaged
+in supercruise, then in planetary flight too; Home (`dump_draws`) pressed at
+13:40:36. `edvr_gfx_20261021_133402` is `v0.20.1-13-gdb52d367` (build
+6AD9042E), branch `claude/ss-lod-instrument`: main `bdf16cd1` plus the LoD
+view probe, no change to the temporal path. Not HEAD, but the same deferred
+code as main.
+
+Timeline. Until 13:40:15 the runtime is `treated-jittered` and the deferred
+HDR camera (VS `7E38A6AA1269C901` / PS `7CECABDE34FFBE9E`, H `7AC50070`)
+logs `inverse-mismatch accepted=1 missing-phase=1`: the shipped inverse-only
+repair. From 13:40:17 (frame 23310) to 13:42:18, and again from 13:42:49, the
+same camera logs `forward-mismatch accepted=0`; `flat jitter failure reason`
+shows `deferred-inverse-unproven` on 93-100 frames per 5 s with
+accepted-frames=0, i.e. every nonzero-phase frame. The selector then reports
+`relevant-observations-truncated` (`cause=deferred-execution`, 17/128
+targets, 1/32 sources), history resets, and the runtime cycles two
+`treated-zero-jitter` frames and one refusal: XeSS runs, unjittered, so there
+is no anti-aliasing. The camera inject's warming count jumps only after the
+first refusal (a consequence of the resets); write failures stay zero.
+
+Paired bytes. All 31 `flat deferred failure witness` captures in the flight
+are `forward-mismatch`. Per capture, (CB2 − donor) / w in clip rows x and y
+is constant across columns (spread ≤ 4.4e-7) and equals −2·px/960 and
++2·py/600 for the requested pixel phase: the CB2 forward rows are the donor
+camera with the phase removed. For frame 23310, the CB2 forward rows match the
+dephased donor to 4.6e-8, and CB2's inverse rows agree with its own
+unphased forward rows to 1.4e-7. In these scenes the deferred pass gets a
+whole, self-consistent, unjittered camera, while the G-buffer was drawn with
+the jittered one.
+
+Ruled out: the gamma(8) forward bound rejecting a rounding difference,
+because the differences (2.5e-5 to 5e-4) are about 1000× the bound and
+equal the requested phase exactly in all 31 captures.
+Ruled out: a wrong donor or a different camera, because the donor minus
+the phase reproduces the CB2 to float rounding in all 31.
+
+This is the paired witness the RC4 external report lacked (its initiating
+failure was the same pair's `forward-mismatch`, 2026-10-17 entries); whether
+that report was the same mechanism is not established by this log.
+
+Repair (in progress, not built). The legacy recipe for this VS already
+jitters the whole camera (ForwardDp4 at row 10 plus InverseUvRay at row 14,
+`flat_projection_recipes.h`). Under upstream ownership, the new step does the
+following. It certifies the measured omission: the CB2 equals the dephased donor
+within gamma bounds that charge the reversed madd on the camera side only,
+and the raw CB2 is self-consistent and nonsingular. It then uploads the
+two-patch clone, accepted only if the uploaded bytes equal the certified ones
+and pass the strict matcher. The 31 captures become a test fixture. Open,
+not needed for the repair: why the game builds this CB2 without the phase in
+supercruise and planetary flight.

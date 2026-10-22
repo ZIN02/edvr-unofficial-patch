@@ -18110,3 +18110,14 @@ now, and the loading screen looks much better.
   declined=0 and refused=0.
 - **Other refusals:** one 5 s window of `no-known-tone-pass` (58 frames at
   18:04:13). The rest are single digits.
+
+The 18:04:13 window is a fade-out into a loading screen. The game switches
+to its other tone pair (F9CFC798/E8948389), which the copy structure admits
+(166 frames at 18:04:08). As the scene fades, the copy source takes a second
+full-screen pass, so the copy route declines it:
+`declines=the-copy-source-is-not-written-by-one-pass:58`
+(`flat_copy_structure.h` one-pass rule). That is about 1.7 s of the game's
+bilinear stretch on dark frames, then no-scene frames and the spatial pass.
+The rule keeps an overlay out of temporal history. Left as is (Sean,
+2026-10-21); widening the spatial pass to declined copy frames was offered
+and not taken.

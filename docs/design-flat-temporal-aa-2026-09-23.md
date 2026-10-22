@@ -18121,3 +18121,171 @@ bilinear stretch on dark frames, then no-scene frames and the spatial pass.
 The rule keeps an overlay out of temporal history. Left as is (Sean,
 2026-10-21); widening the spatial pass to declined copy frames was offered
 and not taken.
+
+## 2026-10-22: hangar floor shimmer, a pink band in the Motion source view
+
+Sean, flat on the Panther Lake handheld (Arc B390, XeSS, 960x600 to
+1920x1200), build `cd48ef3b`: on foot in an outpost hangar, a shimmering
+strip of the far floor shows pink in the Motion source view, meaning "stale
+slot refused (shown raw)". Log `edvr_gfx_20261022_044106`, census 2 at
+04:51:50 (frame 38268); screenshot 04:51:48; the view was on 04:51:43-57.
+
+What pink is (`flat_mono_shader_source.h`). The slot is present, but the
+scene depth no longer equals the depth the keyed draw wrote, because a later
+draw overwrote depth. Such a stale pixel takes the camera term, then
+`historyDepthMatches` checks the best of the four history-depth texels
+around the reprojected position against 1% of the expected depth (section
+82). On a fail the pixel is shown raw. Pixels with no slot take the camera
+term without this check.
+
+Evidence: in the window from the Home press to +2 s, the camera did not
+translate (`flat camera origin` moved=0, step max 0) and `range` was 0.
+Stale-refused was still 9.5k px a frame (1.64%), against 38.7% stale-kept.
+The screenshot's band spans render rows of about 270-300 with a straight
+horizontal lower edge that crosses mesh seams, about 6k px.
+
+Leading hypothesis (H1, circumstantial, not measured). On a plane,
+reversed-Z depth is affine in screen space, so the history-depth error of
+the nearest texel is about delta/y. Here delta is at most 0.5 px of jitter
+offset between frames, and y is the render rows below the horizon. With
+the 32-phase Halton cycle, the check refuses about 33 rows below the
+horizon in most frames (44-46, 14 or 4 in the rest), about z 27 m at
+960x600 with a 1.7 m eye. That boundary scales with render height, which
+fits a band at 960x600 that the 4K and VR measurements of section 82
+never showed.
+
+- ruled out: stale stamps or masked records as the hangar band, because
+  stale-stamp, masked and corrupt read 0 in every hangar window and the
+  stale class is decided before any record is read.
+- ruled out: optimized stations as the hangar band, because it never sealed
+  (0 of about 1290 frames) and vetoed or culled 0 records.
+- ruled out: real motion as the hangar band, because the camera did not
+  translate (moved=0) and range=0 in that window.
+
+Next:
+- **No-build discriminators, same pose:** at render 1920x1200 the band should
+  halve in screen fraction (H1) rather than keep it (a fixed-distance cause);
+  crouching should keep its edge about 33 render rows below the horizon.
+- **If H1 holds, the fix:** `historyDepthMatches` also passes when the
+  bilinear history depth and the four-texel twist are both within tolerance.
+  A slope is exactly bilinear; a silhouette is not.
+- **Rig tests:** a still 5%-per-pixel plane kept, a roof edge against sky and
+  a disocclusion unchanged, a receding mover still refused.
+- **Render-size test, 05:16 (same log, same hangar spot, still):** Home at
+  05:16:55 (census 3) at render 1920x1200 with `moved=0`. Stale-refused was
+  0.89-0.90% of pixels (all class stale), against 1.64% at 960x600 (04:51).
+  The ratio is 0.54. H1 predicts about half; a fixed-distance cause predicts
+  the same share. The refusal census samples only after a capture request
+  (Home), not while the view is on. H1 supported; the fix proceeds.
+- **Side findings, not folded in:** the `flat refusal census 5s` line
+  hard-codes `view=off`; `flat engine motion unkeyed 5s` reads binds=0 while
+  the census shows unkeyed family draws every frame.
+
+### Flown 06:05 (`7c81d42a`, main merged): hangar band gone
+
+`edvr_gfx_20261022_060530`. Sean: the hangar is better. Home at 06:12:36,
+camera still (`moved=0`), 960x600: stale-refused is 0.0002% (16-18 px per
+sample), against 1.64% before, with stale-kept at about 700k px per sample.
+H1 confirmed: the band was the point test refusing a still slope, and the
+planar footprint keeps it.
+
+A railing at the front of the pad still shimmers. The view shows it blue
+(pool surface, camera term), which is correct motion for a static rail.
+With the camera still, history is accepted on every frame (no resets) and
+nothing is refused. So EDVR's motion and history are not the cause. The
+railing is about one render pixel wide at 960x600, a thin feature the
+upscaler's history rectification cannot hold steady at a 2x upscale.
+Discriminators: the same pose at render 1920x1200, and the same pose with
+FSR instead of XeSS.
+
+### Junctions: the residual band, and the persistence test (design, not built)
+
+Same session, 06:16:22 (census 2, XeSS, camera still), under the parked
+ship. Stale-refused is 0.26%, all stale. The view shows thin pink lines
+where the far floor meets a wall and the ship's underside. There the
+history footprint straddles two surfaces: it is not one plane, so the
+footprint test refuses it, as it must for a disocclusion. The railing
+shimmer is separate: correct camera-term motion and accepted history, and
+worse under FSR than XeSS, so it is the upscalers' thin-feature limit.
+
+Rejected: accepting a neighbouring planar quad of the pixel's own surface
+alone. It cannot tell a still junction from a disocclusion, where an
+object moved off the floor; the history colour there is the object's, so
+it would ghost.
+
+Design: a third test in `historyDepthMatches`, run only after the point
+and footprint tests refuse. It has two halves.
+1. **Own surface present.** Among the four quads edge-adjacent to the
+   footprint (shifted by one texel in x or y, wholly inside the image, all
+   texels finite and non-zero), one is planar (cross difference within
+   tol). Its bilinear extrapolation to the exact previous raster position
+   is within tol of `expected`. Same tol, set by `expected`.
+2. **Every other footprint texel persists.** A footprint texel off that
+   plane (more than tol from the plane's value at it) is another surface.
+   It is projected forward into the current frame with the camera term's
+   inverse: `cameraAfter`, `old` rows to `now` rows, the mirror of
+   `cameraBefore`, using its previous texel centre (previous phase out)
+   and its history depth. The result must land inside the image, in front
+   of the camera. The best of the four current `SceneDepth` texels around
+   it must be within max(1e-6, 1%) of its projected depth.
+
+A parked hull or a wall persists, so the pixel is kept. Where an object
+moved away, its texels now show the floor behind, so the pixel is
+refused. A zero (sky) texel, a quad or projection leaving the image, or a
+non-finite value refuses, as before. One function serves the prep's stale
+slot and `taa()`.
+
+Tests:
+- `cameraAfter(cameraBefore(x))` round trip;
+- still camera at a floor and wall crease, and under a parked step
+  occluder: floor junction pixels kept;
+- a still camera with an occluder moving 2 px per frame: the trailing-edge
+  (disoccluded) floor pixels refused;
+- a slow camera translation over a static junction: kept;
+- a receding mover: refused;
+- the sky and border cases unchanged;
+- every existing history-depth case unchanged.
+
+Built (`46542e60`, not flown): the persistence test as designed.
+`cameraAfter` mirrors `cameraBefore`; the round trip is within 0.00026 px.
+Quad order: +x, -x, +y, -y. The TAA dispatch now binds `SceneDepth` at t1
+for `taa()`.
+
+Model at 960x600, still camera:
+- **Crease:** every floor pixel-frame with a solid footprint that the old
+  rule refused is kept (10,208 of 10,208).
+- **Parked hull:** 1,130 of 1,130 kept.
+- **Receding plate:** refused.
+- **Ghost guard, a hull moving 2 px per frame:** 0 of 2,659 uncovered
+  floor pixel-frames kept. Half 1 passes for 535 of them and half 2
+  refuses them all.
+- **Limit:** below about 1 px per frame a mover's old texels still land on
+  the mover, so its trailing edge leaks. The uncovered-set keep rate goes
+  from 12% to 50% at 1 px.
+
+GPU-side agreement runs only on Windows CI.
+
+Flown 08:03 (`437b3bfd`, `edvr_gfx_20261022_080341`), under the parked
+ship, still camera (`moved=0`), Home at 08:07:21. Stale-refused is 0.087 to
+0.090%, against 0.26% on the build before. About two thirds are gone, not
+the near-zero the model gave. The view shows specks, no longer lines, at the
+far floor line.
+
+Sean: more stable; some shimmer remains at the back. Much of the back reads
+blue or green: camera term, history kept, so the upscalers' thin-feature
+limit as with the railing.
+
+Not measured: the residual specks. Leading guess: the other surface at
+those junctions (the hull's underside) is itself grazing, so half 2's point
+test in the current frame fails on it as the floor's did before. The
+refused-pixel anatomy census (reason per refused pixel) would separate
+this from other causes.
+
+Temporary instrument in the same build (`6454231b`, observe-only): the
+flat star dump. On a Home census it logs every solar-list draw
+(`eye_draw_snapshot.h`) with its VS and PS constant buffers b0-b7 from the
+CPU shadow. It also logs `journal star:` lines (StartJump class, FSDJump,
+star Scan fields), which put system and body names in logs; the
+`flat star dump: truth` lines carry that ground truth into each dump.
+Purpose: find the constants that carry a star's temperature, radius and
+intensity for the star-glow design. Remove both once that is read.

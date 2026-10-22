@@ -1096,7 +1096,7 @@ def _self_test_body():
         del lines[:]
         fake.compiled = []
         before = len(fake.calls)
-        args = ["fake_cl.exe", "/nologo", "/c", "/EHsc", "/Fo" + "obj" + "\\"] + list(extra) + list(srcs)
+        args = ["fake_cl.exe", "/nologo", "/c", "/EHsc", "/Fo" + "obj" + os.sep] + list(extra) + list(srcs)
         rc = execute(args, dict(env or environ), fake, out=lines.append, **opts)
         return rc, sorted(fake.compiled), len(fake.calls) - before
 
@@ -1193,7 +1193,7 @@ def _self_test_body():
     fake.exit_code = None
     unsigned_fake = FakeCl()
     unsigned_fake.exit_code = 3221225477
-    rc = execute(["fake_cl.exe", "/c", "/Foobj\\", "src/c.cpp"], dict(inc2), unsigned_fake, out=lines.append)
+    rc = execute(["fake_cl.exe", "/c", "/Foobj" + os.sep, "src/c.cpp"], dict(inc2), unsigned_fake, out=lines.append)
     expect(rc == -1073741819, "an unsigned NTSTATUS from the runner becomes the signed code")
     run([], env=inc2)
 
@@ -1268,7 +1268,7 @@ def _self_test_body():
     _write("rig/lib.lib", "lib v1")
     _write("rig/x.def", "EXPORTS")
     os.makedirs("out")
-    link = ["fake_cl.exe", "/nologo", "/O2", "/Foobj\\", "/Feout\\rig.exe", "src/a.cpp", "src/b.cpp",
+    link = ["fake_cl.exe", "/nologo", "/O2", "/Foobj" + os.sep, "/Fe" + os.path.join("out", "rig.exe"), "src/a.cpp", "src/b.cpp",
             "/link", "/INCREMENTAL:NO", "rig/lib.lib", "/DEF:rig/x.def", "kernel32.lib"]
 
     def run_link_case(**opts):
@@ -1346,7 +1346,7 @@ def _store_self_test_body():
         if not condition:
             raise AssertionError("compile_cache store self-test: " + message + "\n" + "\n".join(lines))
 
-    def compile_objects(fo="build\\obj\\"):
+    def compile_objects(fo=os.path.join("build", "obj") + os.sep):
         del lines[:]
         fake.compiled = []
         rc = execute(["fake_cl.exe", "/nologo", "/c", "/Fo" + fo, "src/a.cpp", "src/b.cpp"], dict(environ), fake,
@@ -1356,7 +1356,7 @@ def _store_self_test_body():
     def link_rig():
         del lines[:]
         before = len(fake.calls)
-        rc = execute(["fake_cl.exe", "/nologo", "/Febuild\\out\\rig.exe", "src/a.cpp", "/link", "kernel32.lib"],
+        rc = execute(["fake_cl.exe", "/nologo", "/Fe" + os.path.join("build", "out", "rig.exe"), "src/a.cpp", "/link", "kernel32.lib"],
                      dict(environ), fake, out=lines.append)
         return rc, len(fake.calls) - before
 
@@ -1375,7 +1375,7 @@ def _store_self_test_body():
                "%s records a sha256 of each output" % name)
 
     # An output outside the root and an entry written before hashes were recorded are not packed.
-    rc, compiled = compile_objects("elsewhere\\")
+    rc, compiled = compile_objects("elsewhere" + os.sep)
     expect(rc == 0, "objects outside the root compile")
     legacy = "build/obj/b.obj.ccm"
     with open(legacy, encoding="utf-8") as handle:

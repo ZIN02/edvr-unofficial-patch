@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-22 3D main menu, render below output):** `edvr_gfx_20261022_115444` (v0.20.2, RTX 3080, 2580x1080 to 3440x1440, Bloom off, DoF 2, Anaconda MkII on the menu) stands down 87 s at the menu: probes say `conflicting-hdr-target-or-camera` and name no cause (the report sat after the observing return). Test build logs the cause at the verdict; NOT FLOWN. See "2026-10-22: the 3D main menu at render below output".
+- **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`, v0.20.2-20-g0419a682): the menu's stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth. The user turned DoF off and the menu was treated. Fix (alias the composite like the menu copy) NOT built. See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
@@ -18349,5 +18349,28 @@ scene draws (the SS 0.5 loading hologram's refusal); `depth-or-dsv-changed` or
 - ruled out (corrects the 10-22 first reading): "the main menu's tone pass is
   unknown". `6E83D02E` is the first menu scene's tone only; the ship scene's is
   the known `FEE777E9`.
+Flown (12:15, v0.20.2-20-g0419a682, the same user and settings, an Anaconda
+menu, two minutes): `flat runtime conflict: cause=missing-depth-or-dsv`, count
+1 to 4 in the 5 s windows, the writer `20F383BB/BF2302BC` into a 2580x1080 fmt 26
+target with no depth or dsv (cur-dim 2580x1080/0x0, a full viewport), the hdr the
+tone's input. `flat copy structure` said `last=untouched`: by design it only
+looks at a frame the whitelist refused for its tone pass. In the census that
+writer is the last of the DoF chain: scene draws into H (fmt 26, depth), the
+quarter-size blur chain reading H (645x270, 430x180), `FDB74215`/`80631A09`/
+`E16E27A0` into fmt 9 (the first reads H at t0 and the depth at t1), then
+`BF2302BC` reading H at t0 and the last fmt 9 image at t1 and writing a new f26
+image the tone (`FEE777E9`, t1) reads. One more draw writes H between the blur
+chain and the composite (`94D5C556/912477AE` with depth, reading two 2048x1024
+BC textures): the next conflict may be that late write.
+
+Result: with Elite's Depth of Field off the user's main menu was treated (user
+report, no log). That confirms the DoF composite as the blocker; the earlier
+reporter's menu was treated at DoF 0. Not yet known: whether the late write
+`94D5C556/912477AE` also conflicts once the composite is aliased, and whether
+a treated menu ghosts. Candidate fix: accept the composite as an alias of its
+t0 scene H in flatRuntimeObserveContract, as the menu copy (DEF19B03/DED87960)
+is, with a context check like verifyMenuHdrCopy; log every conflict on the chain
+in the same flight.
+
 - Risk if the menu is later treated: a rotating hologram can ghost (the loading
   screen's ghost, flat-loading-hologram-ghost-2026-10-09.md).

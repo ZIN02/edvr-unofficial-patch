@@ -18197,3 +18197,51 @@ railing is about one render pixel wide at 960x600, a thin feature the
 upscaler's history rectification cannot hold steady at a 2x upscale.
 Discriminators: the same pose at render 1920x1200, and the same pose with
 FSR instead of XeSS.
+
+### Junctions: the residual band, and the persistence test (design, not built)
+
+Same session, 06:16:22 (census 2, XeSS, camera still), under the parked
+ship. Stale-refused is 0.26%, all stale. The view shows thin pink lines
+where the far floor meets a wall and the ship's underside. There the
+history footprint straddles two surfaces: it is not one plane, so the
+footprint test refuses it, as it must for a disocclusion. The railing
+shimmer is separate: correct camera-term motion and accepted history, and
+worse under FSR than XeSS, so it is the upscalers' thin-feature limit.
+
+Rejected: accepting a neighbouring planar quad of the pixel's own surface
+alone. It cannot tell a still junction from a disocclusion, where an
+object moved off the floor; the history colour there is the object's, so
+it would ghost.
+
+Design: a third test in `historyDepthMatches`, run only after the point
+and footprint tests refuse. It has two halves.
+1. **Own surface present.** Among the four quads edge-adjacent to the
+   footprint (shifted by one texel in x or y, wholly inside the image, all
+   texels finite and non-zero), one is planar (cross difference within
+   tol). Its bilinear extrapolation to the exact previous raster position
+   is within tol of `expected`. Same tol, set by `expected`.
+2. **Every other footprint texel persists.** A footprint texel off that
+   plane (more than tol from the plane's value at it) is another surface.
+   It is projected forward into the current frame with the camera term's
+   inverse: `cameraAfter`, `old` rows to `now` rows, the mirror of
+   `cameraBefore`, using its previous texel centre (previous phase out)
+   and its history depth. The result must land inside the image, in front
+   of the camera. The best of the four current `SceneDepth` texels around
+   it must be within max(1e-6, 1%) of its projected depth.
+
+A parked hull or a wall persists, so the pixel is kept. Where an object
+moved away, its texels now show the floor behind, so the pixel is
+refused. A zero (sky) texel, a quad or projection leaving the image, or a
+non-finite value refuses, as before. One function serves the prep's stale
+slot and `taa()`.
+
+Tests:
+- `cameraAfter(cameraBefore(x))` round trip;
+- still camera at a floor and wall crease, and under a parked step
+  occluder: floor junction pixels kept;
+- a still camera with an occluder moving 2 px per frame: the trailing-edge
+  (disoccluded) floor pixels refused;
+- a slow camera translation over a static junction: kept;
+- a receding mover: refused;
+- the sky and border cases unchanged;
+- every existing history-depth case unchanged.

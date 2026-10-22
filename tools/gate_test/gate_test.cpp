@@ -112,6 +112,200 @@ int eyeShapeChecks() {
     return bad;
 }
 
+// THE STAR FACTS (src/d3d11/journal_star.h), as lines in and a table out.
+//
+// The journal lines are in the game's own shape (one JSON object a line, "event" first after the stamp, numbers written with a fixed six
+// decimals), so what is asserted is what the real parser is handed. The same builders feed the worker scenario in journalWorkerChecks.
+namespace starfix {
+
+const char* const kStamp = "2026-10-21T10:00:00Z";
+
+std::string startJump(const char* type, const char* system, const char* cls) {
+    std::string s = std::string("{ \"timestamp\":\"") + kStamp + "\", \"event\":\"StartJump\", \"JumpType\":\"" + type + "\"";
+    if (system) s += std::string(", \"StarSystem\":\"") + system + "\", \"SystemAddress\":4856337385129";
+    if (cls) s += std::string(", \"StarClass\":\"") + cls + "\"";
+    return s + " }";
+}
+
+std::string fsdJump(const char* system) {
+    return std::string("{ \"timestamp\":\"") + kStamp + "\", \"event\":\"FSDJump\", \"Taxi\":false, \"Multicrew\":false, \"StarSystem\":\"" + system +
+           "\", \"SystemAddress\":4856337385129, \"StarPos\":[10.5,-20.25,30.0], \"SystemAllegiance\":\"\", \"JumpDist\":8.123, "
+           "\"FuelUsed\":0.512345, \"FuelLevel\":31.487655 }";
+}
+
+// A star's Scan as Elite writes it. sub < 0 and an empty luminosity leave those fields out (a neutron star or a white dwarf has fewer).
+std::string starScan(const char* body, const char* system, const char* scanType, const char* type, int sub, const char* lum, double mass,
+                     double radius, double mag, double temp, double dist) {
+    char num[160];
+    std::string s = std::string("{ \"timestamp\":\"") + kStamp + "\", \"event\":\"Scan\", \"ScanType\":\"" + scanType + "\", \"BodyName\":\"" +
+                    body + "\", \"BodyID\":1, \"Parents\":[ {\"Null\":0} ], \"StarSystem\":\"" + system + "\", \"SystemAddress\":4856337385129";
+    snprintf(num, sizeof(num), ", \"DistanceFromArrivalLS\":%f", dist);
+    s += num;
+    s += std::string(", \"StarType\":\"") + type + "\"";
+    if (sub >= 0) s += ", \"Subclass\":" + std::to_string(sub);
+    snprintf(num, sizeof(num), ", \"StellarMass\":%f, \"Radius\":%f, \"AbsoluteMagnitude\":%f, \"Age_MY\":2735, \"SurfaceTemperature\":%f", mass, radius,
+             mag, temp);
+    s += num;
+    if (lum && lum[0]) s += std::string(", \"Luminosity\":\"") + lum + "\"";
+    return s + ", \"RotationPeriod\":123456.789012, \"AxialTilt\":0.101234, \"WasDiscovered\":true, \"WasMapped\":false }";
+}
+
+// A planet's Scan: it has a Radius and a SurfaceTemperature of its own and no StarType.
+std::string planetScan(const char* body, const char* system) {
+    return std::string("{ \"timestamp\":\"") + kStamp + "\", \"event\":\"Scan\", \"ScanType\":\"AutoScan\", \"BodyName\":\"" + body +
+           "\", \"BodyID\":2, \"Parents\":[ {\"Star\":1} ], \"StarSystem\":\"" + system +
+           "\", \"SystemAddress\":4856337385129, \"DistanceFromArrivalLS\":412.345678, \"TidalLock\":false, \"TerraformState\":\"\", "
+           "\"PlanetClass\":\"Icy body\", \"Atmosphere\":\"\", \"Volcanism\":\"\", \"MassEM\":0.001234, \"Radius\":2000000.000000, "
+           "\"SurfaceGravity\":1.2, \"SurfaceTemperature\":70.000000, \"SurfacePressure\":0.0, \"Landable\":true }";
+}
+
+}  // namespace starfix
+
+int journalStarParseChecks() {
+    using namespace journalstar;
+    int bad = 0;
+    auto verify = [&](bool ok, const char* what) {
+        ++g_checks;
+        if (ok) return;
+        printf("  FAIL  %s\n", what);
+        ++bad;
+    };
+    auto apply = [&](Table& t, const std::string& line, Star* s = nullptr, Jump* j = nullptr) {
+        return applyLine(t, line.data(), line.size(), s, j);
+    };
+    auto closeTo = [](double a, double b) { return a > b - 1e-6 * (b < 0 ? -b : b) - 1e-9 && a < b + 1e-6 * (b < 0 ? -b : b) + 1e-9; };
+
+    // ---- the numbers, without strtod's locale
+    {
+        double v = 0;
+        const char* a = "0.832031,";
+        verify(parseNumber(a, a + 8, &v) && closeTo(v, 0.832031), "a six-decimal fraction reads as written");
+        const char* b = "619543200.000000 }";
+        verify(parseNumber(b, b + 16, &v) && closeTo(v, 619543200.0), "a nine-digit radius with a zero fraction reads as written");
+        const char* c = "-1.5e3";
+        verify(parseNumber(c, c + 6, &v) && closeTo(v, -1500.0), "a sign and an exponent");
+        const char* d = "4846";
+        verify(parseNumber(d, d + 4, &v) && closeTo(v, 4846.0), "an integer");
+        const char* e = "1e-3";
+        verify(parseNumber(e, e + 4, &v) && closeTo(v, 0.001), "a negative exponent");
+        const char* f = "abc";
+        verify(!parseNumber(f, f + 3, &v), "text is not a number");
+        const char* g = "123456789012345678901234567890";
+        verify(parseNumber(g, g + 30, &v) && closeTo(v, 1.2345678901234568e29), "thirty digits keep their magnitude");
+    }
+
+    // ---- a hyperspace StartJump, a supercruise StartJump, and the arrival
+    {
+        Table t;
+        Jump j;
+        const std::string hyper = starfix::startJump("Hyperspace", "Eorld Byoi XI-A b1-3", "K");
+        verify(apply(t, hyper, nullptr, &j) == Outcome::JumpHyperspace, "StartJump with JumpType Hyperspace is a jump");
+        verify(t.jump.valid && !t.jump.arrived && std::strcmp(t.jump.system, "Eorld Byoi XI-A b1-3") == 0 && std::strcmp(t.jump.starClass, "K") == 0 &&
+                   t.jumps == 1,
+               "it keeps the destination and the star class, and counts one jump");
+        verify(std::strcmp(j.starClass, "K") == 0, "and hands the jump back for the log line");
+        verify(apply(t, starfix::startJump("Supercruise", nullptr, nullptr)) == Outcome::JumpOther && t.jumps == 1 &&
+                   std::strcmp(t.jump.starClass, "K") == 0,
+               "a supercruise StartJump changes nothing");
+        verify(apply(t, starfix::startJump("Hyperspace", "No Class Sys", nullptr)) == Outcome::JumpHyperspace && t.jump.starClass[0] == '\0' &&
+                   t.jumps == 2,
+               "a hyperspace StartJump without a class replaces the old one with none");
+        Table u;
+        apply(u, hyper);
+        verify(apply(u, starfix::fsdJump("Eorld Byoi XI-A b1-3")) == Outcome::Arrived && u.jump.arrived && u.arrivals == 1 &&
+                   std::strcmp(u.arrivedSystem, "Eorld Byoi XI-A b1-3") == 0,
+               "the FSDJump to the system the StartJump named marks the jump arrived");
+        Table w;
+        apply(w, hyper);
+        apply(w, starfix::fsdJump("Somewhere Else"));
+        verify(!w.jump.arrived && std::strcmp(w.arrivedSystem, "Somewhere Else") == 0,
+               "an FSDJump to a different system leaves the jump not arrived");
+    }
+
+    // ---- the stars of a system
+    {
+        Table t;
+        Star s;
+        const std::string a = starfix::starScan("Alpha A", "Alpha", "AutoScan", "K", 3, "Va", 0.832031, 619543200.0, 6.00116, 4846.0, 0.0);
+        verify(apply(t, a, &s) == Outcome::StarAdded && t.count == 1, "a Scan with a StarType is a star");
+        verify(std::strcmp(s.body, "Alpha A") == 0 && std::strcmp(s.system, "Alpha") == 0 && std::strcmp(s.type, "K") == 0 && s.subclass == 3 &&
+                   std::strcmp(s.luminosity, "Va") == 0 && std::strcmp(s.scanType, "AutoScan") == 0,
+               "its names, class, subclass, luminosity and scan type are read");
+        verify(closeTo(s.mass, 0.832031) && closeTo(s.radius, 619543200.0) && closeTo(s.absMag, 6.00116) && closeTo(s.temp, 4846.0) && closeTo(s.dist, 0.0),
+               "its mass, radius, absolute magnitude, temperature and distance are read");
+        verify((s.have & (kHaveSubclass | kHaveLuminosity | kHaveMass | kHaveRadius | kHaveAbsMag | kHaveTemp | kHaveDist | kHaveScanType | kHaveSystem)) ==
+                   (kHaveSubclass | kHaveLuminosity | kHaveMass | kHaveRadius | kHaveAbsMag | kHaveTemp | kHaveDist | kHaveScanType | kHaveSystem),
+               "and every field is marked present");
+
+        verify(apply(t, starfix::planetScan("Alpha A 1", "Alpha")) == Outcome::Ignored && t.count == 1,
+               "a planet's Scan is ignored, though it has a Radius and a SurfaceTemperature");
+        verify(apply(t, starfix::starScan("Alpha A", "Alpha", "Detailed", "K", 3, "Va", 0.832031, 619543200.0, 6.00116, 4846.0, 0.0)) ==
+                       Outcome::StarRepeat &&
+                   t.count == 1 && t.repeats == 1,
+               "the same body scanned again is a repeat: one row, counted");
+        verify(apply(t, starfix::starScan("Alpha B", "Alpha", "AutoScan", "M", 5, "Va", 0.2, 200000000.0, 11.0, 3100.0, 12.5)) == Outcome::StarAdded &&
+                   t.count == 2,
+               "a companion is a second row");
+
+        // A neutron star: no subclass and no luminosity in the line.
+        Star n;
+        Table nt;
+        apply(nt, starfix::starScan("Beta A", "Beta", "AutoScan", "N", -1, "", 1.4, 10000.0, 20.0, 650000.0, 0.0), &n);
+        verify(nt.count == 1 && !(n.have & kHaveSubclass) && !(n.have & kHaveLuminosity) && std::strcmp(n.type, "N") == 0,
+               "a star line without Subclass or Luminosity is kept, with those fields marked absent");
+        char text[512];
+        formatStar(text, sizeof(text), n);
+        verify(std::strstr(text, "sub=-") && std::strstr(text, "lum=-") && std::strstr(text, "type=N") && std::strstr(text, "temp=650000"),
+               "the row's text shows an absent field as - and a present one as itself");
+
+        // The table clears on the next hyperspace StartJump and on the FSDJump.
+        verify(apply(t, starfix::startJump("Hyperspace", "Gamma", "G")) == Outcome::JumpHyperspace && t.count == 0 && t.repeats == 0,
+               "the next hyperspace StartJump clears the stars of the system left");
+        apply(t, starfix::starScan("Gamma A", "Gamma", "AutoScan", "G", 2, "V", 1.0, 696000000.0, 4.8, 5778.0, 0.0));
+        verify(t.count == 1 && apply(t, starfix::fsdJump("Delta")) == Outcome::Arrived && t.count == 0,
+               "and an FSDJump clears them too");
+
+        // A full table counts what it cannot hold.
+        Table full;
+        for (uint32_t i = 0; i < kMaxStars + 3; ++i) {
+            char body[32];
+            snprintf(body, sizeof(body), "Crowd %u", i);
+            apply(full, starfix::starScan(body, "Crowd", "AutoScan", "M", 1, "V", 0.3, 3e8, 10.0, 3000.0, 1.0));
+        }
+        verify(full.count == kMaxStars && full.dropped == 3, "a system with more stars than the table holds keeps the first and counts the rest");
+    }
+
+    // ---- shapes the reader must not be fooled by
+    {
+        Table t;
+        std::string tricky = std::string("{ \"timestamp\":\"") + starfix::kStamp +
+                             "\", \"event\":\"Scan\", \"BodyName\":\"Odd \\\"StarType\\\":\\\"G\\\" body\", \"PlanetClass\":\"Rocky body\" }";
+        verify(apply(t, tricky) == Outcome::Ignored && t.count == 0, "a key quoted inside a string value is not a key");
+        std::string spaced = std::string("{ \"timestamp\":\"") + starfix::kStamp +
+                             "\", \"event\" : \"Scan\", \"BodyName\" : \"Spaced\", \"StarType\" : \"F\", \"SurfaceTemperature\" : 6500.5 }";
+        Star s;
+        verify(apply(t, spaced, &s) == Outcome::StarAdded && std::strcmp(s.type, "F") == 0 && closeTo(s.temp, 6500.5), "spaces around the colon are allowed");
+        std::string noBody = std::string("{ \"timestamp\":\"") + starfix::kStamp + "\", \"event\":\"Scan\", \"StarType\":\"F\" }";
+        verify(apply(t, noBody) == Outcome::Malformed, "a StarType without a body name is malformed, not a star");
+        verify(apply(t, std::string("{ \"timestamp\":\"x\", \"event\":\"ScanBaryCentre\", \"StarType\":\"F\" }")) == Outcome::Ignored,
+               "another event with a StarType in it is not a Scan");
+        verify(apply(t, std::string("not json at all")) == Outcome::Ignored && apply(t, std::string("")) == Outcome::Ignored,
+               "a line that is not an event is ignored");
+        // A name longer than the table holds is cut, not overrun.
+        std::string longName(200, 'x');
+        Star l;
+        Table lt;
+        verify(apply(lt, starfix::starScan(longName.c_str(), "Long", "AutoScan", "M", 1, "V", 0.3, 3e8, 10.0, 3000.0, 1.0), &l) == Outcome::StarAdded &&
+                   std::strlen(l.body) == kNameCap - 1,
+               "a 200-character body name is cut to the table's name size");
+        char text[512];
+        const int len = formatStar(text, sizeof(text), l);
+        verify(len > 0 && len < 400 && static_cast<size_t>(len) == std::strlen(text), "and a row's text fits its 512-byte line with room");
+    }
+    if (!bad) printf("  ok    the journal's star facts: a hyperspace StartJump and the Scan of a star are read, a planet and a repeat are not, the table clears on the next jump, and nothing overruns\n");
+    return bad;
+}
+
 // WHICH JOURNAL IS OURS, as a table.
 //
 // The decision that read a crashed session's journal as this session's and
@@ -1570,6 +1764,100 @@ int journalWorkerChecks() {
         stopWorker();
     }
 
+    // ------------------------------------------- 9. the star facts through the worker (journal_star.h), in both profiles
+    // The worker assembles whole lines out of its chunked reads and parses a StartJump, an FSDJump and the Scan of a star. The table is the
+    // same in VR and in flat (journalStarSnapshot is not gated by profile), the VR accessors keep answering no-journal in flat, and nothing
+    // the line parser sees changes what scanEvents reports.
+    for (int flatPass = 0; flatPass < 2; ++flatPass) {
+        const RuntimeProfile savedProfile = g_runtimeProfile;
+        if (flatPass) g_runtimeProfile = RuntimeProfile::Flat;
+        const std::wstring d = makeDir(flatPass ? L"starsflat" : L"starsvr");
+        journalWatchTestSetCadencePercent(5);
+        const std::string sys = flatPass ? "Flat Sys" : "Vr Sys";
+        const std::string sys2 = sys + " Two";
+        const std::string a = sys + " A", b = sys + " B", c = sys + " C", dd = sys + " D", e = sys + " E", f = sys + " F", g = sys2 + " G";
+        const std::wstring journal = d + L"\\Journal.2026-09-29T100000.01.log";
+        writeWhole(d + L"\\Status.json", playStatus(0));
+        writeWhole(journal, ev("LoadGame") + starfix::startJump("Hyperspace", sys.c_str(), "K") + "\n" + starfix::fsdJump(sys.c_str()) + "\n" +
+                                starfix::starScan(a.c_str(), sys.c_str(), "AutoScan", "K", 3, "Va", 0.832031, 619543200.0, 6.00116, 4846.0, 0.0) + "\n" +
+                                starfix::planetScan((a + " 1").c_str(), sys.c_str()) + "\n" +
+                                starfix::starScan(a.c_str(), sys.c_str(), "Detailed", "K", 3, "Va", 0.832031, 619543200.0, 6.00116, 4846.0, 0.0) + "\n");
+        journalWatchConfigure();
+        journalstar::Table t;
+        verify(!journalStarSnapshot(&t) && t.count == 0 && !t.jump.valid, "a configured watcher that has read nothing has no star facts");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 1 && t.jump.valid; }, 10000),
+               "a StartJump, an FSDJump and a star's Scan written to the journal reach the star table through the worker");
+        verify(std::strcmp(t.jump.system, sys.c_str()) == 0 && std::strcmp(t.jump.starClass, "K") == 0 && t.jump.arrived &&
+                   std::strcmp(t.arrivedSystem, sys.c_str()) == 0 && t.jumps == 1 && t.arrivals == 1,
+               "the jump is the one that was written, its class is K, and the arrival resolved it");
+        verify(std::strcmp(t.stars[0].body, a.c_str()) == 0 && std::strcmp(t.stars[0].type, "K") == 0 && t.stars[0].subclass == 3 &&
+                   t.stars[0].temp > 4845.9 && t.stars[0].temp < 4846.1 && t.stars[0].mass > 0.83 && t.stars[0].mass < 0.84,
+               "the star's class, subclass, temperature and mass are what the Scan said");
+        verify(t.count == 1 && t.repeats == 1, "the planet's Scan was ignored and the repeated Scan of the star was not added twice");
+        if (flatPass) {
+            verify(!journalGameplay() && !journalWatchActive(), "flat: the VR accessors still answer the no-journal values with a star table filled");
+        } else {
+            verify(journalGameplay(), "VR: the same journal still reaches journalGameplay (the line parser took nothing from the event scanner)");
+        }
+
+        // A Scan split across two reads: the first half is written, several polls pass, and only the rest completes it.
+        const std::string split = starfix::starScan(b.c_str(), sys.c_str(), "AutoScan", "M", 5, "Va", 0.2, 200000000.0, 11.0, 3100.0, 12.5);
+        appendTo(journal, split.substr(0, split.size() / 2));
+        {
+            const ULONGLONG t0 = GetTickCount64();
+            while (GetTickCount64() - t0 < 400) { journalWatchTick(); Sleep(1); }
+        }
+        journalStarSnapshot(&t);
+        verify(t.count == 1, "half of a Scan line is not a star: the reader waits for the rest of the line");
+        appendTo(journal, split.substr(split.size() / 2) + "\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 2; }, 10000),
+               "the other half arrives in a later read and the line completes into a second star");
+        verify(std::strcmp(t.stars[1].body, b.c_str()) == 0 && std::strcmp(t.stars[1].type, "M") == 0 && t.stars[1].temp > 3099.9 && t.stars[1].temp < 3100.1,
+               "and it is the star that was written, not a stitched one");
+
+        // A CRLF line, and a line past the cap with a star after it.
+        appendTo(journal, starfix::starScan(c.c_str(), sys.c_str(), "AutoScan", "G", 2, "V", 1.0, 696000000.0, 4.8, 5778.0, 3.0) + "\r\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 3; }, 10000), "a line ending in CRLF is read");
+        const std::string pad(20000, 'x');
+        appendTo(journal, "{ \"timestamp\":\"2026-10-21T10:00:00Z\", \"event\":\"Statistics\", \"Pad\":\"" + pad + "\" }\n" +
+                              starfix::starScan(dd.c_str(), sys.c_str(), "AutoScan", "F", 1, "V", 1.3, 900000000.0, 3.7, 6800.0, 5.0) + "\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 4; }, 10000), "a line far past the line cap does not stop the next star being read");
+        std::string bigScan = starfix::starScan(e.c_str(), sys.c_str(), "AutoScan", "A", 0, "V", 2.0, 1.5e9, 1.0, 9500.0, 9.0);
+        bigScan.insert(bigScan.size() - 2, ", \"Pad\":\"" + pad + "\"");
+        appendTo(journal, bigScan + "\n" + starfix::starScan(f.c_str(), sys.c_str(), "AutoScan", "O", 4, "III", 20.0, 6.0e9, -5.0, 38000.0, 30.0) + "\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 5; }, 10000), "a star Scan longer than the cap is skipped and the one after it is read");
+        verify(std::strcmp(t.stars[4].body, f.c_str()) == 0, "the star after the oversize Scan is the fifth row");
+
+        // A supercruise StartJump changes nothing; the next hyperspace StartJump replaces the class and clears the stars; the arrival and its
+        // star fill the table again.
+        appendTo(journal, starfix::startJump("Supercruise", nullptr, nullptr) + "\n");
+        {
+            const ULONGLONG t0 = GetTickCount64();
+            while (GetTickCount64() - t0 < 200) { journalWatchTick(); Sleep(1); }
+        }
+        journalStarSnapshot(&t);
+        verify(t.count == 5 && std::strcmp(t.jump.starClass, "K") == 0, "a supercruise StartJump leaves the class and the stars alone");
+        appendTo(journal, starfix::startJump("Hyperspace", sys2.c_str(), "M") + "\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.jumps == 2; }, 10000), "the next hyperspace StartJump is read");
+        verify(t.count == 0 && std::strcmp(t.jump.system, sys2.c_str()) == 0 && std::strcmp(t.jump.starClass, "M") == 0 && !t.jump.arrived,
+               "it cleared the stars of the system left, replaced the class, and is not yet arrived");
+        appendTo(journal, starfix::fsdJump(sys2.c_str()) + "\n" +
+                              starfix::starScan(g.c_str(), sys2.c_str(), "AutoScan", "M", 2, "V", 0.4, 3.0e8, 9.0, 3500.0, 0.0) + "\n");
+        verify(tickUntil([&] { return journalStarSnapshot(&t) && t.count == 1; }, 10000), "after the arrival the new system's star fills the table");
+        verify(t.jump.arrived && std::strcmp(t.stars[0].body, g.c_str()) == 0 && t.arrivals == 2, "and the jump is arrived at the system it named");
+        stopWorker();
+        g_runtimeProfile = savedProfile;
+    }
+
+    // A new configure forgets the star facts of the last watcher.
+    {
+        makeDir(L"starsforget");
+        journalstar::Table t;
+        journalWatchConfigure();
+        verify(!journalStarSnapshot(&t) && t.count == 0 && t.jumps == 0 && !t.jump.valid, "a new configure starts the star table from nothing");
+        stopWorker();
+    }
+
     // ------------------------------------------------------------------- done
     journalWatchTestSetCadencePercent(100);
     Config::get().set("d3d11.journal_watch", "0");
@@ -1624,6 +1912,26 @@ int journalWorkerChecks() {
            "the walk's is, with the number of journals it found");
     verify(linesWith("periodic work: journal_tail SLOW ms=", " bytes=") >= 1,
            "the tail read's is, with the bytes it read");
+    // The star lines: one for each star added, none for the repeat or the planet, and each is the fields of the row.
+    verify(linesWith("journal star: Scan body=\"Vr Sys A\"") == 1 && linesWith("journal star: Scan body=\"Flat Sys A\"") == 1,
+           "a star scanned twice is logged once, in each profile");
+    verify(linesWith("journal star: Scan body=\"Vr Sys A\"", "type=K sub=3 lum=Va mass=0.832031 radius=619543200 absmag=6.00116 temp=4846 dist-ls=0 scan=AutoScan") == 1,
+           "the log line carries the class, subclass, luminosity, mass, radius, magnitude, temperature, distance and scan type");
+    verify(linesWith("journal star: Scan body=\"Vr Sys A 1\"") == 0 && linesWith("journal star: Scan body=\"Flat Sys A 1\"") == 0,
+           "a planet's Scan is not logged");
+    verify(linesWith("journal star: Scan body=\"Vr Sys B\"") == 1 && linesWith("journal star: Scan body=\"Vr Sys C\"") == 1 &&
+               linesWith("journal star: Scan body=\"Vr Sys D\"") == 1 && linesWith("journal star: Scan body=\"Vr Sys F\"") == 1 &&
+               linesWith("journal star: Scan body=\"Vr Sys E\"") == 0,
+           "the stars read across a split, a CRLF and an oversize line are logged, and the oversize Scan is not");
+    verify(linesWith("journal star: a Scan line is longer than 8192 bytes and was not read") == 2,
+           "each oversize star line is said once (one in each profile)");
+    verify(linesWith("journal star: StartJump hyperspace system=\"Vr Sys\" class=K arrived=0") == 1 &&
+               linesWith("journal star: StartJump hyperspace system=\"Flat Sys Two\" class=M arrived=0") == 1,
+           "a hyperspace StartJump is logged with its system and class");
+    verify(linesWith("journal star: FSDJump arrived system=\"Vr Sys\" jump-class=K") == 1,
+           "an FSDJump is logged with the class its StartJump named");
+    verify(linesWith("journal star: Scan body=\"Vr Sys Two G\"") == 1 && linesWith("journal star: Scan body=\"Flat Sys Two G\"") == 1,
+           "and the star after the next jump is logged");
 
     if (!bad) {
         printf("  ok    the journal watcher's file work runs on a worker thread of its own: events "
@@ -1659,6 +1967,7 @@ int main(int argc, char** argv) {
     // Pure decisions over numbers, so they run once here.
     g_bad += eyeShapeChecks();
     g_bad += journalPickChecks();
+    g_bad += journalStarParseChecks();
     g_bad += periodicWorkChecks();
     g_bad += loggedNotesChecks();
     g_bad += boundarySourceChecks(dir);

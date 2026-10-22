@@ -110,6 +110,22 @@ void flatRuntimeArmProjectionAudit(bool full = false);
 // It observes other diagnostics without consuming or cancelling their work.
 bool flatRuntimePassiveRearmBusy();
 void flatRuntimeCreateBuffer(ID3D11Buffer*, const void* initialData);
+// OBSERVE ONLY, for the star dump (flat_star_dump.h): the constant buffer bound at one slot of one stage of the owner context, and what the
+// projection runtime's CPU shadow holds of it. Reads the context's bindings and the shadow bank; no GPU readback, no stall, no state change,
+// and nothing the runtime decides depends on it. `cap` bytes at most are copied to `out`, from the start of the bound window.
+struct FlatBoundConstants {
+    bool bound = false;              // a buffer is bound at the slot
+    bool tracked = false;            // the projection runtime's table holds it
+    uint32_t width = 0;              // the buffer's ByteWidth
+    uint32_t firstByte = 0;          // where the bound window starts (the first-constant offset of the 1-form setter, in bytes)
+    uint32_t windowBytes = 0;        // how many bytes the window covers
+    uint32_t copied = 0;             // bytes written to `out`; 0 when the shadow could not supply them
+    uint64_t writeFrame = 0;         // the flat frame of the shadow's last full write (0: none seen)
+    uint64_t frame = 0;              // the flat frame now
+    const char* why = "";            // when copied is 0: the refusal, by name
+    const void* buffer = nullptr;    // identity only
+};
+void flatRuntimeObserveConstants(ID3D11DeviceContext* ctx, bool pixel, uint32_t slot, uint32_t cap, void* out, FlatBoundConstants* info);
 void flatRuntimeClearBindings();
 void flatRuntimeReplayQueryBegin(ID3D11DeviceContext*, ID3D11Asynchronous*);
 void flatRuntimeReplayQueryEnd(ID3D11DeviceContext*, ID3D11Asynchronous*);

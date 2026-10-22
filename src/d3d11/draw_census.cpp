@@ -16,6 +16,7 @@
 #include "draw_gate.h"      // drawGateArm: a census armed mid-frame must not
                             // lose the frame it counts from
 #include "exposure_fix.h"   // lookupShaderHash: the shader hash registry
+#include "flat_star_dump.h"  // the star dump rides the flat census: begin, each solar-list draw, end
 
 namespace edvr {
 
@@ -714,6 +715,7 @@ void finish() {
             "DC line above. Enable the withheld effects for a census of their draws.",
             g_unseen, g_unseenBy[0], g_unseenBy[1], g_unseenBy[2], g_unseenBy[3]);
     }
+    flatStarDumpEnd(g_censusNo);
 }
 
 }  // namespace
@@ -778,7 +780,14 @@ static void recordDraw(ID3D11DeviceContext* ctx, char kind, uint32_t count,
     // line cap -- a capped census keeps truthful q values on whatever lines
     // it does write, instead of renumbering the survivors.
     const uint32_t q = g_seq++;
-    if (g_lines >= g_maxLines) return;
+    // The star dump's selection (flat_star_dump.h): the pair the binding shadow holds, two loads. A draw the line cap keeps from being recorded
+    // is counted, so a capped census does not read as a census without a star.
+    const uint64_t starVs = bindingShaderHash(BindSlot::Vs), starPs = bindingShaderHash(BindSlot::Ps);
+    const bool star = stardump::solarPair(starVs, starPs);
+    if (g_lines >= g_maxLines) {
+        if (star) flatStarDumpCapMissed();
+        return;
+    }
     ++g_lines;
 
     char rb[24], db[24], cb[24], s0b[24], s1b[24], s2b[24], s3b[24];
@@ -1103,6 +1112,25 @@ static void recordDraw(ID3D11DeviceContext* ctx, char kind, uint32_t count,
         "%s %u #%u %c n=%u i=%u r=%s d=%s c=%s s=%s,%s,%s,%s%s%s%s%s%s%s q=%u",
         tag, g_frameOrdinal, index, kind, count, instances, r, d, c, s0, s1,
         s2, s3, tail, xt, pt, vsr, vt, sv, q);
+
+    // The star dump, after the draw's own line so its lines follow the DC/DCO line they belong to (the same q=).
+    if (star) {
+        StarDrawFacts sf;
+        sf.tag = tag;
+        sf.frame = g_frameOrdinal;
+        sf.index = index;
+        sf.q = q;
+        sf.kind = kind;
+        sf.count = count;
+        sf.instances = instances;
+        sf.start = args.start;
+        sf.base = args.base;
+        sf.vs = starVs;
+        sf.ps = starPs;
+        sf.rtv = r;
+        sf.dsv = d;
+        flatStarDumpDraw(ctx, sf);
+    }
 
     // The CB watch, after the draw's own line so a DCW dump always follows
     // the draw it belongs to. Any recorded draw can match -- DC for the FSS
@@ -1693,6 +1721,7 @@ void drawCensusFrameBoundary(uint32_t frameNo) {
         Log::get().note("DC begin census=%u frames=%u frame=%u offscreen=%s",
                         g_censusNo, g_framesWanted, frameNo,
                         detail::g_drawCensusOffscreen ? "yes" : "no");
+        flatStarDumpBegin(g_censusNo, g_framesWanted, frameNo);
         if (g_cbWatchHash) {
             Log::get().note("DCW watching vs=%016llX -- every recorded draw "
                             "running that shader dumps its b%u constants "

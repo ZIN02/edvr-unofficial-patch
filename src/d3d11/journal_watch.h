@@ -8,11 +8,14 @@
 // eat, 6ba), and where an ON-FOOT SESSION begins (Disembark -- the boundary
 // at which EDVR re-anchors what it knows about an on-foot session).
 //
-// READ ONLY, names only. The tail is polled twice a second, and the only
-// thing parsed out of it is which event happened; no payload is kept. If the
-// folder cannot be found or the reads keep failing, this says so once and
-// stays off -- every consumer keeps its heuristic fallback, so a missing
-// journal returns EDVR to exactly yesterday's behaviour.
+// READ ONLY. The tail is polled twice a second, and what every consumer is
+// given is which event happened. The one payload read is the star facts of
+// StartJump (hyperspace) and of a Scan of a star (journal_star.h): they are
+// logged and kept in a small table for the star dump (journalStarSnapshot),
+// and no consumer's answer depends on them. If the folder cannot be found or
+// the reads keep failing, this says so once and stays off -- every consumer
+// keeps its heuristic fallback, so a missing journal returns EDVR to exactly
+// yesterday's behaviour.
 //
 // THE FILE WORK IS NOT ON ELITE'S RENDER THREAD. One worker thread does all of
 // it -- the Status.json read, the journal open and tail, and the directory walk
@@ -44,6 +47,8 @@
 
 #include <cstddef>
 #include <cstdint>
+
+#include "journal_star.h"
 
 namespace edvr {
 
@@ -97,6 +102,12 @@ bool journalFlatGuiFocus(uint32_t* focus);
 // for the planet patch motion's gate (tickCelestialStatus). Known is false when
 // the watcher is off or Flags is absent; flat only.
 bool journalFlatSupercruise(bool* supercruise);
+
+// OBSERVE ONLY, both profiles: the star facts the journal has stated this session (journal_star.h) -- the latest hyperspace StartJump's
+// destination and star class, and the stars scanned in the current system, cleared by the next hyperspace StartJump or FSDJump. A copy,
+// taken under a lock the worker holds only to insert a row. False when the watcher has read neither a jump nor a star since it was
+// configured (the table is then empty), which is not the same as the watcher being off: the worker's own start line says that.
+bool journalStarSnapshot(journalstar::Table* out);
 
 // DIAGNOSTIC, ungated by profile: what the watcher holds right now, for the flat map line's 5 s report (flat_runtime.cpp). Not a consumer's
 // answer: the accessors above are the answers. active is the watcher's own state; statusSamples counts Status.json reads that parsed;

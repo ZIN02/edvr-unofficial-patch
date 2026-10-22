@@ -77,6 +77,7 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../../src/common/system_d3d11.h"
@@ -438,6 +439,172 @@ void testFootprint() {
     }
     n = uiLayerFootprint(98.0, 100.0, 100, &first, w);
     check(n == 2 && first == 98 && near1(w[0], 0.5) && near1(w[1], 0.5), "2.0: the last pixel of the layer is whole");
+}
+
+// The flat HUD's bloom feed (2026-10-21; fixed_shader_source.h kUiGlowFeedPsHlsl), replayed on the CPU. The feed reads the HUD layer, the
+// display's size times the quality target, at the scene H's size, so a pixel of H covers `scale` layer texels an axis. What a layer texel
+// of unit radiance sends to the bloom is the sum of its weights over H's pixels. Area weights (ui_layer_math.h uiGlowFeedFootprint, the
+// shader's loop transcribed) make that 1/scale an axis wherever the texel falls on H's grid; the n x n point samples the feed had before
+// made it 0.5 or 1.0 at 20/13 and at 1.25, by the column.
+struct FeedAxis {
+    std::vector<std::vector<std::pair<uint32_t, float>>> byTexel;  // per layer texel: the H pixels that read it, and their weights
+};
+FeedAxis feedAreaAxis(uint32_t scenePx, uint32_t layerPx) {
+    FeedAxis a;
+    a.byTexel.resize(layerPx);
+    const double scale = static_cast<double>(layerPx) / scenePx;
+    for (uint32_t i = 0; i < scenePx; ++i) {
+        uint32_t first = 0;
+        float w[kUiGlowFeedMaxTaps] = {};
+        const int n = uiGlowFeedFootprint(i, scale, layerPx, &first, w);
+        for (int k = 0; k < n; ++k) a.byTexel[first + k].emplace_back(i, w[k]);
+    }
+    return a;
+}
+// The feed before 2026-10-21: n points at the centres of n equal parts of the pixel's footprint along each axis, weight 1/n each.
+FeedAxis feedPointAxis(uint32_t scenePx, uint32_t layerPx, int n) {
+    FeedAxis a;
+    a.byTexel.resize(layerPx);
+    const double scale = static_cast<double>(layerPx) / scenePx;
+    for (uint32_t i = 0; i < scenePx; ++i) {
+        for (int s = 0; s < n; ++s) {
+            const double q = (i + (s + 0.5) / n) * scale;
+            const int64_t t = (std::min)((std::max)(static_cast<int64_t>(std::floor(q)), int64_t{0}), static_cast<int64_t>(layerPx) - 1);
+            a.byTexel[static_cast<size_t>(t)].emplace_back(i, 1.0f / n);
+        }
+    }
+    return a;
+}
+double feedAxisSum(const FeedAxis& a, uint32_t texel) {
+    double e = 0.0;
+    for (const auto& pw : a.byTexel[texel]) e += pw.second;
+    return e;
+}
+struct FeedSpread {
+    double lo = 1e300, hi = -1e300;
+    void add(double v) {
+        lo = (std::min)(lo, v);
+        hi = (std::max)(hi, v);
+    }
+};
+FeedSpread feedAxisSpread(const FeedAxis& a) {
+    FeedSpread s;
+    for (uint32_t t = 0; t < a.byTexel.size(); ++t) s.add(feedAxisSum(a, t));
+    return s;
+}
+// A unit impulse at layer texel (tx, ty): the sum over H's pixels (x, y) of the pass's output there, the pixel's weight being
+// wx[x] * wy[y] (the shader's wx * wy / wsum, which separates). Every texel, every pixel that reads it.
+FeedSpread feedImpulseSpread(const FeedAxis& ax, const FeedAxis& ay) {
+    FeedSpread s;
+    for (uint32_t ty = 0; ty < ay.byTexel.size(); ++ty) {
+        for (uint32_t tx = 0; tx < ax.byTexel.size(); ++tx) {
+            double e = 0.0;
+            for (const auto& py : ay.byTexel[ty]) {
+                for (const auto& px : ax.byTexel[tx]) e += static_cast<double>(px.second) * py.second;
+            }
+            s.add(e);
+        }
+    }
+    return s;
+}
+
+void testGlowFeedFilter() {
+    // The weights themselves: the composite's footprint, on H's grid.
+    uint32_t first = 0;
+    float w[kUiGlowFeedMaxTaps] = {};
+    int n = uiGlowFeedFootprint(7, 1.0, 100, &first, w);
+    check(n == 1 && first == 7 && near1(w[0], 1.0), "glow feed: 1:1 on the grid is a copy");
+    n = uiGlowFeedFootprint(3, 2.0, 100, &first, w);
+    check(n == 2 && first == 6 && near1(w[0], 0.5) && near1(w[1], 0.5), "glow feed: 2:1 is the average of the two texels");
+    n = uiGlowFeedFootprint(1, 20.0 / 13.0, 1920, &first, w);
+    check(n == 3 && first == 1 && near1(w[0], 0.30) && near1(w[1], 0.65) && near1(w[2], 0.05),
+          "glow feed: 20/13, pixel 1 covers texels 1..3 for 0.30, 0.65 and 0.05");
+    n = uiGlowFeedFootprint(0, 1.25, 100, &first, w);
+    check(n == 2 && first == 0 && near1(w[0], 0.8) && near1(w[1], 0.2), "glow feed: 1.25, pixel 0 is 0.8 + 0.2 (the composite's own)");
+    n = uiGlowFeedFootprint(1, 6.0, 100, &first, w);
+    check(n == 4 && first == 7 && near1(w[0], 0.25) && near1(w[3], 0.25),
+          "glow feed: a ratio past 4 is cut to the central 4 texels of the footprint");
+    n = uiGlowFeedFootprint(1, 3.7, 100, &first, w);
+    check(n == 5 && first == 3 && near1(w[0], 0.3 / 3.7) && near1(w[2], 1.0 / 3.7) && near1(w[4], 0.4 / 3.7),
+          "glow feed: 3.7, a footprint that starts mid-texel reaches five texels");
+    {
+        // Whatever the ratio, no footprint is cut by the tap bound at ratios up to 4, and none needs more than the bound at any ratio.
+        bool bounded = true, same = true, unit = true;
+        for (double scale = 0.3; scale < 9.0; scale += 0.07) {
+            for (uint32_t i = 0; i < 40; ++i) {
+                uint32_t f1 = 0, f2 = 0;
+                float a[kUiGlowFeedMaxTaps] = {}, b[16] = {};
+                const int na = uiGlowFeedFootprint(i, scale, 4000, &f1, a);
+                const double cut = (scale > kUiGlowFeedMaxSpan) ? (scale - kUiGlowFeedMaxSpan) * 0.5 : 0.0;
+                const int nb = uiLayerFootprintTaps(i * scale + cut, (i + 1) * scale - cut, 4000, &f2, b, 16);
+                float sum = 0.0f;
+                for (int k = 0; k < na; ++k) sum += a[k];
+                bounded = bounded && na >= 1 && na <= kUiGlowFeedMaxTaps;
+                same = same && na == nb && f1 == f2;
+                unit = unit && near1(sum, 1.0);
+            }
+        }
+        check(bounded, "glow feed: every footprint is 1 to 5 texels an axis, 25 loads at most, at any ratio");
+        check(same, "glow feed: the tap bound never cuts a footprint (the same texels as an unbounded footprint)");
+        check(unit, "glow feed: the weights of every footprint sum to 1, so a flat field keeps its level at any ratio");
+    }
+
+    // The energy. 1/scale an axis, wherever the texel falls on the grid: 0.65 for a line and 0.4225 for a texel at 20/13.
+    struct Case {
+        uint32_t sw, sh, lw, lh;
+        const char* what;
+    };
+    const Case cases[] = {
+        {64, 48, 64, 48, "ratio 1"},
+        {64, 48, 128, 96, "ratio 2"},
+        {13, 13, 20, 20, "ratio 20/13, one period of the grid"},
+        {1248, 780, 1920, 1200, "ratio 20/13, the flown 1248x780 scene on a 1920x1200 output at quality 100"},
+        {8, 8, 10, 10, "ratio 1.25, one period of the grid"},
+        {1920, 1200, 2400, 1500, "ratio 1.25, quality 125 at native size"},
+        {40, 30, 140, 105, "ratio 3.5"},
+        {40, 30, 160, 120, "ratio 4"},
+        {100, 100, 150, 200, "ratios 1.5 and 2 on the two axes"},
+        {128, 96, 64, 48, "ratio 1/2, a layer smaller than the scene"},
+    };
+    for (const Case& c : cases) {
+        const FeedAxis ax = feedAreaAxis(c.sw, c.lw), ay = feedAreaAxis(c.sh, c.lh);
+        const double sx = static_cast<double>(c.lw) / c.sw, sy = static_cast<double>(c.lh) / c.sh;
+        const FeedSpread lx = feedAxisSpread(ax), ly = feedAxisSpread(ay), pt = feedImpulseSpread(ax, ay);
+        char what[256];
+        std::snprintf(what, sizeof(what), "glow feed, %s: a line sends 1/scale an axis to the bloom at every column and row", c.what);
+        check(near1(lx.lo, 1.0 / sx, 1e-5) && near1(lx.hi, 1.0 / sx, 1e-5) && near1(ly.lo, 1.0 / sy, 1e-5) && near1(ly.hi, 1.0 / sy, 1e-5), what);
+        std::snprintf(what, sizeof(what), "glow feed, %s: a single texel sends 1/(scale.x * scale.y) at every position", c.what);
+        check(near1(pt.lo, 1.0 / (sx * sy), 1e-5) && near1(pt.hi, 1.0 / (sx * sy), 1e-5), what);
+    }
+    {
+        // The review's numbers (reviews/main-since-0.20.0-review-2026-10-21.md, finding 3), at the flown dimensions.
+        const FeedAxis ax = feedAreaAxis(1248, 1920), ay = feedAreaAxis(780, 1200);
+        const FeedSpread line = feedAxisSpread(ax), texel = feedImpulseSpread(ax, ay);
+        check(near1(line.lo, 0.65, 1e-5) && near1(line.hi, 0.65, 1e-5), "glow feed: a one-texel line at 20/13 sends 0.65 per row of pixels, in every column");
+        check(near1(texel.lo, 0.4225, 1e-5) && near1(texel.hi, 0.4225, 1e-5), "glow feed: one bright texel at 20/13 sends 0.4225, at every position");
+    }
+    {
+        // The check has teeth: the point samples the feed had are the review's 0.5 or 1.0 and 0.25, 0.5 or 1.0 at 20/13, and uneven at 1.25 too.
+        const FeedAxis ax = feedPointAxis(1248, 1920, 2), ay = feedPointAxis(780, 1200, 2);
+        const FeedSpread line = feedAxisSpread(ax), texel = feedImpulseSpread(ax, ay);
+        check(near1(line.lo, 0.5, 1e-5) && near1(line.hi, 1.0, 1e-5), "glow feed: the former point samples sent 0.5 or 1.0 for a line at 20/13");
+        check(near1(texel.lo, 0.25, 1e-5) && near1(texel.hi, 1.0, 1e-5), "glow feed: ...and 0.25 to 1.0 for a single texel");
+        const FeedSpread l125 = feedAxisSpread(feedPointAxis(1920, 2400, 2));
+        check(l125.hi - l125.lo > 0.4, "glow feed: ...and uneven at 1.25 as well");
+        const FeedSpread l1 = feedAxisSpread(feedPointAxis(64, 64, 1)), l2 = feedAxisSpread(feedPointAxis(64, 128, 2));
+        check(near1(l1.lo, l1.hi) && near1(l2.lo, l2.hi), "glow feed: ...and exact at the integer ratios, which the area weights keep");
+    }
+    {
+        // The shader's text carries the constants the replay uses (the cut past 4 texels, the loop's reach of 5 an axis).
+        char pat[64];
+        std::snprintf(pat, sizeof(pat), "max(span - %.1f,", kUiGlowFeedMaxSpan);
+        check(std::strstr(kUiGlowFeedPsHlsl, pat) != nullptr, "glow feed: the shader cuts a footprint to the replay's span");
+        std::snprintf(pat, sizeof(pat), "k0.x + %d)", kUiGlowFeedMaxTaps - 1);
+        check(std::strstr(kUiGlowFeedPsHlsl, pat) != nullptr, "glow feed: the shader's loop over x reaches the replay's taps");
+        std::snprintf(pat, sizeof(pat), "k0.y + %d)", kUiGlowFeedMaxTaps - 1);
+        check(std::strstr(kUiGlowFeedPsHlsl, pat) != nullptr, "glow feed: ...and over y");
+        check(std::strstr(kUiGlowFeedPsHlsl, "ceil(max(sc.x") == nullptr, "glow feed: the n x n point samples are gone from the shader");
+    }
 }
 
 void testGate() {
@@ -3585,6 +3752,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::strcmp(argv[1], "--flat-cpu") == 0) {
         testFlatLayerRules();
+        testGlowFeedFilter();
         std::printf("ui_quality_test --flat-cpu: %u checks, %u failures\n", g_checks, g_fails);
         return g_fails ? 1 : 0;
     }
@@ -3615,6 +3783,7 @@ int main(int argc, char** argv) {
     testBlend();
     testDepthStencil();
     testFootprint();
+    testGlowFeedFilter();
     testGate();
     testFamilyRule();
     testSupercruiseLines();

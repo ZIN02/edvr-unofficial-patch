@@ -128,7 +128,7 @@ parts' exact motion from Elite's own records automatically (stations and ships
 in space are not yet verified). On an RTX card, the
 automatic NVIDIA choice displays **DLAA** at HMD Quality 1.0 or higher and
 **DLSS** below it, with **DLSS preset** (or **DLAA preset**) on the same page,
-default **K** (`fix.temporal_aa_model = k`), and J, L, M or Automatic choices.
+default **K** (`fix.temporal_aa_model = k`), and L or M choices (J and Automatic were removed 2026-10-21; an ini still naming them runs K).
 **FSR** is AMD's FidelityFX Super Resolution 3.1 upscaler at the same sizes
 DLSS would use; it runs on any GPU, NVIDIA's included, and needs no runtime
 file beside the game (`fix.temporal_aa = fsr`).

@@ -51,7 +51,7 @@
 - **System Map families (10-10, built, not flown):** `kMapCanvas` and `kMapSprite`
   (flat only; asked while GuiFocus 6, 7 or 8 is open, on the HDR target) go into the
   flat UI layer like the HUD families, so they are drawn at D x T after the upscale.
-  The "flat ui layer map:" 30 s line counts them and names each refusal. Entry at the end.
+  "flat ui layer map:" counts them; 10-22: the game-334473 Galaxy icon PS joins. Entries at end.
 - **Temporary:** no keys. The back-off trail log lines (10-15, camera-suite
   HUD loop) go once the loop is fixed.
 - **Next locally:** no repeat flight needed for capture cleanup. The installed
@@ -886,3 +886,29 @@ a pixel is the mean of T squared samples (1.56 at 125). Built, not flown:
 - Not changed: the holograms stay in the frame, so no size here smooths them.
 - Flight: UI quality 150 and 200 in the cockpit; the `ui quality:` lines name
   the size (`150%`, `200%`) and the layer's size and MB.
+
+## 2026-10-22: the Galaxy Map's icons left the sprite family with game build 334473 (built, not flown)
+
+Sean: the Galaxy Map's system icons deep below the galactic plane flicker as the view moves (flat, XeSS, 960x600 to 1920x1200,
+census 8 of `edvr_gfx_20261022_101031`).
+
+- The icons are VS C31238331D8AC3D4 with PS 964221955A9E77E7: 174 a frame, n=6, BC3 64x64 / 128x128, into the 960x600
+  R11G11B10F scene with depth off, stencil write only (ref 4, ALWAYS/REPLACE) and alpha over. That is the state of the
+  BD0FEB32 and 539A sprites the family takes. PS BD0FEB3276C8B2D7 is in no retained log.
+- Every Galaxy Map session since the game update of 2026-10-20 (332841 to 334473) reads `sprite asked=0` while the canvas is
+  asked 25k to 73k times per 30 s. The 10-10 flight took 424553 of 424571 Galaxy sprites. So since the update the icons were
+  never asked: they stayed in the scene at 960x600 with SMAA and EASU, under the labels, which the layer takes.
+- Fix: `kFlatUiMapSpritePsC` = 964221955A9E77E7 joins `flatUiMapFamilyOf`'s sprites, under the same map-open and HDR-target
+  gate. PS 96422195 also draws on the System Map; any of its draws that tests depth is still refused by the layer's
+  depth-stencil rule.
+- Open: why only the below-plane icons flicker. The working guess is size. The VS builds a camera-facing world-space quad with
+  no screen-size term, so the farthest icons are the smallest, and quads near a pixel at 960x600 flicker on and off. Taken at
+  the output size they get twice the grid. If the deepest still twitch, dump the PS (`advanced.glare_shader_dump=1`, one
+  launch) for a dim scalar or dither.
+- ruled out: a depth or plane z-fight on the Galaxy icons, because DepthEnable is 0 on every icon and canvas draw and no draw
+  in that range tests stencil.
+- ruled out: a separate below-plane icon pass, because census 8 has one 174-draw sprite pass with one PS and one state.
+- ruled out: the particle billboard fix, because the log reads `particle target off (stock)` throughout the map windows.
+- Flight: open the Galaxy Map and look below the plane. The 30 s `flat ui layer map:` line should read sprite asked about five
+  times the canvas count (174 against 34 a frame) and taken equal to asked; `sprite asked=0` there means the pair is still
+  not named.

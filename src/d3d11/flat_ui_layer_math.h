@@ -49,10 +49,15 @@ constexpr uint64_t kFlatUiMapCanvasPs = 0x855C469156AB997Full;
 constexpr uint64_t kFlatUiMapSpriteVs = 0xC31238331D8AC3D4ull;
 constexpr uint64_t kFlatUiMapSpritePsA = 0xBD0FEB3276C8B2D7ull;  // the 64x64 / 128x128 BC3 / BC7 icons (Galaxy, Orrery)
 constexpr uint64_t kFlatUiMapSpritePsB = 0x539A4858CE3A3477ull;  // the System Map's sprites (n=12)
+// The Galaxy Map's icons since game build 334473 (2026-10-20): the same n=6 BC3 64x64 / 128x128 icons as A, 174 a frame, the same
+// VS, target and state (no depth test, stencil write only), with this PS. A was in no Galaxy Map census after the update and every
+// Galaxy session read `sprite asked=0` (census 8 of edvr_gfx_20261022_101031). The layer's own depth-stencil refusal still applies.
+constexpr uint64_t kFlatUiMapSpritePsC = 0x964221955A9E77E7ull;
 inline UiLayerFamily flatUiMapFamilyOf(uint64_t vs, uint64_t ps, bool mapOpen, bool hdrTarget) {
     if (!mapOpen || !hdrTarget) return UiLayerFamily::kNone;
     if (vs == kFlatUiMapCanvasVs && ps == kFlatUiMapCanvasPs) return UiLayerFamily::kMapCanvas;
-    if (vs == kFlatUiMapSpriteVs && (ps == kFlatUiMapSpritePsA || ps == kFlatUiMapSpritePsB)) return UiLayerFamily::kMapSprite;
+    if (vs == kFlatUiMapSpriteVs && (ps == kFlatUiMapSpritePsA || ps == kFlatUiMapSpritePsB || ps == kFlatUiMapSpritePsC))
+        return UiLayerFamily::kMapSprite;
     return UiLayerFamily::kNone;
 }
 

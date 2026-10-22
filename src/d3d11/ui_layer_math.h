@@ -657,8 +657,8 @@ enum class UiLayerFamily : uint8_t {
                  // the System Map, the Orrery -- is open): the map's GUI canvas composite (vs 12382D2EA45E9632 with
                  // ps 855C469156AB997F), drawn into the HDR scene and taken into the flat UI layer. No VR classifier
                  // names it: uiLayerFamilyFor's HDR branch never returns it.
-    kMapSprite,  // flat only, the same gate: a map's icon sprite (vs C31238331D8AC3D4 with ps BD0FEB3276C8B2D7, or
-                 // with ps 539A4858CE3A3477 on the System Map)
+    kMapSprite,  // flat only, the same gate: a map's icon sprite (vs C31238331D8AC3D4 with ps BD0FEB3276C8B2D7, with
+                 // ps 539A4858CE3A3477 on the System Map, or with ps 964221955A9E77E7 on the Galaxy Map since game build 334473)
     kWeaponsFire,  // the weapons fire (weapons_fire.h: beams and bolts, multicannon rounds and the shield strike's additive part, by
                    // their exact vertex/pixel PAIRS): additive world light taken into the eye's OWN additive HDR layer, separate from
                    // the HUD's over-blend one, and added onto the upscaled picture after the tonemap. Governed by fix.sharp_weapons,

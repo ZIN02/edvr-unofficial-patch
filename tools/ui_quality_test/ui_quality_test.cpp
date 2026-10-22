@@ -1396,14 +1396,20 @@ void testFlatLayerRules() {
     {
         static const uint64_t kCanvasVs = 0x12382D2EA45E9632ull, kCanvasPs = 0x855C469156AB997Full;
         static const uint64_t kSpriteVs = 0xC31238331D8AC3D4ull, kSpritePsA = 0xBD0FEB3276C8B2D7ull,
-                              kSpritePsB = 0x539A4858CE3A3477ull;
+                              kSpritePsB = 0x539A4858CE3A3477ull, kSpritePsC = 0x964221955A9E77E7ull;
         static const uint64_t kUnrelatedVs = 0x1111222233334444ull, kUnrelatedPs = 0x5555666677778888ull;
-        // With a map open on the HDR target, the canvas pair is the canvas and both sprite pairs are sprites.
+        // With a map open on the HDR target, the canvas pair is the canvas and the three sprite pairs are sprites.
         check(flatUiMapFamilyOf(kCanvasVs, kCanvasPs, true, true) == UiLayerFamily::kMapCanvas,
               "map families: the canvas pair, with a map open on the HDR target, is the canvas");
         check(flatUiMapFamilyOf(kSpriteVs, kSpritePsA, true, true) == UiLayerFamily::kMapSprite &&
-                  flatUiMapFamilyOf(kSpriteVs, kSpritePsB, true, true) == UiLayerFamily::kMapSprite,
-              "map families: both sprite pairs (BD0F on the Galaxy and the Orrery, 539A on the System Map) are sprites");
+                  flatUiMapFamilyOf(kSpriteVs, kSpritePsB, true, true) == UiLayerFamily::kMapSprite &&
+                  flatUiMapFamilyOf(kSpriteVs, kSpritePsC, true, true) == UiLayerFamily::kMapSprite,
+              "map families: the three sprite pairs (BD0F on the Galaxy and the Orrery, 539A on the System Map, 9642 on the "
+              "Galaxy Map since game build 334473) are sprites");
+        check(flatUiMapFamilyOf(kSpriteVs, kSpritePsC, false, true) == UiLayerFamily::kNone &&
+                  flatUiMapFamilyOf(kSpriteVs, kSpritePsC, true, false) == UiLayerFamily::kNone &&
+                  flatUiMapFamilyOf(kCanvasVs, kSpritePsC, true, true) == UiLayerFamily::kNone,
+              "map families: the 334473 Galaxy sprite is under the same gate, and only with the sprite vertex shader");
         // The gate: with no map open, or on any target that is not the HDR class, neither family is named.
         check(flatUiMapFamilyOf(kCanvasVs, kCanvasPs, false, true) == UiLayerFamily::kNone &&
                   flatUiMapFamilyOf(kSpriteVs, kSpritePsB, false, true) == UiLayerFamily::kNone,

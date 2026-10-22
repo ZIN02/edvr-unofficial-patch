@@ -25,6 +25,7 @@ using laser_scene_tone_test::camera;
 constexpr uint64_t kFrame = 36960;
 constexpr uint64_t kPoolVs = 0xBFE51414CC3024B4ull, kPoolPs = 0xDB79AE788E049DFDull;   // a keyed pool pair
 constexpr uint64_t kPreviewPs = 0xA17504A2627767F2ull;                                 // the loadout preview's unkeyed pixel shader
+constexpr uint64_t kStarVs = 0x0EE43D81E394E70Cull;                                    // the star's depth-only pre-pass: null pixel shader, colour writes off, no b1
 
 struct Scene {
     std::unique_ptr<FlatRuntimePrefix> p = std::make_unique<FlatRuntimePrefix>();
@@ -35,6 +36,13 @@ struct Scene {
         auto d = draw(colour ? colour : gbuf, format, depth, dsv, vs, kPreviewPs);
         d.key.kind = kFlatContractScreen;
         camera(d, kFrame, p->sequence + 1, nearPlane);
+        return d;
+    }
+    // The star's depth-only pre-pass as the Detailed Surface Scanner and the Full System Scanner draw it, first, on the G-buffer's targets:
+    // a null pixel shader (hash 0), and a vertex shader that declares cb0 alone, so no camera.
+    FlatRuntimeDraw star() const {
+        auto d = draw(gbuf, 23, depth, dsv, kStarVs, 0);
+        d.key.kind = kFlatContractScreen;
         return d;
     }
     // A supported pool draw: the only thing that makes a source record.
@@ -334,6 +342,151 @@ inline unsigned run() {
         expect(flatProjectionB1Unread(0x53211E8C072CD02Eull, 0x7EAC71963E66C5FEull) && flatProjectionB1Unread(0xFC1193AFFC596F74ull, 0x258B95AC99520C1Full) &&
                !flatProjectionB1Unread(0x53211E8C072CD02Eull, 0x7EAC71963E66C5FFull) && !flatProjectionB1Unread(0x114AF608F86D9ED8ull, kPreviewPs),
                "b1-free pairs are exact");
+        // the star's depth-only pre-pass (null pixel shader, colour writes off, no b1) draws first in the Detailed Surface Scanner and the Full
+        // System Scanner, ahead of the terrain that carries the camera (edvr_gfx_20261022_101031). It reads no b1.
+        expect(flatProjectionB1Unread(kStarVs, 0) && !flatProjectionB1Unread(kStarVs, 1) && !flatProjectionB1Unread(kStarVs, kPreviewPs) &&
+               !flatProjectionB1Unread(0x0EE43D81E394E70Dull, 0) && !flatProjectionB1Unread(0, 0),
+               "the star pre-pass is b1-free by its exact pair: the same vertex shader with any pixel shader, or the pixel shader alone, is not");
+        expect(!flatProjectionDrawUnchanged(kStarVs, 0), "the star pre-pass is not projection-inert: its depth uses the jittered b0 matrices");
+        Scene star1;
+        star1.see(star1.star());
+        for (uint64_t vs = 0x100; vs < 0x103; ++vs) star1.see(star1.writer(nullptr, vs));
+        {
+            const auto d = star1.donor(star1.lighting());
+            const auto* e = star1.entry(star1.gbuf);
+            expect(e && d && d.role == Role::Witness && d.why == Why::None && e->conflict == FlatWitnessConflict::None &&
+                   e->writers == 3 && e->first == 2 && e->hasCamera && e->cameraCurrent && d.witnessCameras == 1,
+                   "a star pre-pass drawn first on the G-buffer opens no entry and raises no conflict: the witness is accepted");
+            expect(e->firstVs == 0x100 && e->firstPs == kPreviewPs && e->b1 == token(0x3000) && e->offender.q == 0 &&
+                   d.entryFirst == 2 && d.entryFirstVs == 0x100 && d.entryFirstPs == kPreviewPs && d.entryHasCamera && d.offender.q == 0 &&
+                   d.entryB1 == token(0x3000),
+                   "the entry's first writer is the first camera writer, not the pre-pass, and no offender is recorded");
+        }
+        Scene star2;   // twice
+        star2.see(star2.star());
+        star2.see(star2.star());
+        for (uint64_t vs = 0x100; vs < 0x103; ++vs) star2.see(star2.writer(nullptr, vs));
+        expect(star2.donor(star2.lighting()).role == Role::Witness && star2.entry(star2.gbuf)->writers == 3 && star2.entry(star2.gbuf)->first == 3 &&
+               star2.entry(star2.gbuf)->conflict == FlatWitnessConflict::None, "the star pre-pass drawn twice first: accepted");
+        Scene star3;   // between camera writers, and bound to another camera: it reads no b1, so what it inherits there says nothing
+        star3.see(star3.writer());
+        star3.see(star3.star());
+        auto starOther = star3.star();
+        camera(starOther, kFrame, star3.p->sequence + 1, .5f);
+        star3.see(starOther);
+        star3.see(star3.writer());
+        expect(star3.donor(star3.lighting()).role == Role::Witness && star3.entry(star3.gbuf)->writers == 2 &&
+               star3.entry(star3.gbuf)->conflict == FlatWitnessConflict::None && star3.donor(star3.lighting()).witnessCameras == 1,
+               "a star pre-pass between the camera writers, with another camera in b1, is no second camera");
+        // the rule stays exact: a camera-less writer of any other pair drawn first still refuses the witness
+        const auto strip = [](FlatRuntimeDraw d) {
+            d.key.camera = nullptr; d.key.cameraHash = 0; d.key.b1 = nullptr; d.key.writeEpoch = 0; d.key.writeSeq = 0;
+            return d;
+        };
+        {
+            Scene other;   // an unknown pair, twice, as the star was before the rule
+            other.see(strip(other.writer(nullptr, 0x0123456789ABCDEFull)));
+            other.see(strip(other.writer(nullptr, 0x0123456789ABCDEFull)));
+            other.see(other.writer()); other.see(other.writer());
+            const auto d = other.donor(other.lighting());
+            expect(!d && d.why == Why::Conflict && d.conflict == FlatWitnessConflict::CameraProvenance && d.writers == 4 && !d.entryHasCamera,
+                   "two camera-less writers of an unknown pair first: still camera-not-current, none");
+            Scene one;     // an unknown pair once, then the camera: the entry has no camera to agree with
+            one.see(strip(one.writer(nullptr, 0x0123456789ABCDEFull)));
+            one.see(one.writer()); one.see(one.writer());
+            expect(!one.donor(one.lighting()) && one.entry(one.gbuf)->conflict == FlatWitnessConflict::Camera,
+                   "a camera-less writer of an unknown pair first, then the camera: still refused");
+            Scene vsOnly;  // the star's vertex shader with a pixel shader: a draw that may read its own constants
+            auto starPs = vsOnly.star(); starPs.key.ps = kPreviewPs;
+            vsOnly.see(starPs); vsOnly.see(starPs);
+            vsOnly.see(vsOnly.writer()); vsOnly.see(vsOnly.writer());
+            expect(!vsOnly.donor(vsOnly.lighting()) && vsOnly.entry(vsOnly.gbuf)->conflict == FlatWitnessConflict::CameraProvenance,
+                   "the star's vertex shader with a pixel shader is not the pre-pass: still refused");
+            Scene noVs;    // the null pixel shader with another vertex shader
+            auto psOnly = noVs.star(); psOnly.key.vs = 0x0EE43D81E394E70Dull;
+            noVs.see(psOnly); noVs.see(psOnly);
+            noVs.see(noVs.writer());
+            expect(!noVs.donor(noVs.lighting()) && noVs.entry(noVs.gbuf)->conflict == FlatWitnessConflict::CameraProvenance,
+                   "a null pixel shader with another vertex shader is not the pre-pass: still refused");
+        }
+        // the witness line's records: the entry's first writer, and the writer that first raised the conflict
+        {
+            Scene cf;   // a first camera writer, then a stale camera (the offender), then another conflict that is not kept
+            auto first = cf.writer(nullptr, 0x100); cf.see(first);
+            auto stale = cf.writer(nullptr, 0x200, .025f, 23); stale.key.writeEpoch = kFrame - 1; cf.see(stale);
+            auto later = strip(cf.writer(nullptr, 0x300)); cf.see(later);
+            const auto* e = cf.entry(cf.gbuf);
+            const auto d = cf.donor(cf.lighting());
+            expect(e && e->conflict == FlatWitnessConflict::CameraProvenance && e->writers == 3 && e->first == 1 && e->firstVs == 0x100 &&
+                   e->firstPs == kPreviewPs && e->hasCamera,
+                   "the entry keeps its first writer's pair");
+            expect(e->offender.q == 2 && e->offender.vs == 0x200 && e->offender.ps == kPreviewPs && e->offender.b1 == token(0x3000) &&
+                   e->offender.has(kWitnessTermCamera) && !e->offender.has(kWitnessTermEpoch) && e->offender.has(kWitnessTermOrdered) &&
+                   !e->offender.has(kWitnessTermTrusted) && e->offender.has(kWitnessTermHash),
+                   "a stale camera write: the offender is the second writer, with the epoch term failing and the others holding");
+            expect(!d && d.entry && d.entryFirst == 1 && d.entryFirstVs == 0x100 && d.entryFirstPs == kPreviewPs && d.entryHasCamera &&
+                   d.offender.q == 2 && d.offender.vs == 0x200 && d.offender.terms == e->offender.terms && d.entryB1 == token(0x3000),
+                   "the donor carries the first writer and the offender for the line");
+            struct Term { const char* name; void (*change)(FlatRuntimeDraw&); uint8_t terms; };
+            const uint8_t all = kWitnessTermCamera | kWitnessTermEpoch | kWitnessTermOrdered | kWitnessTermHash;
+            const Term terms[] = {
+                {"no camera at all", [](FlatRuntimeDraw& d) { d.key.camera = nullptr; d.key.cameraHash = 0; d.key.b1 = nullptr; d.key.writeEpoch = 0; d.key.writeSeq = 0; }, 0},
+                {"a stale epoch", [](FlatRuntimeDraw& d) { d.key.writeEpoch = kFrame - 1; }, uint8_t(all & ~kWitnessTermEpoch)},
+                {"a camera written after the draw", [](FlatRuntimeDraw& d) { d.key.writeSeq += 50; }, uint8_t(all & ~kWitnessTermOrdered)},
+                {"a hash that is not the bytes'", [](FlatRuntimeDraw& d) { d.key.cameraHash ^= 1; }, uint8_t(all & ~kWitnessTermHash)},
+                {"a trusted hash, not recomputed", [](FlatRuntimeDraw& d) { d.key.cameraHash ^= 1; d.cameraHashTrusted = true; d.key.writeEpoch = kFrame - 1; },
+                 uint8_t(kWitnessTermCamera | kWitnessTermOrdered | kWitnessTermTrusted | kWitnessTermHash)},
+            };
+            for (const Term& t : terms) {
+                Scene ts;
+                ts.see(ts.writer(nullptr, 0x100));
+                auto tw = ts.writer(nullptr, 0x200); t.change(tw); ts.see(tw);
+                const auto* x = ts.entry(ts.gbuf);
+                if (!(x && x->offender.q == 2 && x->offender.terms == t.terms))
+                    std::printf("deferred witness term `%s`: offender q=%u terms=%u wanted %u\n", t.name, x ? x->offender.q : 0, x ? x->offender.terms : 0, t.terms);
+                expect(x && x->conflict == FlatWitnessConflict::CameraProvenance && x->offender.q == 2 && x->offender.terms == t.terms, t.name);
+            }
+            Scene nc;   // a camera-less first writer: the entry has no camera, and the next camera-less writer is the offender
+            nc.see(strip(nc.writer(nullptr, 0x0123456789ABCDEFull)));
+            nc.see(strip(nc.writer(nullptr, 0x0123456789ABCDEEull)));
+            const auto* n = nc.entry(nc.gbuf);
+            const auto nd = nc.donor(nc.lighting());
+            expect(n && !n->hasCamera && n->b1 == nullptr && n->first == 1 && n->firstVs == 0x0123456789ABCDEFull && n->firstPs == kPreviewPs &&
+                   n->conflict == FlatWitnessConflict::CameraProvenance && n->offender.q == 2 && n->offender.vs == 0x0123456789ABCDEEull &&
+                   n->offender.b1 == nullptr && n->offender.terms == 0 &&
+                   nd.entryFirst == 1 && !nd.entryHasCamera && nd.entryB1 == nullptr && nd.offender.q == 2,
+                   "a camera-less first writer is recorded as such, and so is the writer that raised camera-not-current");
+            struct Kind { const char* name; FlatWitnessConflict reason; void (*change)(FlatRuntimeDraw&); };
+            const Kind kinds[] = {
+                {"layout", FlatWitnessConflict::Layout, [](FlatRuntimeDraw& d) { d.key.dsv = token(0x2BAD); }},
+                {"viewport", FlatWitnessConflict::Viewport, [](FlatRuntimeDraw& d) { d.key.viewport[2] = 960; }},
+                {"second camera", FlatWitnessConflict::Camera, [](FlatRuntimeDraw& d) { d.key.b1 = token(0x3001); }},
+            };
+            for (const Kind& k : kinds) {
+                Scene ks;
+                ks.see(ks.writer(nullptr, 0x100));
+                auto kw = ks.writer(nullptr, 0x200); k.change(kw); ks.see(kw);
+                const auto* x = ks.entry(ks.gbuf);
+                expect(x && x->conflict == k.reason && x->offender.q == 2 && x->offender.vs == 0x200 && x->offender.has(kWitnessTermCamera),
+                       k.name);
+            }
+            Scene ok;   // no conflict: no offender, and a restart forgets both records
+            ok.see(ok.writer(nullptr, 0x100)); ok.see(ok.writer(nullptr, 0x200));
+            expect(ok.entry(ok.gbuf)->offender.q == 0 && ok.entry(ok.gbuf)->offender.terms == 0 && ok.entry(ok.gbuf)->firstVs == 0x100,
+                   "an unconflicted entry records no offender");
+            flatRuntimeWritten(*ok.p, ok.gbuf);
+            expect(ok.entry(ok.gbuf)->firstVs == 0 && ok.entry(ok.gbuf)->firstPs == 0 && ok.entry(ok.gbuf)->offender.q == 0 &&
+                   ok.donor(ok.lighting()).entryFirst == 0,
+                   "a colour write restarts the entry, and the records with it");
+            Scene none;
+            expect(none.donor(none.lighting()).entryFirst == 0 && none.donor(none.lighting()).offender.q == 0 && !none.donor(none.lighting()).entryHasCamera,
+                   "no entry: no first writer, no offender");
+            Scene dep;   // an explicit write to the depth is a conflict no writer raised
+            dep.see(dep.writer());
+            flatRuntimeWritten(*dep.p, dep.depth);
+            expect(dep.entry(dep.gbuf)->conflict == FlatWitnessConflict::Written && dep.entry(dep.gbuf)->offender.q == 0 &&
+                   dep.donor(dep.lighting()).offender.q == 0, "an explicit write names no offending writer");
+        }
         Scene y;   // a compute pass writing the G-buffer through a UAV
         y.see(y.writer());
         flatRuntimeDispatchObserveWritten(*y.p, token(0x7777));
@@ -448,6 +601,34 @@ inline unsigned run() {
         const auto camera = verifier.find("flat deferred HDR camera:");
         expect(relation != std::string::npos && line != std::string::npos && camera != std::string::npos && relation < line && line < camera,
                "the witness line follows the relation it reports and precedes the HDR camera line");
+        // the line names the entry's first writer and the writer that raised its conflict, once each, from the donor's copies of them, and its
+        // worst case fits the 1200-byte buffer note() formats into (a 15-byte stamp, the CRLF and the truncation marker included)
+        const std::string call = between(verifier, "Log::get().note(\"flat deferred witness:", "witnessLastLog=now;");
+        expect(countOf(call, " first=%u first-vs=%016llX first-ps=%016llX first-camera=%u offender=%u offender-vs=%016llX offender-ps=%016llX "
+                             "offender-b1=%p offender-camera=%u offender-epoch=%u offender-ordered=%u offender-trusted=%u offender-hash=%u donor-role=%s") == 1 &&
+               countOf(call, "donor.entryFirst,(unsigned long long)donor.entryFirstVs,(unsigned long long)donor.entryFirstPs,donor.entryHasCamera?1u:0u,\n"
+                             "            donor.offender.q,(unsigned long long)donor.offender.vs,(unsigned long long)donor.offender.ps,donor.offender.b1,\n"
+                             "            donor.offender.has(kWitnessTermCamera)?1u:0u,donor.offender.has(kWitnessTermEpoch)?1u:0u,\n"
+                             "            donor.offender.has(kWitnessTermOrdered)?1u:0u,donor.offender.has(kWitnessTermTrusted)?1u:0u,\n"
+                             "            donor.offender.has(kWitnessTermHash)?1u:0u,\n") == 1,
+               "the witness line prints the first writer and the offender, once each, in the order its arguments are given");
+        {
+            const size_t open = call.find('"'), close = open == std::string::npos ? open : call.find("\",\n", open + 1);
+            const std::string fmt = close == std::string::npos ? std::string{} : call.substr(open + 1, close - open - 1);
+            size_t worst = 0;
+            bool known = !fmt.empty();
+            for (size_t i = 0; i < fmt.size(); ++i) {
+                if (fmt[i] != '%') { ++worst; continue; }
+                if (fmt.compare(i, 7, "%016llX") == 0) { worst += 16; i += 6; }
+                else if (fmt.compare(i, 4, "%llu") == 0) { worst += 20; i += 3; }
+                else if (fmt.compare(i, 2, "%p") == 0) { worst += 16; i += 1; }
+                else if (fmt.compare(i, 2, "%u") == 0) { worst += 10; i += 1; }
+                else if (fmt.compare(i, 2, "%s") == 0) { worst += 28; i += 1; }
+                else known = false;
+            }
+            if (known && worst + 15 + 3 + 15 > 1200) std::printf("deferred witness line: worst case %zu bytes of message\n", worst);
+            expect(known && worst + 15 + 3 + 15 <= 1200, "the witness line's worst case fits the log line buffer");
+        }
         // the hook that fills the table is inside the reducer, after the source records, for the draws the table names
         const std::string hook = between(model, "} else if (!d.supported && k.kind == kFlatContractScreen", "return out;");
         expect(!hook.empty() && hook.find("k.depth && k.dsv && k.rtv") != std::string::npos && hook.find("flatRuntimeNoteWitness(p, d, q)") != std::string::npos,

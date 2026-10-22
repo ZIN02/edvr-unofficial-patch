@@ -2,9 +2,9 @@
 
 ## Status
 
+- **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. BUILT, NOT FLOWN (last entry).
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
-- **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
-- **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
+- **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed. RC4 state (2026-10-17): moved to Status detail below (2026-10-21), unchanged.
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
   treatment (34-37); cockpit projection and smoother DLSS edges (40-43); PS91
   motion ownership and rigid BFE shell motion (49-51); on-foot weapon camera
@@ -18329,3 +18329,49 @@ star Scan fields), which put system and body names in logs; the
 `flat star dump: truth` lines carry that ground truth into each dump.
 Purpose: find the constants that carry a star's temperature, radius and
 intensity for the star-glow design. Remove both once that is read.
+
+### 2026-10-22: the star pre-pass poisoned the Detailed Surface Scanner's witness (built, not flown)
+
+Evidence, `edvr_gfx_20261022_101031` (flat, XeSS, 960x600 to 1920x1200): the Detailed Surface Scanner from 10:34:10, census 7 at 10:35:00.
+Symptom: a 4-frame cycle. F: the jittered frame is refused (`deferred-inverse-unproven`; 225 lines in the whole log) and spatially recovered. R:
+`engine-source-not-ready`. W1 and W2: zero-phase warm-ups. The holo panels flicker with the cycle, the Motion source view flashes, and the
+UI layer's door refuses untreated frames (`door-refused-untreated` 395 and 450 in the 30 s windows at 10:34:32 and 10:35:02, 0 at 10:34:02).
+
+Cause: the scanner view has no pool draws, so the deferred lighting pass is verified through the source-free camera witness
+(`flatRuntimeNoteWitness`). Its entry opens from the first Screen-kind writer on the depth and colour. In census 7 frame 0 the first writers
+that are not inert pairs are #21 and #22 (q 50 and 51), the star's depth-only pre-pass: VS 0EE43D81E394E70C, PS null (hash 0), colour write
+mask 0, `vs-cb=0,2`. The saved 420-byte VS declares one constant buffer, cb0[8], so it never reads b1. The entry opened with
+`hasCamera=false` and the next camera-less star draw set `CameraProvenance`. Every witness line from 10:34:14 to 10:35:04 reads
+`entry=1 writers=82 distinct-cameras=0 conflict=camera-not-current camera=0 b1=0 donor-role=none why=witness-conflict`; the 80 terrain
+writers after the pre-pass carry the camera but arrive at an entry that is already conflicted. An earlier Detailed Surface Scanner
+(GuiFocus 10, 10:24:33 to 10:24:54) read `writers=88 b1=7AE4F060 why=accepted`. The first Full System Scanner visit (GuiFocus 9, 10:22:18
+to 10:22:52) shows the same poison with one star draw first (`conflict=second-camera camera=0 b1=0 writers=81`: the entry has no camera
+to agree with the terrain's).
+
+Fix: the pair (VS 0EE43D81E394E70C, PS 0) joins `flatProjectionB1Unread`, so the witness neither opens nor conflicts an entry for it. It stays
+out of `flatProjectionDrawUnchanged`: its depth uses the jittered b0 matrices, so it is not projection-inert. The other user of
+`flatProjectionB1Unread`, the HDR image-copy rule (`t->imageCopyFirst`), sits under `k.format == 26`; the pre-pass draws into a format 23
+target in all seven censuses, so that rule is unchanged. A null pixel shader reaches the model as hash 0 (`shaderHashMemo` returns 0 for a
+null pointer and `bindingSetShader` stores it), and the census prints it as `ps=0000000000000000`. Hash 0 also means an unregistered shader,
+so the rule is the exact pair: the same VS with any other PS is still a writer.
+
+Instrument, on the existing `flat deferred witness:` line: `first=`, `first-vs=`, `first-ps=`, `first-camera=` (the entry's first writer;
+its b1 is the existing `b1=`), and `offender=` (its q, 0 for none), `offender-vs=`, `-ps=`, `-b1=`, `-camera=`, `-epoch=` (written this frame),
+`-ordered=` (written before the draw), `-trusted=`, `-hash=` (the hash is the rows' own): the writer that first raised the conflict, and which
+term of the camera-current test it failed. The second Full System Scanner visit (10:25:09 to 10:28:53) alternates accepted lines with
+`conflict=second-camera` lines that have a camera (`camera=5224EF25B0B212C8 b1=7AE4F060` at 10:25:28). The star at q 170 carried that same
+camera (the H-bucket line at 10:25:28.452 names it as the first writer), so the pre-pass probably opened the entry there too, with a camera
+that a terrain writer then disagreed with; not proven. If that conflict survives the rule, the offender fields name the writer. Worst-case
+line is 1110 of 1166 bytes (pinned by the rig).
+
+Ruled out:
+- the panels not being admitted in the Detailed Surface Scanner: ruled out, because the pair, target, blend and depth state match the cockpit and the family asked 3.97 per frame;
+- the scanner camera not being injected: ruled out, because injected=4050 per 5 s = 75 frames x 54 kind-3 calls;
+- a stale camera constant buffer: ruled out, because 7AE4F060 was written this frame.
+
+The Full System Scanner's map treatment (7e6894a9, temporal AA off while it is open) stays as the maintainer's product choice. Some of the
+blur seen there before it came from this same defect, not from the scene.
+
+Flight (Detailed Surface Scanner, same scene): the witness line reads `why=accepted` with `conflict=none`, `offender=0`, and `first-vs` the
+first terrain writer; no `deferred-inverse-unproven` and no `engine-source-not-ready`; `door-refused-untreated=0`; the `composite
+output 960x600` / `1920x1200` alternation stops; `treated-jittered` in every 5 s window. If a conflict remains, read `offender-*`.

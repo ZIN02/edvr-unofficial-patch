@@ -195,15 +195,33 @@ inline const char* flatWitnessConflictName(FlatWitnessConflict c) {
     default: return "none";
     }
 }
+// One writer as the witness saw it, for the witness line: the pair, the b1 it bound, its q, and one bit for each term flatRuntimeCameraCurrent
+// asks of its camera. A line that says conflict=camera-not-current then says which writer raised it and which term it failed.
+enum : uint8_t {
+    kWitnessTermCamera = 1,    // key.camera is not null: it bound readable camera rows
+    kWitnessTermEpoch = 2,     // the camera was written this frame (writeEpoch == frame)
+    kWitnessTermOrdered = 4,   // and before the draw (writeSeq nonzero, writeSeq <= q)
+    kWitnessTermTrusted = 8,   // the hash was recorded with the rows (cameraHashTrusted), not recomputed
+    kWitnessTermHash = 16      // the hash is the rows' own: trusted, or equal to flatCameraHash of them
+};
+struct FlatWitnessWriter {
+    uint64_t vs = 0, ps = 0;
+    const void* b1 = nullptr;
+    uint32_t q = 0;            // 0: no such writer
+    uint8_t terms = 0;
+    bool has(uint8_t term) const { return (terms & term) != 0; }
+};
 struct FlatRuntimeCameraWitness {
     const void* depth = nullptr, *color = nullptr, *rtv = nullptr, *dsv = nullptr, *b1 = nullptr;
     uint64_t cameraHash = 0, writeEpoch = 0, lastWriteEpoch = 0;
+    uint64_t firstVs = 0, firstPs = 0;   // the first writer's pair (its q is `first`, its b1 `b1`, its camera `hasCamera`)
     uint32_t writeSeq = 0, lastWriteSeq = 0, first = 0, last = 0, writers = 0;
     uint32_t width = 0, height = 0, depthWidth = 0, depthHeight = 0, format = 0, depthFormat = 0;
     bool fullViewport = false;    // the first writer's viewport; a later writer's partial one is a conflict
     bool hasCamera = false;       // the first writer bound readable camera rows
     bool cameraCurrent = false;   // flatRuntimeCameraCurrent of the first writer; a later writer's failing it is a conflict
     FlatWitnessConflict conflict = FlatWitnessConflict::None;
+    FlatWitnessWriter offender;   // the writer that first raised `conflict` (q 0 for none, or for an explicit write)
     unsigned char camera[kFlatCameraBytes]{};
 };
 static_assert(sizeof(FlatRuntimeCameraWitness) <= 256, "keep the camera witness table small: the prefix is rebuilt every frame");
@@ -298,6 +316,19 @@ inline bool flatRuntimeCameraCurrent(const FlatRuntimeDraw& d, uint32_t q, uint6
     return q && k.b1 && k.camera && k.writeEpoch == frame && k.writeSeq && k.writeSeq <= q &&
         (d.cameraHashTrusted || k.cameraHash == flatCameraHash(d.camera));
 }
+// The witness line's record of a writer: flatRuntimeCameraCurrent's terms, each kept apart.
+inline FlatWitnessWriter flatRuntimeWitnessWriter(const FlatRuntimeDraw& d, uint32_t q, uint64_t frame) {
+    const auto& k = d.key;
+    FlatWitnessWriter w; w.vs = k.vs; w.ps = k.ps; w.b1 = k.b1; w.q = q;
+    unsigned terms = 0;
+    if (k.camera) terms |= kWitnessTermCamera;
+    if (k.writeEpoch == frame) terms |= kWitnessTermEpoch;
+    if (k.writeSeq && k.writeSeq <= q) terms |= kWitnessTermOrdered;
+    if (d.cameraHashTrusted) terms |= kWitnessTermTrusted;
+    if (k.camera && (d.cameraHashTrusted || k.cameraHash == flatCameraHash(d.camera))) terms |= kWitnessTermHash;
+    w.terms = static_cast<uint8_t>(terms);
+    return w;
+}
 // One Screen-kind writer that is not a supported pair, noted while no source record exists on its depth (a source record there means the
 // pool rule alone decides, now and for the rest of the frame: records are never removed). The first writer of a (depth, colour) makes the
 // entry; every later one either agrees with it or raises the entry's conflict, the first reason kept. The draw's camera rows are already in
@@ -323,6 +354,7 @@ inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& 
         e->width = k.width; e->height = k.height; e->depthWidth = k.depthWidth; e->depthHeight = k.depthHeight;
         e->format = k.format; e->depthFormat = k.depthFormat;
         e->fullViewport = full; e->hasCamera = k.camera != nullptr; e->cameraCurrent = current;
+        e->firstVs = k.vs; e->firstPs = k.ps;
         if (k.camera) std::memcpy(e->camera, d.camera, kFlatCameraBytes);
         return;
     }
@@ -335,7 +367,8 @@ inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& 
     else if (!full) e->conflict = FlatWitnessConflict::Viewport;
     else if (!current) e->conflict = FlatWitnessConflict::CameraProvenance;
     else if (!sameCamera) e->conflict = FlatWitnessConflict::Camera;
-    else { e->lastWriteEpoch = k.writeEpoch; e->lastWriteSeq = k.writeSeq; }
+    else { e->lastWriteEpoch = k.writeEpoch; e->lastWriteSeq = k.writeSeq; return; }
+    e->offender = flatRuntimeWitnessWriter(d, q, p.frame);   // this writer raised the conflict; the first reason is kept above
 }
 enum class FlatDeferredDonorRole : uint8_t { None, Pool, Witness };
 inline const char* flatDeferredDonorRoleName(FlatDeferredDonorRole r) {
@@ -385,6 +418,11 @@ struct FlatDeferredDonor {
     FlatWitnessConflict conflict = FlatWitnessConflict::None;
     uint64_t entryCameraHash = 0;
     const void* entryB1 = nullptr;
+    // The entry's first writer (q 0 with no entry) and the writer that raised its conflict (q 0 for none), as the entry kept them.
+    uint32_t entryFirst = 0;
+    uint64_t entryFirstVs = 0, entryFirstPs = 0;
+    bool entryHasCamera = false;
+    FlatWitnessWriter offender;
     // The first other entry on the depth that carried another camera (why == OtherCamera): its colour, b1 and camera hash.
     const void* vetoColor = nullptr, *vetoB1 = nullptr;
     uint64_t vetoHash = 0;
@@ -440,7 +478,8 @@ inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
             seen=p.witnesses[j].depth==k.depth && flatRuntimeWitnessSameCamera(p.witnesses[j],w);
         if(w.hasCamera && !seen)++out.witnessCameras;
     }
-    if(e){out.entry=true;out.writers=e->writers;out.conflict=e->conflict;out.entryCameraHash=e->hasCamera?e->cameraHash:0;out.entryB1=e->b1;}
+    if(e){out.entry=true;out.writers=e->writers;out.conflict=e->conflict;out.entryCameraHash=e->hasCamera?e->cameraHash:0;out.entryB1=e->b1;
+        out.entryFirst=e->first;out.entryFirstVs=e->firstVs;out.entryFirstPs=e->firstPs;out.entryHasCamera=e->hasCamera;out.offender=e->offender;}
     if(p.witnessOverflow){out.why=FlatDeferredDonorWhy::Overflow;return out;}
     if(!e){out.why=FlatDeferredDonorWhy::NoEntry;return out;}
     if(e->conflict!=FlatWitnessConflict::None){out.why=FlatDeferredDonorWhy::Conflict;return out;}

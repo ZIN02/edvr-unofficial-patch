@@ -28,9 +28,17 @@ inline bool flatProjectionDrawUnchanged(uint64_t vs, uint64_t ps) {
 // declares no constant buffer and whose PS reads only its own cb2 (that camera has its own pixel
 // recipe). The source-free camera witness neither opens nor conflicts an entry for them: on the
 // loadout screen (flat_trace_20491) this pair runs on the scene depth with an auxiliary preview
-// scene's camera still bound in b1.
+// scene's camera still bound in b1. The star's depth-only pre-pass is the third: its VS declares one
+// constant buffer, cb0[8] (the saved 420-byte bytecode), so it never reads b1; its PS is null (a null
+// pixel shader hashes to 0) and its colour write mask is 0. It is the first Screen-kind writer in the
+// Detailed Surface Scanner and the Full System Scanner, ahead of the terrain, and as the first writer it
+// opened the witness with no camera and the next star draw raised camera-not-current, so the deferred
+// lighting pass was refused on every jittered frame (edvr_gfx_20261022_101031, census 7). That does not
+// make the pre-pass projection-inert: its depth uses the jittered b0 matrices, so it stays out of
+// flatProjectionDrawUnchanged.
 inline bool flatProjectionB1Unread(uint64_t vs, uint64_t ps) {
     return flatProjectionDrawUnchanged(vs, ps) ||
-           (vs == 0x53211E8C072CD02Eull && ps == 0x7EAC71963E66C5FEull);
+           (vs == 0x53211E8C072CD02Eull && ps == 0x7EAC71963E66C5FEull) ||
+           (vs == 0x0EE43D81E394E70Cull && ps == 0);
 }
 }

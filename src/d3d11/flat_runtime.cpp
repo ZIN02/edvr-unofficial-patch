@@ -2155,10 +2155,15 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     // pass cannot hide the ones that do not.
     uint64_t& witnessLastLog=donor?s.deferredWitnessLastLog:s.deferredWitnessRefusedLastLog;
     if(!donor.poolRecords && flatDeferredFailureWitnessDue(++s.deferredWitnessCalls,now,witnessLastLog)) {
-        Log::get().note("flat deferred witness: frame=%llu q=%u H=%p depth=%p SRV0=%p entry=%u writers=%u entries-on-depth=%u distinct-cameras=%u conflict=%s overflow=%u camera=%016llX b1=%p veto=%p veto-b1=%p veto-camera=%016llX donor-role=%s why=%s relation=%s accepted=%u calls=%llu; no source record on this depth, the G-buffer writers' camera stands in only where every writer on the depth agrees",
+        Log::get().note("flat deferred witness: frame=%llu q=%u H=%p depth=%p SRV0=%p entry=%u writers=%u entries-on-depth=%u distinct-cameras=%u conflict=%s overflow=%u camera=%016llX b1=%p veto=%p veto-b1=%p veto-camera=%016llX first=%u first-vs=%016llX first-ps=%016llX first-camera=%u offender=%u offender-vs=%016llX offender-ps=%016llX offender-b1=%p offender-camera=%u offender-epoch=%u offender-ordered=%u offender-trusted=%u offender-hash=%u donor-role=%s why=%s relation=%s accepted=%u calls=%llu; no source record on this depth, the G-buffer writers' camera stands in only where every writer on the depth agrees; first is the entry's first writer (its b1 is b1), offender the writer that raised the conflict (0: none)",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.depth,k.srvResource[0],donor.entry?1u:0u,donor.writers,
             donor.witnessEntries,donor.witnessCameras,flatWitnessConflictName(donor.conflict),donor.overflow?1u:0u,
             (unsigned long long)donor.entryCameraHash,donor.entryB1,donor.vetoColor,donor.vetoB1,(unsigned long long)donor.vetoHash,
+            donor.entryFirst,(unsigned long long)donor.entryFirstVs,(unsigned long long)donor.entryFirstPs,donor.entryHasCamera?1u:0u,
+            donor.offender.q,(unsigned long long)donor.offender.vs,(unsigned long long)donor.offender.ps,donor.offender.b1,
+            donor.offender.has(kWitnessTermCamera)?1u:0u,donor.offender.has(kWitnessTermEpoch)?1u:0u,
+            donor.offender.has(kWitnessTermOrdered)?1u:0u,donor.offender.has(kWitnessTermTrusted)?1u:0u,
+            donor.offender.has(kWitnessTermHash)?1u:0u,
             flatDeferredDonorRoleName(donor.role),flatDeferredDonorWhyName(donor.why),
             flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredWitnessCalls);
         witnessLastLog=now;

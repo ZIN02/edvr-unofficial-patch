@@ -5047,20 +5047,19 @@ void temporalPassConfigure(Config& cfg) {
     // it observes the engine, not the renderer, so it arms on its own key.
     schedulerStackProbeConfigure(cfg.getBool("advanced.scheduler_probe", false));
     applyEngineMotionDiagnostics();
-    // K is the default in every mode. The legacy "steady" alias uses K for the
-    // full frame in every mode; quality = K everywhere; responsive = J everywhere (NVIDIA: slightly less
-    // ghosting, a little more flicker); auto = the driver's own choice per
-    // mode (K for DLAA, Quality and Balanced, M for Performance, L for Ultra
-    // Performance). The letters are silent aliases for one model everywhere
-    // (L and M are never applied under DLAA: five times the price). Live: a
-    // change recreates the features.
+    // K is the default in every mode; the legacy "steady" and "quality" aliases
+    // are K too. The letters are silent aliases for one model everywhere (L and
+    // M are never applied under DLAA: five times the price). J, its alias
+    // "responsive", and the driver's own choice ("auto", "default") were
+    // removed 2026-10-21 and run K through the unknown-name note below. Live:
+    // a change recreates the features.
     const std::string model = cfg.getString("fix.temporal_aa_model", "k");
     const auto preset = temporalPresetFor(model);
     // The letters stop here, and deliberately. NVSDK_NGX_DLSS_Hint_Render_
     // Preset (nvsdk_ngx_defs.h, DLSS SDK 310.4) has no A, B, C or D at all
     // -- they were removed, with the header saying to use J or K instead --
     // and it marks G, H, I, N and O as reverting to default behaviour if
-    // asked for. E and F are deprecated; this UI exposes J, K, L and M.
+    // asked for. E and F are deprecated; this UI exposes K, L and M.
     // A tidier-looking letter range would offer four presets that no
     // longer exist.
     if (!preset.known) {
@@ -5072,7 +5071,7 @@ void temporalPassConfigure(Config& cfg) {
             modelWarned = true;
             Log::get().note(
                 "temporal aa: fix.temporal_aa_model = \"%s\" is not a model this build knows "
-                "(k, j, l, m, auto, or legacy steady/quality/responsive). Running preset K.",
+                "(k, l, m, or legacy steady/quality; j, auto and responsive were removed). Running preset K.",
                 model.c_str());
         }
     }

@@ -2500,9 +2500,11 @@ int main(int argc, char** argv) {
     expectFloat("fix.render_sharpness", 0.3f, "flat scope permits the sharpening setting");
     expectStr("hotkey.dump_camera", "", "flat menu exception leaves unrelated hotkeys suppressed");
     const struct { const char* name; unsigned full, fovea; bool known; } presets[] = {
-        {"auto",0,0,true},{"default",0,0,true},{"j",10,10,true},
         {"K",11,11,true},{"l",12,12,true},{"m",13,13,true},
-        {"quality",11,11,true},{"steady",11,12,true},{"responsive",10,10,true},
+        {"quality",11,11,true},{"steady",11,12,true},{"",11,11,true},
+        // J, its alias responsive and the driver's choice (auto, default) were removed
+        // 2026-10-21: unknown, so K with the once-per-session note.
+        {"j",11,11,false},{"auto",11,11,false},{"default",11,11,false},{"responsive",11,11,false},
         {"removed-preset",11,11,false}
     };
     for (const auto& p : presets) {

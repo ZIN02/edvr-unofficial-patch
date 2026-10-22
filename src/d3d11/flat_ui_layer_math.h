@@ -78,8 +78,25 @@ inline UiLayerFamily flatUiFamilyFor(uint64_t vs, uint64_t ps, bool mapOpen, boo
 // composite) and stays out: only the exact pair is named.
 constexpr uint64_t kFlatUiMapToneVs = 0xCFA91824129ECBBCull;
 constexpr uint64_t kFlatUiMapTonePs = 0xC89DD4ED362D743Full;
+// THE FULL SYSTEM SCANNER'S TONEMAP, IN THE SAME TABLE (2026-10-22, census 2 of log edvr_gfx_20261022_112019, build d4abc498, GuiFocus 9):
+// VS F9CFC798F21E9AEA (the steady tone VS, E894's) with PS 6DE70EBBF82FCBE6 reads the 960x600 R11G11B10F scene at PS t0 and a 480x300
+// R11G11B10F bloom at t1, and writes a 960x600 target (format 27, RGBA8 view) that 20F383BB/DED87960 takes to the 1920x1200 output. The
+// scanner's text is the holo panels (4 a frame) and the target sprite (16 a frame) drawn into that scene; the layer asked for all 36000
+// of them in 30 s and refused every one tone-unproven, because no tone table named this pair. Like the map tone it reads the scene in
+// slot 0, so the UI layer's candidate branch takes it as it takes the map's, and like the map tone it is NOT in the registry (the
+// reasons above hold: the resolve, the target's tone record and the HDR route's trigger must not see a new pass). Only the exact pair
+// is named: E894 shares the VS, and a neighbouring PS on it is another pass.
+constexpr uint64_t kFlatUiScannerToneVs = 0xF9CFC798F21E9AEAull;
+constexpr uint64_t kFlatUiScannerTonePs = 0x6DE70EBBF82FCBE6ull;
+// Which screen's tonemap a pair of this table is, for the log lines that say so (the table's slot answer is the same for both).
+enum class FlatUiToneScreen : uint8_t { kNone = 0, kMaps, kScanner };
+inline FlatUiToneScreen flatUiMapToneScreenOf(uint64_t vs, uint64_t ps) {
+    if (vs == kFlatUiMapToneVs && ps == kFlatUiMapTonePs) return FlatUiToneScreen::kMaps;
+    if (vs == kFlatUiScannerToneVs && ps == kFlatUiScannerTonePs) return FlatUiToneScreen::kScanner;
+    return FlatUiToneScreen::kNone;
+}
 inline uint32_t flatUiMapToneSlotOf(uint64_t vs, uint64_t ps) {
-    return vs == kFlatUiMapToneVs && ps == kFlatUiMapTonePs ? 0u : ~0u;  // the scene is SRV slot 0
+    return flatUiMapToneScreenOf(vs, ps) != FlatUiToneScreen::kNone ? 0u : ~0u;  // the scene is SRV slot 0
 }
 
 // The 11:40 XeSS cockpit capture physically verified both exact E894 variants reading the HDR HUD at PS t1 and writing

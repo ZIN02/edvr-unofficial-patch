@@ -1458,6 +1458,34 @@ void testFlatLayerRules() {
               flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0xFEE777E92850B390ull) == ~0u,
           "map tone: a neighbouring PS on CFA918, the same PS on another VS, and the registry's own pair are not this table's "
           "(the bloom composite FA01CD writes the scene and is named by neither: its exact hash is not in the repo)");
+    // The Full System Scanner's tonemap (census 2 of edvr_gfx_20261022_112019, GuiFocus 9, build d4abc498): VS F9CFC798F21E9AEA with PS
+    // 6DE70EBBF82FCBE6 reads the 960x600 scene in slot 0 (and a 480x300 bloom at t1). Named in the same UI-only table as the map tone: the
+    // exact pair answers slot 0, every other mix does not, and it is neither an E894-layout source tone nor (wiring scan below) a registry tone.
+    check(flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0x6DE70EBBF82FCBE6ull) == 0u &&
+              flatUiMapToneSlotOf(kFlatUiScannerToneVs, kFlatUiScannerTonePs) == 0u,
+          "scanner tone: VS F9CFC798 with PS 6DE70EBB is the Full System Scanner's tonemap, reading the scene in slot 0");
+    check(flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0x6DE70EBBF82FCBE7ull) == ~0u &&
+              flatUiMapToneSlotOf(0xF9CFC798F21E9AEBull, 0x6DE70EBBF82FCBE6ull) == ~0u &&
+              flatUiMapToneSlotOf(0x43CA9F1C0AD2ACFEull, 0x6DE70EBBF82FCBE6ull) == ~0u &&
+              flatUiMapToneSlotOf(0xCFA91824129ECBBCull, 0x6DE70EBBF82FCBE6ull) == ~0u &&
+              flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0) == ~0u && flatUiMapToneSlotOf(0, 0x6DE70EBBF82FCBE6ull) == ~0u &&
+              flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0xE8948389387DA083ull) == ~0u &&
+              flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0xFEE777E92850B390ull) == ~0u &&
+              flatUiMapToneSlotOf(0xF9CFC798F21E9AEAull, 0xC89DD4ED362D743Full) == ~0u &&
+              flatUiMapToneSlotOf(0xCFA91824129ECBBCull, 0xE8948389387DA083ull) == ~0u,
+          "scanner tone: only the exact pair; a neighbouring PS or VS, the transition VS 43CA9F1C, the map VS, a VS-only or PS-only mix and "
+          "the VS with the E894, registry or map PS are not named");
+    check(!flatUiSourceTonePair(0xF9CFC798F21E9AEAull, 0x6DE70EBBF82FCBE6ull) &&
+              !flatUiSourceTonePair(0x43CA9F1C0AD2ACFEull, 0x6DE70EBBF82FCBE6ull) &&
+              !flatUiSourceTonePair(0xCFA91824129ECBBCull, 0x6DE70EBBF82FCBE6ull),
+          "scanner tone: it is not a flatUiSourceTonePair (the E894 layout reads the HUD at t1; this tone reads the scene at t0)");
+    check(flatUiMapToneScreenOf(kFlatUiMapToneVs, kFlatUiMapTonePs) == FlatUiToneScreen::kMaps &&
+              flatUiMapToneScreenOf(kFlatUiScannerToneVs, kFlatUiScannerTonePs) == FlatUiToneScreen::kScanner &&
+              flatUiMapToneScreenOf(kFlatUiMapToneVs, kFlatUiScannerTonePs) == FlatUiToneScreen::kNone &&
+              flatUiMapToneScreenOf(kFlatUiScannerToneVs, kFlatUiMapTonePs) == FlatUiToneScreen::kNone &&
+              flatUiMapToneScreenOf(kFlatUiScannerToneVs, kFlatUiSourceTonePs) == FlatUiToneScreen::kNone &&
+              flatUiMapToneScreenOf(0, 0) == FlatUiToneScreen::kNone,
+          "scanner tone: the table says which screen's tonemap a pair is (the maps', the scanner's, or neither); the log lines name it");
     check(flatUiSourceTonePair(0xF9CFC798F21E9AEAull, 0xE8948389387DA083ull) &&
               flatUiSourceTonePair(0x43CA9F1C0AD2ACFEull, 0xE8948389387DA083ull) &&
               !flatUiSourceTonePair(0xF9CFC798F21E9AEAull, 0xE8948389387DA082ull) &&
@@ -1962,6 +1990,19 @@ void testFlatLayerRules() {
         check(!mono.empty() && !sharedTone.empty() && mono.find("E8948389387DA083") == std::string::npos &&
                   sharedTone.find("E8948389387DA083") == std::string::npos,
               "wiring: E894 remains absent from the mono HDR selector and shared tonemap registry");
+        check(!mono.empty() && !sharedTone.empty() && mono.find("6DE70EBBF82FCBE6") == std::string::npos &&
+                  sharedTone.find("6DE70EBBF82FCBE6") == std::string::npos &&
+                  mono.find("6de70ebbf82fcbe6") == std::string::npos &&
+                  sharedTone.find("6de70ebbf82fcbe6") == std::string::npos,
+              "wiring: the Full System Scanner's 6DE70EBB tone stays out of the mono HDR selector and shared tonemap registry, in either hex case "
+              "(it is named in the UI layer's own table, flatUiMapToneSlotOf, alone)");
+        check(!adapter.empty() && adapter.find("g_mapToneNoted[scanner]") != std::string::npos &&
+                  adapter.find("g_mapFirstToneNoted[scanner]") != std::string::npos &&
+                  adapter.find("scanner ? \"Full System Scanner\" : \"map-frame\"") != std::string::npos &&
+                  adapter.find("scanner ? \"Full System Scanner tone\" : \"map-tone\"") != std::string::npos &&
+                  runtime.find("pairFact.mapToneSlot != ~0u || pairFact.sourceTone) {") != std::string::npos,
+              "wiring: the first candidate and the first proof are said once for each screen's tonemap and name it, and the runtime's candidate "
+              "branch takes the table's pairs");
         check(!mono.empty() && !sharedTone.empty() && mono.find("0D4329BDF65DE8F7") == std::string::npos &&
                   sharedTone.find("0D4329BDF65DE8F7") == std::string::npos &&
                   mono.find("0d4329bdf65de8f7") == std::string::npos &&

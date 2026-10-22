@@ -5925,9 +5925,10 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         drawCaptureStarted=s.drawCapture.before(ctx,instances,kind,count,start,base,startInstance,
             k.vs,k.ps,bindingGet(BindSlot::Vs),bindingGet(BindSlot::Ps),motionEligible);
     }
-    // The map tonemap (flatUiMapToneSlotOf, the UI layer's own table) reads the scene in slot 0 like a registry tone: its slots are
-    // captured for the UI layer's candidate. Its readers (flat_runtime_model.h copy-pair branches, flat_copy_structure.h, the
-    // mono selector's registry-keyed tone) gate on their own pairs, so none of them sees this draw as a copy or a tone.
+    // The map tonemap and the Full System Scanner's (flatUiMapToneSlotOf, the UI layer's own table) read the scene in slot 0 like a
+    // registry tone: their slots are captured for the UI layer's candidate. Its readers (flat_runtime_model.h copy-pair branches,
+    // flat_copy_structure.h, the mono selector's registry-keyed tone) gate on their own pairs, so none of them sees this draw as a
+    // copy or a tone.
     if (tone || copy || pairFact.mapToneSlot != ~0u) for (uint32_t slot = 0; slot < 2; ++slot) {
         const auto bind = static_cast<BindSlot>(static_cast<uint32_t>(BindSlot::PsSrv0) + slot);
         k.srvView[slot] = bindingGet(bind); k.srvResource[slot] = view(bind, 2 + slot).resource;
@@ -6695,7 +6696,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
             else if (ask == FlatUiLayerAsk::kRefused) { if (trailDraw) flatUiTrailNoteBranch(s.prefix.frame, FlatUiTrailBranch::kHudAsk); }   // a HUD draw left in H: never also a tone candidate
             // The game's tone pass by its known pair, whatever its vertex count (the 11:32 flight's HDR route read a copy of
             // H, which the structural rule below never matched): the next frame's proof, and this frame's admission.
-            // The registry's tone pass, map tonemap, or the physically verified E894 and EDHM 0D43 LDR-source writers.
+            // The registry's tone pass, the map or scanner tonemap, or the physically verified E894 and EDHM 0D43 LDR-source writers.
             // The E894 and 0D43 pairs remain UI-only: they do not enter the global tone registry or mono HDR selector.
             else if (tone || pairFact.mapToneSlot != ~0u || pairFact.sourceTone) {
                 const char* route = routeSoFar();

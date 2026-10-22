@@ -9,7 +9,8 @@
 //     composite's blur (the one input the tone blends rather than adds, which the re-issue gives the step's own source instead);
 //   * the steps (weapons_fire.h toneStepKeepsSceneImages): every step that reads the HUD, and the plain weapons replace, reads zero; the
 //     matched pair keeps them, and both of its terms alike, or their difference would carry the bloom;
-//   * the wiring (ui_layer.cpp, by source scan, with controls): Begin finds the images before the first step binds, every step binds by the
+//   * the wiring (ui_layer.cpp, by source scan, with controls): Begin finds the images before the first step binds, at every PS slot t0..t15
+//     (so a tone of any layout is covered: the Full System Scanner's has the bloom at t1), every step binds by the
 //     step's answer -- null at the images and its own source at the DoF blur, or the game's own views -- and End and Begin's fault path put
 //     the game's own views back, the blur's included.
 namespace tonescene {
@@ -26,6 +27,20 @@ void testRule() {
     check(!toneInputIsSceneImage(1, 1, -1, bloom, 1720, 720), "the HDR source's own slot is never zeroed");
     check(!toneInputIsSceneImage(1, 0, 1, bloom, 1720, 720), "the DoF composite's blur (its blend slot, PS1) is not zeroed");
     check(toneInputIsSceneImage(1, 0, -1, bloom, 1720, 720), "9270's bloom at t1 (HDR at t0) is a scene image");
+    // The Full System Scanner's tone (6DE70EBB, census 2 of edvr_gfx_20261022_112019): the scene at t0 (960x600 R11G11B10F), a half-size
+    // bloom at t1 (480x300 R11G11B10F, a render target of the bloom chain), the same layout as 9270's that the 10-22 logs show ZEROED at t1.
+    // Replaying it over the HUD layer must read zero at t1, or the composite would add the scanner's bloom a second time.
+    {
+        ToneInputShape half = bloom;
+        half.w = 480;
+        half.h = 300;
+        check(toneInputIsSceneImage(1, 0, -1, half, 960, 600), "the scanner tone's half-size bloom at t1 (scene at t0) is a scene image");
+        check(!toneInputIsSceneImage(0, 0, -1, half, 960, 600), "the scanner tone's scene at its HDR slot t0 is never zeroed");
+        ToneInputShape scene = half;
+        scene.w = 960;
+        scene.h = 600;
+        check(!toneInputIsSceneImage(0, 0, -1, scene, 960, 600), "the scanner tone's own HDR source is not a scene image");
+    }
     ToneInputShape s = bloom;
     s.viewFormat = 10;  // R16G16B16A16_FLOAT
     check(toneInputIsSceneImage(2, 1, -1, s, 1720, 720), "an RGBA16F bloom is a scene image");
@@ -143,6 +158,9 @@ std::vector<Pin> pins(const std::string& text) {
                    "the restore puts the game's DoF blur back"});
     out.push_back({"end-restores", worldroute::has(e, "crispRestoreSceneImages(ctx);"), "End puts the game's views back"});
     out.push_back({"fault-restores", worldroute::has(g, "crispRestoreSceneImages(ctx);"), "Begin's fault path puts the game's views back"});
+    out.push_back({"scans-every-slot",
+                   worldroute::has(f, "for(ints=0;s<kToneSceneScanSlots;++s){Ptr<ID3D11ShaderResourceView>view;"),
+                   "the scene's images are looked for at every PS slot t0..t15, whatever the tone's layout (the bloom is at t2 on E894, t1 on 9270 and the scanner's tone)"});
     out.push_back({"find-rule",
                    worldroute::has(f, "constboolscene=toneInputIsSceneImage(s,hdrSlot,blendSlot,in,hdrW,hdrH);") &&
                        worldroute::has(f, "constintblendSlot=ps==flat_mono_detail::kToneDofCompositePs?1:-1;") &&
@@ -169,6 +187,8 @@ void testWiring() {
         {"end-restores", "            vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(hdrSlot), 1, &gameHdr);\n            crispRestoreSceneImages(ctx);\n",
          "            vScreenPSSetShaderResourcesRaw(ctx, static_cast<uint32_t>(hdrSlot), 1, &gameHdr);\n"},
         {"fault-restores", "                }\n                crispRestoreSceneImages(ctx);\n", "                }\n"},
+        {"scans-every-slot", "    for (int s = 0; s < kToneSceneScanSlots; ++s) {\n        Ptr<ID3D11ShaderResourceView> view;",
+         "    for (int s = 2; s < kToneSceneScanSlots; ++s) {\n        Ptr<ID3D11ShaderResourceView> view;"},
         {"find-rule", "ps == flat_mono_detail::kToneDofCompositePs ? 1 : -1", "-1"},
         {"find-rule", "            g_crispSave.sceneSrv[s] = view;\n", ""},
         {"blur-binds", "keep ? g_crispSave.blendSrv.Get() : src", "keep ? g_crispSave.blendSrv.Get() : nullptr"},

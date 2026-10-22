@@ -51,7 +51,8 @@ struct Window {
     uint64_t mapOpenFrames = 0;
     uint64_t mapRefused[2][kRefusals] = {};
     uint64_t mapDeclined[2][kDecisions] = {};
-    // The map tonemap's candidates (flatUiMapToneSlotOf): the tone reads the candidate branch saw, and those that proved.
+    // The candidates of the tonemaps flatUiMapToneSlotOf names (the maps', the Full System Scanner's): the tone reads the candidate
+    // branch saw, and those that proved.
     uint64_t mapToneCandidates = 0, mapToneMatched = 0;
     // The map families' draws by the kind their camera rows measured (flatUiJitterSlot: phase, zero, other, no rows), before
     // the no-cancel rule takes the cancel away (2026-10-10).
@@ -70,8 +71,8 @@ bool g_glowNoted = false;  // the once-only first feed line
 FlatUiLayerAsk g_lastAsk = FlatUiLayerAsk::kNotAsked;
 UiLayerFamily g_decidedFamily = UiLayerFamily::kNone;  // the family of the last kDecided draw (flatUiLayerNoteIssue's)
 bool g_mapCanvasNoted = false, g_mapSpriteNoted = false;  // the once-only first take of each map family
-bool g_mapToneNoted = false;                              // the once-only first proof from a map frame's tonemap
-bool g_mapFirstToneNoted = false;                         // the once-only first map-tone candidate line (proved or not)
+bool g_mapToneNoted[2] = {false, false};                  // the once-only first proof from a tonemap of this table: the maps', the scanner's
+bool g_mapFirstToneNoted[2] = {false, false};             // the once-only first candidate line of each (proved or not)
 FlatUiMapAaTally g_mapAa;                                 // temporal AA off on the maps and the Full System Scanner: the map line's counts
 uint64_t g_mapAskFrame = 0, g_mapAsksFrame = 0;           // the frame of the last map ask, and how many map asks it has had
 FlatUiToneProof g_proof;
@@ -524,28 +525,34 @@ bool flatUiLayerToneCandidate(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t
     const bool proven = flatUiToneProofTone(g_proof, frame, input) != nullptr;
     flatUiTrailNoteProven(frame, proven);
     if (proven) ++g_w.toneProven;
-    // The map tonemap's candidates (flatUiMapToneSlotOf), counted every time, and the first one said once, proved or not, with
-    // the pointer it compared and the targets recorded this frame: a null input, no recorded target or a pointer mismatch
-    // is then visible in the log, not silent.
-    if (flatUiMapToneSlotOf(vs, ps) != ~0u && flatUiMapToneSlotOf(vs, ps) == static_cast<uint32_t>(hdrSlot)) {
+    // The candidates of the tonemaps flatUiMapToneSlotOf names (the maps' and, since 2026-10-22, the Full System Scanner's), counted every
+    // time, and the first one of each said once, proved or not, with the pointer it compared and the targets recorded this frame: a null
+    // input, no recorded target or a pointer mismatch is then visible in the log, not silent. The map line's tone counts hold both.
+    const FlatUiToneScreen toneScreen = flatUiMapToneScreenOf(vs, ps);
+    const bool scanner = toneScreen == FlatUiToneScreen::kScanner;
+    const bool mapTone = toneScreen != FlatUiToneScreen::kNone && flatUiMapToneSlotOf(vs, ps) == static_cast<uint32_t>(hdrSlot);
+    if (mapTone) {
         ++g_w.mapToneCandidates;
         if (proven) ++g_w.mapToneMatched;
-        if (!g_mapFirstToneNoted) {
-            g_mapFirstToneNoted = true;
-            Log::get().note("flat ui layer: first map-tone candidate -- frame %llu, input %p, recorded targets %s, match %s, map "
-                            "asks this frame %llu; said once.",
-                            static_cast<unsigned long long>(frame), input, used ? targets : "none",
-                            flatUiToneMatchWhy(g_proof, frame, input),
-                            static_cast<unsigned long long>(g_mapAskFrame == frame ? g_mapAsksFrame : 0));
+        if (!g_mapFirstToneNoted[scanner]) {
+            g_mapFirstToneNoted[scanner] = true;
+            char asks[48] = "";
+            if (!scanner)
+                std::snprintf(asks, sizeof(asks), ", map asks this frame %llu",
+                              static_cast<unsigned long long>(g_mapAskFrame == frame ? g_mapAsksFrame : 0));
+            Log::get().note("flat ui layer: first %s candidate -- frame %llu, input %p, recorded targets %s, match %s%s; said once.",
+                            scanner ? "Full System Scanner tone" : "map-tone", static_cast<unsigned long long>(frame), input,
+                            used ? targets : "none", flatUiToneMatchWhy(g_proof, frame, input), asks);
         }
     }
-    // The first proof a map frame's tonemap records (flatUiMapToneSlotOf: the UI layer's own table): said once, with its frame.
-    if (proven && !g_mapToneNoted && flatUiMapToneSlotOf(vs, ps) == static_cast<uint32_t>(hdrSlot)) {
-        g_mapToneNoted = true;
-        Log::get().note("flat ui layer: map-frame tone proven by VS %016llX PS %016llX reading slot %d, frame %llu (the proof "
+    // The first proof a tonemap of this table records (the UI layer's own table): said once for each, with its frame.
+    if (proven && mapTone && !g_mapToneNoted[scanner]) {
+        g_mapToneNoted[scanner] = true;
+        Log::get().note("flat ui layer: %s tone proven by VS %016llX PS %016llX reading slot %d, frame %llu (the proof "
                         "holds for frame %llu); said once.",
-                        static_cast<unsigned long long>(vs), static_cast<unsigned long long>(ps), hdrSlot,
-                        static_cast<unsigned long long>(frame), static_cast<unsigned long long>(frame + 1));
+                        scanner ? "Full System Scanner" : "map-frame", static_cast<unsigned long long>(vs),
+                        static_cast<unsigned long long>(ps), hdrSlot, static_cast<unsigned long long>(frame),
+                        static_cast<unsigned long long>(frame + 1));
     }
     bool admitted = false;
     char why[96] = "not asked: no HUD or weapons were taken this frame";
@@ -833,8 +840,9 @@ void flatUiLayerReport(uint64_t windowSeconds) {
         static_cast<unsigned long long>(w.taken[fs]), static_cast<unsigned long long>(w.atIssue[fs]));
     // The System Map's line (2026-10-10): the frames a map was open in, and each map family's asked/taken/refused, with the
     // refusals by reason (the adapter's and the shared decision's; "at-issue" is a refusal at the game's issue). Zeros print.
-    // open-frames and the families are the three maps'; temporal-off and the counts after it also count the Full System Scanner's
-    // frames (2026-10-22), so a scanner window reads open-frames=0 with temporal-off above zero.
+    // open-frames and the families are the three maps'; the tone counts (tone-candidates-map, tone-matched-map: the tonemaps
+    // flatUiMapToneSlotOf names) and temporal-off with the counts after it also count the Full System Scanner's frames (2026-10-22),
+    // so a scanner window reads open-frames=0 with the tone counts and temporal-off above zero.
     Log::get().note(
         "flat ui layer map: open-frames=%llu; canvas asked=%llu taken=%llu refused=%llu (%s); sprite asked=%llu taken=%llu "
         "refused=%llu (%s); tone-candidates-map=%llu tone-matched-map=%llu; temporal-off=%llu jitter-zeroed=%llu spatial=%llu "

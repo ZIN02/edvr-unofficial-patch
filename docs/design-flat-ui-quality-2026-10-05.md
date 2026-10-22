@@ -51,9 +51,9 @@
 - **System Map families (10-10, built, not flown):** `kMapCanvas` and `kMapSprite`
   (flat only; asked while GuiFocus 6, 7 or 8 is open, on the HDR target) go into the
   flat UI layer like the HUD families, so they are drawn at D x T after the upscale.
-  "flat ui layer map:" counts them; 10-22: the game-334473 Galaxy icon PS joins. Entries at end.
-- **Temporary:** no keys. The back-off trail log lines (10-15, camera-suite
-  HUD loop) go once the loop is fixed.
+  "flat ui layer map:" counts them; 10-22: the game-334473 Galaxy icon PS joins, and the Full System
+  Scanner's tone is named so its text is taken too (built, not flown). Entries at end.
+- **Temporary:** no keys; the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
 - **Next locally:** no repeat flight needed for capture cleanup. The installed
   4b7bfec4 rendering path is verified; cleanup 02f50bd7 is pushed and compiled.
   Keep codex/xess-flat separate pending the user's Windows full build/testing.
@@ -912,3 +912,57 @@ census 8 of `edvr_gfx_20261022_101031`).
 - Flight: open the Galaxy Map and look below the plane. The 30 s `flat ui layer map:` line should read sprite asked about five
   times the canvas count (174 against 34 a frame) and taken equal to asked; `sprite asked=0` there means the pair is still
   not named.
+
+## 2026-10-22: the Full System Scanner's text (built, not flown)
+
+Log `edvr_gfx_20261022_112019`, build d4abc498, Steam flat on an Intel Arc B390, render 960x600 to output 1920x1200, GuiFocus 9 from
+11:26:21 to 11:30:03; census 2 at 11:26:50.760 (two frames). The scanner's text was never taken by the UI layer.
+
+- What the scanner draws. The text is the holo panels (VS 81216C77F90DEDD6, 4 a frame) and the target sprite (VS E508648660A352B2, 16
+  a frame) into the 960x600 R11G11B10F scene (@45, resource 7ABC4B80). Draw #210, one triangle, VS F9CFC798F21E9AEA with PS
+  6DE70EBBF82FCBE6, reads that same resource at t0 (@156) and a 480x300 R11G11B10F bloom at t1 (@176 = @168, the target of the bloom
+  chain's draw #204), and writes a 960x600 format-27 target (view 28). 20F383BB/DED87960 upscales that to the 1920x1200 output.
+- Why the text stayed in the scene. Every 30 s window from 11:27:20 to 11:30:00 reads `holo-panels asked=7200 decided=0 taken=0`,
+  `target-sprite asked=28800 decided=0 taken=0`, `refusals: other-work=0 not-hdr-target=0 not-upstream=0 no-camera-rows=0 other-shift=0
+  tone-unproven=36000 after-tone=0` and `tone-candidates=0 tone-proven=0`, with copies = door-armed = 1800. The layer takes a draw only
+  when the previous frame's tone pass was seen reading that draw's target, and 6DE70EBB is in no table: not the registry
+  (`tonePsHdrSlot`), not `flatUiSourceTonePair` (the E894 layout: LUT t0, HDR t1, bloom t2), not `flatUiMapToneSlotOf`. The shape
+  admission (HDR at t1, a format-28 target, a 2D at t2) cannot match it either: `tone-by-shape=0`. The cockpit, same families and same
+  state in the same session, is taken (the 11:26:20 window: holo asked 7953, decided 5851, taken 5851) because its tone pair is named.
+- ruled out: other-work, not-hdr-target and after-tone as the scanner's blockers, because all three read 0 over 36000 asks a window and
+  tone-unproven is the first test after them. ruled out: the door or the copy, because copies = door-armed = 1800 in each window.
+- Fix. The pair is named in `flatUiMapToneSlotOf`'s table (flat_ui_layer_math.h, `kFlatUiScannerToneVs` / `kFlatUiScannerTonePs`), slot 0,
+  exact pair only: it is the UI layer's own table, so the candidate branch (flat_runtime.cpp 6737-6749) takes it as it takes the map tone.
+  It is NOT in the registry, for the reasons recorded under the 10-10 follow-up (the resolve's tone selection, the target's tone record and
+  the HDR route's trigger must not see a new pass); a rig pin keeps 6DE70EBB out of flat_mono_frame.h and tonemap_admit.h. The VS 43CA9F1C
+  (the transition variant E894 also has) is not named: no scanner log shows it with this PS. `flatUiMapToneScreenOf` says which screen's
+  tone a pair is, so the two once-only lines name it ("Full System Scanner tone proven ...", "first Full System Scanner tone candidate
+  ..."; the maps' lines are unchanged) and each screen is said once. The map line's `tone-candidates-map` / `tone-matched-map` count both.
+- The bloom does not double (checked, 2026-10-20 "bloom counted twice" is the risk). The re-issue replays the tone with the HUD layer at the
+  admitted HDR slot and zeroes every other scene-shaped input; it is not keyed to the E894 layout's t2. `crispFindSceneImages` scans PS
+  t0..t15 of the admitted draw (ui_layer.cpp 5243) and marks each input the rule `toneInputIsSceneImage` (ui_layer_math.h 1734) calls a
+  scene image: a 2D colour view of a GPU-written texture, within a pixel of the HDR source's shape, 1/32 to 1x its size, not the HDR slot.
+  The HUD's steps bind null there (`crispBindStep`, ui_layer.cpp 5173-5178; `toneStepKeepsSceneImages`, weapons_fire.h 173), at Begin
+  (5455-5456). The scanner's t1 (480x300, format 26, a render target, half of 960x600) passes the rule and t0 is the HDR slot, so t1 reads
+  zero and the layer is T(HUD) alone. The same layout is flown: 9270C355 (t0 scene, t1 480x300 fmt 26) logs `t1 480x300 fmt 26 ZEROED`
+  at 112019 line 6735 and 101031 line 36791, and the Galaxy Map's census 8 tone is that pair (t0 @120 960x600, t1 @136 480x300, both fmt
+  26). The map tone C89DD4 itself is in no retained log (after game build 334473 the maps run 9270C355), so its bloom slot is unrecorded.
+  The rig pins the rule on the scanner's measured inputs and that the scan covers every slot, with a control edit (ui_tone_scene_test.h).
+  The 10-21 glow feed (the HUD's light joins the bloom chain's first level) is separate: it should run on the scanner's half-size first
+  level (draw #198, 960x600 to 480x300) as in the cockpit, and its `flat ui layer glow:` lines say so.
+- After the proof. Refusals that run after tone-unproven (flat_ui_layer.cpp 266-299) have never been exercised on the scanner. From code:
+  not-upstream reads `flatCameraInjectUpstreamOwns()`, and all 44 five-second `flat camera inject` lines of the scanner read
+  `owner=upstream not-upstream=0`. Jitter is zero (temporal AA is off at focus 9: `zero-phase-resolves` = frames), so a draw whose rows
+  measure no shift counts as phase 0 and is taken; other-shift needs rows with an off-centre of their own. no-camera-rows needs the
+  draw's VS b1 buffer to be missing from the camera table (any buffer wide enough to carry rows 270..275 that the game wrote whole is in
+  it); the holo and sprite VS are the cockpit's and should bind the same scene constants, but that is expected, not observed. The shared
+  decision (depth-stencil-test, blend-refused) sees the cockpit's draws and states.
+- Flight (flat, UI quality on, Full System Scanner open, one 30 s window): `tone-candidates`, `tone-proven`, `tone-admitted` and
+  `tone-reissued` about the frame count (1800 at 60 fps), `tone-declined=0`, `composites` about the frame count, `composite-none` near 0;
+  `holo-panels asked=7200 decided=7200 taken=7200` and `target-sprite asked=28800 decided=28800 taken=28800` (less the first frame or
+  two); `tone-unproven=0`; `tone-by-shape=0` (named, not admitted by shape); `tone-candidates-map` equal to `tone-candidates` with
+  `open-frames=0`. Once: `first Full System Scanner tone candidate`, `Full System Scanner tone proven by VS F9CFC798F21E9AEA PS
+  6DE70EBBF82FCBE6 reading slot 0`, and `crisp hud: tone vs F9CFC798F21E9AEA ps 6DE70EBBF82FCBE6, HDR source t0 960x600 ... t1 480x300 fmt
+  26 ZEROED`. Failures: tone-proven above 0 with tone-admitted 0 (read the tone candidate line's re-issue reason); tone-declined above 0;
+  a new `no-camera-rows`, `not-upstream`, `other-shift`, `depth-stencil-test` or `blend-refused` count; `crisp hud: ... no scene image to
+  zero` or a brighter halo round the scanner's bodies than with `fix.ui_quality = off` (the bloom twice).

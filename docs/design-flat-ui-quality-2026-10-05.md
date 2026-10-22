@@ -21,8 +21,6 @@
   panels ghosted. It joins E894 in `flatUiSourceTonePair`, and (Sean) any unknown
   pair on a tone VS that passes the full physical shape now grants proof
   (`flatUiLayerShapeToneCandidate`). Entries at the end.
-- **Local flight:** 4b7bfec4, 120427.log, SS 0.5 then about 0.65/UI 125; the
-  cleanup keeps the flown guards (88 CPU checks pass).
 - **The key:** `fix.ui_quality = off | 100 | 125 | 150 | 200`, default 100 in
   flat (the code's fallback and the flat ini template), the fourth flat F8 row.
   100: the panels at display size and the cockpit HUD out of temporal history,
@@ -54,9 +52,11 @@
   "flat ui layer map:" counts them; 10-22: the game-334473 Galaxy icon PS joins, and the Full System
   Scanner's tone is named so its text is taken too (built, not flown). Entries at end.
 - **Temporary:** no keys; the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
-- **Next locally:** no repeat flight needed for capture cleanup. The installed
-  4b7bfec4 rendering path is verified; cleanup 02f50bd7 is pushed and compiled.
-  Keep codex/xess-flat separate pending the user's Windows full build/testing.
+- **Local flight, next locally:** 4b7bfec4 (120427.log, SS 0.5 then about 0.65/UI 125) verified the rendering path; cleanup 02f50bd7
+  keeps the flown guards (88 CPU checks), is pushed and compiled, no repeat flight needed. Keep codex/xess-flat separate pending
+  the user's Windows full build/testing.
+- **2026-10-22, the scanner's zoom (built, not flown):** a one-ulp camera difference between HDR writers refused the frames the map
+  recovery treats, so the HUD text blurred in runs; on temporal-off frames a camera-only fault is waived. Last entry.
 - **Next on Epic:** fly SS 0.5 on the shipped build (the copy route under eced5813's
   admission change) and 100% at SS 1.0; then an Epic flight opening all three maps.
 
@@ -966,3 +966,47 @@ Log `edvr_gfx_20261022_112019`, build d4abc498, Steam flat on an Intel Arc B390,
   26 ZEROED`. Failures: tone-proven above 0 with tone-admitted 0 (read the tone candidate line's re-issue reason); tone-declined above 0;
   a new `no-camera-rows`, `not-upstream`, `other-shift`, `depth-stencil-test` or `blend-refused` count; `crisp hud: ... no scene image to
   zero` or a brighter halo round the scanner's bodies than with `fix.ui_quality = off` (the bloom twice).
+
+## 2026-10-22: the Full System Scanner's zoom (built, not flown)
+
+Log `edvr_gfx_20261022_130004.log`, build a7a5f5ac, Steam flat, Full System Scanner (GuiFocus 9). From 13:08:27.5 the scanner zooms onto a
+planet and the HUD text goes blurry for runs of about 2.4 s, crisp for about 1 s. Before the zoom the same session has no refusals.
+
+- Evidence. On the maps and the scanner temporal AA is off (`flatUiMapTemporalOff`): no jitter, no history. The frame gets SMAA and EASU
+  through the `map-temporal-off` treat block in flat_runtime.cpp, and the UI layer's door arms only on a frame whose copy was treated
+  (`flatUiLayerDoorArms`), where the text is composited at output size. The zoom adds the scanner's reveal composite (VS 953C8123AD8DC13B,
+  PS A473A867BDDBC342, fss-scanner.md) as a second camera-bearing writer of the scene HDR, bound to the b1 of the deferred lighting pass
+  (VS 7E38A6AA1269C901, PS 7CECABDE34FFBE9E) whose witness camera is the HDR's reference. Its rows differ from the reference by one float
+  ulp in a few words on about 70% of frames: `[13:08:27.509] flat runtime conflict: ... cause=hdr-camera-changed ref-vs=7E38A6AA1269C901
+  ref-ps=7CECABDE34FFBE9E cur-vs=953C8123AD8DC13B cur-ps=A473A867BDDBC342 ... changed-words=270.0:BD9C2552>BD9C2551,271.0:BE76B5BF>BE76B5BE,
+  272.0:BD22A498>BD22A497,272.1:3E3CB2E6>3E3CB2E5`. `flatRuntimeSameCamera` is an exact memcmp, so the target went bad and the copy was
+  refused `conflicting-hdr-target-or-camera` (35-96% of the frames of each 5 s window). The treat block sits after the selection, so a
+  refused frame got no spatial treatment, the door stayed unarmed and the text stayed in the scene at render size. Camera injection is off
+  on the scanner (`injected=0`). UI layer refusals are only not-armed; the tone is proven.
+- ruled out: tone-unproven, tone-declined, other-shift, no-camera-rows, depth-stencil-test and bind-failed as the cause of the blur, because
+  all read 0 while zoomed. ruled out: a second or different tone pass, because census 1 shows one tone pair per frame. ruled out: the
+  camera injector, because `injected=0` there.
+- Root cause. A check that guards temporal history (a second camera on the HDR would reproject wrongly) was gating a path that has no
+  history. Not loosened: `flatRuntimeSameCamera` stays an exact compare and no epsilon is added, so every temporal screen keeps its
+  strictness (the cockpit, the DSS).
+- Fix. `FlatRuntimeTarget::badCauses` records every cause that made a target bad (`flatRuntimeNoteBad` is the one place the flag is set;
+  the forward authority's revocation goes through it as cause None), where `firstBad` keeps only the first. `FlatRuntimePrefix::temporalOff`
+  is the frame's one GuiFocus read (the same local that gates the treat block, assigned after the prefix is cleared; false in every replayed
+  trace). In the copy branch a bad target is refused as before unless `flatRuntimeCameraConflictSpatialOnly` holds: temporal AA off, the
+  target still carrying its first camera, its layout unchanged, and CameraChange the only cause ever marked. Then the frame goes on to the
+  selector with the HDR's first camera (the lighting witness), as the frame the lighting pass alone gives; the reveal's camera enters
+  no record, and the treat block resets history anyway. Layout, target identity (depth), provenance, an explicit write, an unnamed mark and an
+  uncertain frame still refuse, and so does any frame with temporal AA on.
+- Counters, in the 5 s `flat map focus 5s:` line (zeros print): `camera-conflict-spatial` is the map frames the spatial recovery treated
+  that the camera disagreement would have refused; `camera-conflict-kept` is the temporal-off refusals whose first fault was the camera
+  change and which other faults also marked (the waiver did not apply). Rig: flat_camera_spatial_tests.h (the lighting pass then a one-ulp
+  reveal, selected with temporal AA off and refused with it on; each other fault refused; the predicate term by term; the wiring scan; mutants
+  of the gate caught).
+- Not knowable until flown: whether CameraProvenance or another cause also marks the target on the reveal draw (the log's `cause=` is the
+  first only). If it does, `camera-conflict-kept` takes the frames and the refusal stays; that is the next thing to read.
+- Flight (flat, UI quality on, Full System Scanner open and zoomed onto a body): in the zoomed windows `flat runtime refusal 5s: reason=
+  conflicting-hdr-target-or-camera` near 0 (the old build read 35-96% of the frames) and `camera-conflict-spatial` about that old count;
+  `camera-conflict-kept` 0. `door-refused-untreated` near 0 and `door-armed` about the frame count in the 30 s `flat ui layer:` line; the
+  960x600/1920x1200 composite flips stop. Before the zoom both counters read 0 as before. Failures: refusals unchanged with both counters 0
+  (the prefix was never told temporal AA is off, or the cause is not this one); `camera-conflict-kept` above 0 (a second cause marks the
+  target: read the `flat runtime conflict` line); a cockpit or DSS window with either counter above 0 (the gate leaked).

@@ -467,6 +467,10 @@ struct State {
     uint32_t projectionLookupCauses[static_cast<unsigned>(FlatProjectionCopyFailureKind::Count)]{};
     std::map<std::string, uint64_t> refusedWindow;
     std::map<std::string, uint64_t> conflictWindow;
+    // Temporal-off frames (a map or the Full System Scanner) whose HDR target's only fault was a camera disagreement between its writers
+    // (flatRuntimeCameraConflictSpatialOnly), this 5 s window: spatial, the frames the spatial recovery treated that the disagreement
+    // would have refused; kept, the frames the disagreement started but other faults also marked, so they were refused as before.
+    uint64_t cameraConflictSpatialWindow = 0, cameraConflictKeptWindow = 0;
     uint32_t conflictDetails[static_cast<uint32_t>(FlatRuntimeConflict::Count)]{};
     uint64_t lastConflictDetailMs[static_cast<uint32_t>(FlatRuntimeConflict::Count)]{};
     const char* reason = "warming-current-frame";
@@ -4490,6 +4494,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
     }
     if (s.work != FlatWork::Paused) s.prefix = FlatRuntimePrefix{};
     s.prefix.frame = frame + 1;
+    s.prefix.temporalOff = temporalOff;   // the frame's one GuiFocus read, as the treatment at the copy asks it (flatRuntimeMapTemporalOff)
     if(s.engine!=FlatMonoResolveMode::Taa && s.work==FlatWork::Full) {
         s.foregroundDomainFrame=s.prefix.frame;s.foregroundSelectedDepth=nullptr;
         s.foregroundHRefusal=nullptr;
@@ -4628,8 +4633,10 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
                 char focus[16]="unknown";
                 if(w.focusKnown)std::snprintf(focus,sizeof(focus),"%u",w.focus);
                 const JournalRawStatus raw=journalRawStatus();
-                Log::get().note("flat map focus 5s: focus=%s temporal-aa-off=%u watcher=%s status-samples=%u gui-known=%d gui=%u",
-                    focus,w.temporalOff?1u:0u,raw.active?"active":"inactive",raw.statusSamples,raw.guiKnown?1:0,raw.gui);
+                Log::get().note("flat map focus 5s: focus=%s temporal-aa-off=%u watcher=%s status-samples=%u gui-known=%d gui=%u "
+                    "camera-conflict-spatial=%llu camera-conflict-kept=%llu",
+                    focus,w.temporalOff?1u:0u,raw.active?"active":"inactive",raw.statusSamples,raw.guiKnown?1:0,raw.gui,
+                    (unsigned long long)s.cameraConflictSpatialWindow,(unsigned long long)s.cameraConflictKeptWindow);
             }
         }
         // The census of unkeyed pairs, every window while a temporal mode runs (empty
@@ -4836,6 +4843,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
         s.resetMissingWindow = s.resetGapWindow = s.resetDepthWindow = s.resetColorWindow = s.resetExtentWindow = 0;
         s.presentNotOkWindow = 0;
         s.conflictWindow.clear();
+        s.cameraConflictSpatialWindow = s.cameraConflictKeptWindow = 0;
         s.covSceneDraws = s.covExact = s.covGeneric = s.covInert = s.covUnchanged = 0;
         s.covLocalRefused = s.covMemoEvictions = 0;
         s.covFrames = s.covFramesObserving = s.covObservationEntries = s.covFramesLocallyRefused = 0;
@@ -6813,7 +6821,10 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         }
     }
     if (!selected.selected()) {
-        if (selected.reason == FlatMonoReason::ConflictingHdr) reportConflict(s);
+        if (selected.reason == FlatMonoReason::ConflictingHdr) {
+            reportConflict(s);
+            if (s.prefix.cameraConflictKept) ++s.cameraConflictKeptWindow;
+        }
         if(s.phase.applied)recover(s.reason);
         refuse(s); return;
     }
@@ -7043,6 +7054,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
             ctx->PSSetShaderResources(0,1,&spatial);replaced=true;
             s.treated=true;s.temporalAccepted=false;s.havePrevious=false;s.reason="map-temporal-off";
             flatUiLayerMapAaCopy(true,easu,smaa);
+            if (s.prefix.cameraConflictWaived) ++s.cameraConflictSpatialWindow;   // a frame the HDR writers' camera disagreement would have refused
         } else {
             s.reason=spatialReason?spatialReason:"map-temporal-off-refused";
             refuse(s);

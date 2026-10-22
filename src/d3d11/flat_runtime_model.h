@@ -142,6 +142,10 @@ struct FlatRuntimeTarget {
     const void* overlayDepth = nullptr;
     uint32_t tones = 0;
     FlatRuntimeWitness firstBad{};
+    // Every cause that made the target bad, one bit each (1u << FlatRuntimeConflict), where firstBad keeps only the first. A bad mark
+    // that names no cause sets bit 0 (None), so a target is camera-only bad (flatRuntimeCameraConflictSpatialOnly) only when
+    // CameraChange is the single bit and nothing else ever marked it.
+    uint32_t badCauses = 0;
 };
 enum class FlatRuntimeUncertainCause : uint8_t {
     None, MissingTarget, TargetCapacity, ToneUavWrite, SourceUavWrite,
@@ -269,6 +273,14 @@ struct FlatRuntimePrefix {
     uint32_t firstPersonDraws = 0;
     // The draws of a pool family left stock (FlatRuntimeDraw::poolFamilyVs): the selector's FlatMonoFrameInput::unsupportedFamilyDraws.
     uint32_t unsupportedFamilyDraws = 0;
+    // Temporal AA is off this frame (flat_ui_layer_math.h flatUiMapTemporalOff: a map or the Full System Scanner is open): no temporal
+    // resolve, no jitter, no history. The runtime sets it at the frame boundary from the frame's one GuiFocus read; it is false in every
+    // recorded trace, so a replay judges a frame as it always did.
+    bool temporalOff = false;
+    // The copy branch's outcomes for a target whose only fault is a camera disagreement between its writers
+    // (flatRuntimeCameraConflictSpatialOnly). Waived: the frame went on to the selector instead of being refused. Kept: a temporal-off
+    // frame whose first fault was the camera disagreement but which other faults also marked, so it was refused as before.
+    bool cameraConflictWaived = false, cameraConflictKept = false;
 };
 // Only a current reducer attestation makes forward-camera refusal global.
 // Retained phase-planning H identity is not current authority. Keep the tone
@@ -300,6 +312,11 @@ struct FlatFailureReceiptWindow {
 inline bool flatRuntimeFirstPerson(const FlatRuntimePrefix& p, const void* depth) {
     return depth && p.firstPersonDraws && p.firstPersonDepth == depth;
 }
+// The one place a cause joins a target's record of why it is bad (FlatRuntimeTarget::badCauses).
+inline void flatRuntimeNoteBad(FlatRuntimeTarget& t, FlatRuntimeConflict cause) {
+    t.badCauses |= 1u << static_cast<uint32_t>(cause);
+    t.hdrBad = true;
+}
 inline void flatRuntimeBad(FlatRuntimeTarget& t, FlatRuntimeConflict cause,
                           uint32_t sequence, const FlatContractRecord& reference,
                           const FlatContractRecord& current) {
@@ -308,7 +325,17 @@ inline void flatRuntimeBad(FlatRuntimeTarget& t, FlatRuntimeConflict cause,
         t.firstBad.sequence = sequence; t.firstBad.reference = flatRuntimeWitnessDraw(reference);
         t.firstBad.current = flatRuntimeWitnessDraw(current);
     }
-    t.hdrBad = true;
+    flatRuntimeNoteBad(t, cause);
+}
+// A camera disagreement between the writers of an HDR target (the second writer's camera differs from the first camera the target
+// saw, FlatRuntimeConflict::CameraChange) can only cost a frame reprojection, and a frame with no temporal resolve, no jitter and no
+// history reprojects nothing: the spatial recovery reads the picture and the frame's size. So on such a frame (the prefix's
+// temporalOff) a target whose only fault is that disagreement stays selectable. The target must still carry its first camera
+// (hdrCamera: the reference the selector reads), keep its layout, and never have been marked bad for any other cause (badCauses
+// holds CameraChange alone); every other fault, and every frame with temporal AA on, refuses as before.
+inline bool flatRuntimeCameraConflictSpatialOnly(const FlatRuntimePrefix& p, const FlatRuntimeTarget& t) {
+    return p.temporalOff && t.hdrBad && t.hdrCamera && !t.hdrLayoutChanged &&
+        t.badCauses == (1u << static_cast<uint32_t>(FlatRuntimeConflict::CameraChange));
 }
 inline FlatContractRecord flatRuntimeRecord(const FlatRuntimeDraw& d, uint32_t q, uint64_t frame) {
     FlatContractRecord r{}; r.key = d.key; r.draws = 1; r.first = r.last = q;
@@ -815,7 +842,7 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
     // flatRuntimeBad with the record made only when it becomes the target's first witness.
     const auto bad = [&](FlatRuntimeTarget& target, FlatRuntimeConflict cause, const FlatContractRecord& reference) {
         if (target.firstBad.cause == FlatRuntimeConflict::None) flatRuntimeBad(target, cause, q, reference, current());
-        else target.hdrBad = true;
+        else flatRuntimeNoteBad(target, cause);
     };
     const auto& k = d.key;
     const bool copy = k.vs == kCopyVs && k.ps == kCopyPs && k.color == p.output;
@@ -833,7 +860,13 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
         for (uint32_t i = 0; i < p.targetsUsed; ++i) {
             const auto& t = p.targets[i];
             if (hdrInput && t.resource == hdrInput && t.writes.key.format == 26 && t.writes.draws) {
-                if (t.hdrBad) { p.selectedConflict = t.firstBad; out.reason = FlatMonoReason::ConflictingHdr; return out; }
+                if (t.hdrBad) {
+                    if (!flatRuntimeCameraConflictSpatialOnly(p, t)) {
+                        if (p.temporalOff && t.firstBad.cause == FlatRuntimeConflict::CameraChange) p.cameraConflictKept = true;
+                        p.selectedConflict = t.firstBad; out.reason = FlatMonoReason::ConflictingHdr; return out;
+                    }
+                    p.cameraConflictWaived = true;   // the selector below judges the target by its first camera, as it does a clean one
+                }
                 records[n] = t.writes; records[n].key.camera = nullptr; records[n++].key.kind = kFlatContractScreen;
                 if (t.hdrCamera) { records[n] = t.tone; records[n++].key.kind = kFlatContractScreen; }
             }

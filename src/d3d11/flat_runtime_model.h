@@ -337,6 +337,15 @@ inline bool flatRuntimeCameraConflictSpatialOnly(const FlatRuntimePrefix& p, con
     return p.temporalOff && t.hdrBad && t.hdrCamera && !t.hdrLayoutChanged &&
         t.badCauses == (1u << static_cast<uint32_t>(FlatRuntimeConflict::CameraChange));
 }
+// The question every point that refuses a bad HDR target asks (the copy branch below, and the admission by structure's selection,
+// flatSelectHdrRouteAt with its waiver asked): true when the target refuses the frame. The outcome is noted on the prefix for the
+// runtime's counters: waived when the camera disagreement alone is let through, kept when a temporal-off frame whose first fault was
+// the camera disagreement is refused all the same because other faults also marked the target.
+inline bool flatRuntimeBadTargetRefuses(FlatRuntimePrefix& p, const FlatRuntimeTarget& t) {
+    if (flatRuntimeCameraConflictSpatialOnly(p, t)) { p.cameraConflictWaived = true; return false; }
+    if (p.temporalOff && t.firstBad.cause == FlatRuntimeConflict::CameraChange) p.cameraConflictKept = true;
+    return true;
+}
 inline FlatContractRecord flatRuntimeRecord(const FlatRuntimeDraw& d, uint32_t q, uint64_t frame) {
     FlatContractRecord r{}; r.key = d.key; r.draws = 1; r.first = r.last = q;
     r.firstInstances = r.lastInstances = d.instances;
@@ -860,13 +869,8 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
         for (uint32_t i = 0; i < p.targetsUsed; ++i) {
             const auto& t = p.targets[i];
             if (hdrInput && t.resource == hdrInput && t.writes.key.format == 26 && t.writes.draws) {
-                if (t.hdrBad) {
-                    if (!flatRuntimeCameraConflictSpatialOnly(p, t)) {
-                        if (p.temporalOff && t.firstBad.cause == FlatRuntimeConflict::CameraChange) p.cameraConflictKept = true;
-                        p.selectedConflict = t.firstBad; out.reason = FlatMonoReason::ConflictingHdr; return out;
-                    }
-                    p.cameraConflictWaived = true;   // the selector below judges the target by its first camera, as it does a clean one
-                }
+                // A camera-only fault on a temporal-off frame goes on to the selector below, which judges the target by its first camera, as it does a clean one.
+                if (t.hdrBad && flatRuntimeBadTargetRefuses(p, t)) { p.selectedConflict = t.firstBad; out.reason = FlatMonoReason::ConflictingHdr; return out; }
                 records[n] = t.writes; records[n].key.camera = nullptr; records[n++].key.kind = kFlatContractScreen;
                 if (t.hdrCamera) { records[n] = t.tone; records[n++].key.kind = kFlatContractScreen; }
             }

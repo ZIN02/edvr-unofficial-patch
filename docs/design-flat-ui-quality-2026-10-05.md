@@ -55,8 +55,8 @@
 - **Local flight, next locally:** 4b7bfec4 (120427.log, SS 0.5 then about 0.65/UI 125) verified the rendering path; cleanup 02f50bd7
   keeps the flown guards (88 CPU checks), is pushed and compiled, no repeat flight needed. Keep codex/xess-flat separate pending
   the user's Windows full build/testing.
-- **2026-10-22, the scanner's zoom (built, not flown):** a one-ulp camera difference between HDR writers refused the frames the map
-  recovery treats, so the HUD text blurred in runs; on temporal-off frames a camera-only fault is waived. Last entry.
+- **2026-10-22, the scanner's zoom (second fix built, not flown):** a one-ulp camera difference between HDR writers refused the map
+  recovery's frames; the copy-branch waiver missed the scanner (flight 135701), now also at the admission by structure. Last entry.
 - **Next on Epic:** fly SS 0.5 on the shipped build (the copy route under eced5813's
   admission change) and 100% at SS 1.0; then an Epic flight opening all three maps.
 
@@ -989,24 +989,51 @@ planet and the HUD text goes blurry for runs of about 2.4 s, crisp for about 1 s
 - Root cause. A check that guards temporal history (a second camera on the HDR would reproject wrongly) was gating a path that has no
   history. Not loosened: `flatRuntimeSameCamera` stays an exact compare and no epsilon is added, so every temporal screen keeps its
   strictness (the cockpit, the DSS).
-- Fix. `FlatRuntimeTarget::badCauses` records every cause that made a target bad (`flatRuntimeNoteBad` is the one place the flag is set;
-  the forward authority's revocation goes through it as cause None), where `firstBad` keeps only the first. `FlatRuntimePrefix::temporalOff`
-  is the frame's one GuiFocus read (the same local that gates the treat block, assigned after the prefix is cleared; false in every replayed
-  trace). In the copy branch a bad target is refused as before unless `flatRuntimeCameraConflictSpatialOnly` holds: temporal AA off, the
-  target still carrying its first camera, its layout unchanged, and CameraChange the only cause ever marked. Then the frame goes on to the
-  selector with the HDR's first camera (the lighting witness), as the frame the lighting pass alone gives; the reveal's camera enters
-  no record, and the treat block resets history anyway. Layout, target identity (depth), provenance, an explicit write, an unnamed mark and an
-  uncertain frame still refuse, and so does any frame with temporal AA on.
-- Counters, in the 5 s `flat map focus 5s:` line (zeros print): `camera-conflict-spatial` is the map frames the spatial recovery treated
-  that the camera disagreement would have refused; `camera-conflict-kept` is the temporal-off refusals whose first fault was the camera
-  change and which other faults also marked (the waiver did not apply). Rig: flat_camera_spatial_tests.h (the lighting pass then a one-ulp
-  reveal, selected with temporal AA off and refused with it on; each other fault refused; the predicate term by term; the wiring scan; mutants
-  of the gate caught).
+- Fix, first (16734035, flown as 135701: did not take). `FlatRuntimeTarget::badCauses` records every cause that made a target bad
+  (`flatRuntimeNoteBad` is the one place the flag is set; the forward authority's revocation goes through it as cause None), where
+  `firstBad` keeps only the first. `FlatRuntimePrefix::temporalOff` is the frame's one GuiFocus read (the same local that gates the treat
+  block, assigned after the prefix is cleared; false in every replayed trace). `flatRuntimeCameraConflictSpatialOnly` holds when temporal AA
+  is off, the target still carries its first camera, its layout is unchanged and CameraChange is the only cause ever marked.
+  `flatRuntimeBadTargetRefuses` asks it, and notes `cameraConflictWaived` or `cameraConflictKept` on the prefix. It was asked in the
+  reducer's copy branch only.
+- Flight 135701 (build v0.20.2-41-g16734035, Steam flat, XeSS 960x600 to 1920x1200, scanner from 13:59:28): all 22 `flat map focus 5s:`
+  lines with focus=9 read `camera-conflict-spatial=0 camera-conflict-kept=0`, while `flat runtime refusal 5s: reason=conflicting-hdr-target-or-camera`
+  read 59, 195, 213, 212, 118, 157, 291 ... (16 windows from 14:00:02) with `flat runtime conflict 5s: cause=hdr-camera-changed` equal to it,
+  and the 30 s windows after the zoom read `door-armed=590 door-refused-untreated=1195` (14:00:31), `719/997` and `767/974` of about 1750
+  copies, against `1789/3` the window before. The conflict lines were the old ones (cur-vs 953C8123AD8DC13B, one to nine words one ulp off).
+- ruled out: the copy-branch waiver alone, because flight 135701 refused at the admission by structure (flat_copy_structure.h
+  `flatCopyAdmit`, 324, calling `flatSelectHdrRouteAt`, whose `if (target->hdrBad)` is flat_hdr_route.h 405) with
+  `camera-conflict-spatial=0 camera-conflict-kept=0`. The scanner's tone pass (VS F9CFC798F21E9AEA, PS 6DE70EBBF82FCBE6) is in no whitelist,
+  so the reducer's copy branch answers `no-known-tone-pass` at its tone check, before it ever looks at the HDR's faults (flat_runtime_model.h,
+  the copy branch: `tone->tones != 1`), and the admission by structure takes the frame. The log said so and the first fix read past it:
+  `flat copy structure 5s: whitelist=0 admitted=92 selector-refused=195 last=selector-refused scene=960x600 output=1920x1200 VS=F9CFC798F21E9AEA
+  PS=6DE70EBBF82FCBE6` (14:00:07), `selector-refused` equal to the window's conflicting-hdr-target-or-camera refusals, and before the zoom
+  `admitted=300` a window. The HDR route's trigger selection refuses the same H too (`flat untrusted H audit: route=conflicting-hdr-target-or-camera`,
+  `last-selector=conflicting-hdr-target-or-camera`), which is the route's own and not what refuses the copy: R < D, so it never treats the frame.
+- Fix, second. `flatSelectHdrRouteAt` takes `waiveCameraOnly` (default off) and asks `flatRuntimeBadTargetRefuses` at its bad-target test; the
+  admission by structure passes it, and the route's own selection at its trigger does not, so that verdict (and the untrusted-camera lines
+  that read it) is unchanged. The waived frame goes on to `flatSelectHdrFrame` with the HDR's first camera (the lighting witness): the
+  reveal's camera is in no record it reads. Layout, target identity (depth), provenance, an explicit write, an unnamed mark and an uncertain
+  frame still refuse on both paths, and so does any frame with temporal AA on. The checks `flatSelectHdrFrame` makes after the bad-target
+  test (extent, order, sources, camera against the sources) are untouched; a waived frame that fails one of them is refused with that
+  reason, not as a conflict.
+- Counters, in the 5 s `flat map focus 5s:` line (zeros print), now covering both paths because both are flags on the prefix:
+  `camera-conflict-spatial` is the map frames the spatial recovery treated that the camera disagreement would have refused;
+  `camera-conflict-kept` is the temporal-off refusals whose first fault was the camera change and which other faults also marked (the waiver
+  did not apply). Rig: flat_camera_spatial_tests.h runs each case on the copy branch (a tone pass the whitelist knows) and on the
+  admission by structure (an unknown tone pass, the scene at half the output, the HDR detector watching: the scanner's frame): the lighting
+  pass then a one-ulp reveal, selected with temporal AA off and refused with it on; each other fault refused; the route's trigger selection
+  still refusing; the predicate term by term; the wiring scan; eleven mutants of the gate caught, among them the first fix (the admission not
+  asking).
 - Not knowable until flown: whether CameraProvenance or another cause also marks the target on the reveal draw (the log's `cause=` is the
   first only). If it does, `camera-conflict-kept` takes the frames and the refusal stays; that is the next thing to read.
-- Flight (flat, UI quality on, Full System Scanner open and zoomed onto a body): in the zoomed windows `flat runtime refusal 5s: reason=
-  conflicting-hdr-target-or-camera` near 0 (the old build read 35-96% of the frames) and `camera-conflict-spatial` about that old count;
-  `camera-conflict-kept` 0. `door-refused-untreated` near 0 and `door-armed` about the frame count in the 30 s `flat ui layer:` line; the
-  960x600/1920x1200 composite flips stop. Before the zoom both counters read 0 as before. Failures: refusals unchanged with both counters 0
-  (the prefix was never told temporal AA is off, or the cause is not this one); `camera-conflict-kept` above 0 (a second cause marks the
-  target: read the `flat runtime conflict` line); a cockpit or DSS window with either counter above 0 (the gate leaked).
+- Flight (flat, UI quality on, Full System Scanner open and zoomed onto a body): in the zoomed windows `flat copy structure 5s:`
+  `admitted` about `copies` and `selector-refused` near 0 (135701: 195 and 213 of about 300 in the windows at 14:00:07 and 14:00:12); `flat runtime refusal 5s: reason=
+  conflicting-hdr-target-or-camera` near 0; `camera-conflict-spatial` about the old refusal count; `camera-conflict-kept` 0. In the 30 s
+  `flat ui layer:` line `door-armed` about `copies` and `door-refused-untreated` near 0; the 960x600/1920x1200 composite flips stop.
+  Still reading `conflicting-hdr-target-or-camera` and fine: `last-selector=` and `flat untrusted H audit` (the HDR route's, not the
+  copy's). Before the zoom both counters read 0 as before. Failures: refusals unchanged with both counters 0 (the prefix was never told
+  temporal AA is off, or a third site refuses: read `flat copy structure 5s: last=` and the refusal reason); `camera-conflict-kept` above 0
+  (a second cause marks the target: read the `flat runtime conflict` line); a refusal `inconsistent-draw-order` or another new reason
+  (the waived frame failed a later check of the selection: the reveal composite drawn after the first consumer); a cockpit or DSS window
+  with either counter above 0 (the gate leaked).

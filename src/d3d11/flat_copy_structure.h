@@ -321,8 +321,10 @@ inline FlatMonoFrame flatCopyAdmit(FlatRuntimePrefix& p, const FlatHdrFrame& f, 
     }
     if (g.ldrTargetsBefore) return decline("r-sized-image-passes-follow-the-first-consumer-of-the-scene-hdr");
 
+    // The Full System Scanner's tone pass is in no whitelist, so its frames are this admission's, and a bad H refuses here: the one
+    // place a camera-only fault on a temporal-off frame is asked about (waiveCameraOnly), as the reducer's copy branch asks it.
     FlatMonoFrame sel = flatSelectHdrRouteAt(p, f, [](uint64_t, uint64_t) { return true; }, src->writes.first,
-                                             FlatHdrExtentGate::UniformHalfToDouble);
+                                             FlatHdrExtentGate::UniformHalfToDouble, nullptr, nullptr, nullptr, nullptr, true);
     if (!sel.selected()) {
         g.outcome = FlatCopyOutcome::Refused;
         return sel;

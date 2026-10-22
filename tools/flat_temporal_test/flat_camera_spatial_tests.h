@@ -12,9 +12,15 @@
 //   - every other fault stays a refusal under temporal-off: layout, target identity (depth), provenance, an explicit write, a mark that
 //     names no cause, an uncertain frame; a camera disagreement that other faults also marked is refused and counted as kept;
 //   - the counters' names and wiring in the runtime, which no rig can run.
+// The Full System Scanner's tone pass (VS F9CFC798F21E9AEA, PS 6DE70EBBF82FCBE6) is in no whitelist, so the reducer's copy branch answers
+// no-known-tone-pass before it asks about the HDR's faults, and the admission by structure (flat_copy_structure.h) takes the frame and
+// asks the HDR route's selection (flatSelectHdrRouteAt), whose own test of the bad target refused it: flight 135701 (the first waiver, in the copy
+// branch alone, read camera-conflict-spatial=0 camera-conflict-kept=0 with 5 s refusals of 59 to 291). The same cases run on both paths.
 #include "flat_laser_scene_tone_tests.h"
 #include "../../src/d3d11/flat_deferred_camera.h"
 #include "../../src/d3d11/flat_frame_contract.h"
+#include "../../src/d3d11/flat_copy_structure.h"
+#include "../../src/d3d11/flat_hdr_route.h"
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -47,10 +53,15 @@ struct Options {
     bool unnamedMark = false;      // a mark that names no cause, as the forward authority's revocation makes (cause None)
     bool uncertain = false;        // the frame is uncertain
     bool viaContract = false;      // the copy goes through the frame contract's entry point, as the runtime's does
+    bool admission = false;        // the scanner's frame: the scene at half the output, a tone pass the whitelist has never met, the HDR detector
+                                   // watching every draw, and the verdict the admission by structure gives (Run::selected is that verdict)
 };
 struct Run {
     std::unique_ptr<FlatRuntimePrefix> p = std::make_unique<FlatRuntimePrefix>();
     std::unique_ptr<FlatFrameContract> contract = std::make_unique<FlatFrameContract>();
+    std::unique_ptr<FlatHdrFrame> hdrFrame = std::make_unique<FlatHdrFrame>();
+    FlatMonoFrame whitelist{};     // the reducer's answer at the copy draw (admission: no-known-tone-pass)
+    FlatCopyDiag diag{};           // the admission's account of the frame
     FlatMonoFrame selected{};
     const void* hdr = token(0x4000);
     FlatRuntimeTarget* target = nullptr;
@@ -62,12 +73,29 @@ inline Run run(const Options& o) {
     p.frame = kFrame; p.output = token(0x9000); p.width = 1920; p.height = 1200; p.format = 28;
     p.temporalOff = o.temporalOff;
     p.uncertain = o.uncertain;
-    auto pool = draw(token(0x1000), 23, token(0x2000), token(0x2001), 0xBFE51414CC3024B4ull, 0xDB79AE788E049DFDull);
+    flatHdrBeginFrame(*r.hdrFrame, p.width, p.height);
+    // The scene's size: the output's in the whitelist's frame, half of it in the scanner's (960x600 into 1920x1200).
+    const uint32_t sceneW = o.admission ? 960u : 1920u, sceneH = o.admission ? 600u : 1200u;
+    const auto sized = [&](FlatRuntimeDraw d, uint32_t w, uint32_t h) {
+        d.key.width = w; d.key.height = h;
+        if (d.key.depth) { d.key.depthWidth = w; d.key.depthHeight = h; }
+        d.key.viewport[2] = float(w); d.key.viewport[3] = float(h);
+        return d;
+    };
+    // A draw as the runtime sees it: the reducer, then (the scanner's frame) the HDR detector, handed the slots it asks for.
+    const auto observe = [&](FlatRuntimeDraw& d, const void* t1 = nullptr) {
+        flatRuntimeObserve(p, d);
+        if (!o.admission) return;
+        const void* srv[4] = {nullptr, t1, nullptr, nullptr};
+        const bool known = flatHdrCouldConsume(*r.hdrFrame, d.key);
+        flatHdrObserveDraw(*r.hdrFrame, d.key, p.sequence, known ? srv : nullptr, known);
+    };
+    auto pool = sized(draw(token(0x1000), 23, token(0x2000), token(0x2001), 0xBFE51414CC3024B4ull, 0xDB79AE788E049DFDull), sceneW, sceneH);
     pool.supported = true; pool.key.kind = kFlatContractPool;
     laser_scene_tone_test::camera(pool, p.frame, 1);
     std::memcpy(pool.camera, kDonor, sizeof(pool.camera)); pool.key.cameraHash = flatCameraHash(pool.camera);
-    for (unsigned i = 0; i < 8; ++i) flatRuntimeObserve(p, pool);
-    auto h = draw(r.hdr, 26, pool.key.depth, pool.key.dsv, 0x7E38A6AA1269C901ull, 0x7CECABDE34FFBE9Eull);
+    for (unsigned i = 0; i < 8; ++i) observe(pool);
+    auto h = sized(draw(r.hdr, 26, pool.key.depth, pool.key.dsv, 0x7E38A6AA1269C901ull, 0x7CECABDE34FFBE9Eull), sceneW, sceneH);
     h.key.kind = kFlatContractScreen; h.key.srvResource[0] = pool.key.color; h.key.srvView[0] = token(0x1002);
     std::memcpy(h.camera, kDonor, sizeof(h.camera)); h.key.cameraHash = pool.key.cameraHash;
     auto& meta = h.key.projection[1];
@@ -75,10 +103,11 @@ inline Run run(const Options& o) {
     meta.status = FlatProjectionStatus::Available; meta.writeEpoch = p.frame; meta.writeSeq = p.sequence;
     h.deferredHdrVerified = flatRuntimeDeferredDonor(p, h.key, p.sequence + 1) &&
         flatMatchDeferredCamera(reinterpret_cast<const unsigned char*>(kDonor), reinterpret_cast<const unsigned char*>(kCb2)) == FlatDeferredCameraMatch::Match;
-    for (unsigned i = 0; i < 8; ++i) { flatRuntimeObserve(p, h); h.deferredHdrVerified = false; }
+    for (unsigned i = 0; i < 8; ++i) { observe(h); h.deferredHdrVerified = false; }
     // One reveal draw: the lighting pass's b1, its camera (or one ulp from it), into H.
     const auto reveal = [&](bool otherDepth, bool ulp, bool wider, bool stale) {
-        auto d = draw(r.hdr, 26, otherDepth ? token(0x2100) : pool.key.depth, otherDepth ? token(0x2101) : pool.key.dsv, kRevealVs, kRevealPs);
+        auto d = sized(draw(r.hdr, 26, otherDepth ? token(0x2100) : pool.key.depth, otherDepth ? token(0x2101) : pool.key.dsv, kRevealVs, kRevealPs),
+                       sceneW, sceneH);
         d.key.kind = kFlatContractScreen;
         laser_scene_tone_test::camera(d, p.frame, p.sequence + 1);
         std::memcpy(d.camera, kDonor, sizeof(d.camera));
@@ -87,23 +116,34 @@ inline Run run(const Options& o) {
         }
         d.key.cameraHash = flatCameraHash(d.camera);
         if (stale) d.key.writeEpoch = p.frame - 1;
-        if (wider) { d.key.width = d.key.depthWidth = 2048; d.key.viewport[2] = 2048; }
+        if (wider) { d.key.width = d.key.depthWidth = 2 * sceneW; d.key.viewport[2] = float(2 * sceneW); }
         std::memcpy(r.revealCamera, d.camera, sizeof(r.revealCamera));
-        flatRuntimeObserve(p, d);
+        observe(d);
     };
     for (unsigned i = 0; i < o.reveals; ++i) reveal(o.otherDepth, o.ulp, o.wider, o.stale);
     if (o.lateOtherDepth) reveal(true, false, false, false);
     r.target = flatRuntimeTarget(p, r.hdr);
     if (o.explicitWrite) flatRuntimeWritten(p, r.hdr);
     if (o.unnamedMark && r.target) flatRuntimeNoteBad(*r.target, FlatRuntimeConflict::None);
-    auto tone = draw(token(0x5000), 27, nullptr, nullptr, flat_mono_detail::kToneVs, flat_mono_detail::kTonePs);
+    // The tone pass: a pair the whitelist knows (the cockpit's), or the scanner's, which no table names. Either writes the R-sized
+    // R8G8B8A8 target the game's copy reads.
+    auto tone = sized(draw(token(0x5000), 27, nullptr, nullptr, o.admission ? 0xF9ull : flat_mono_detail::kToneVs,
+                           o.admission ? 0xFEull : flat_mono_detail::kTonePs), sceneW, sceneH);
     tone.key.kind = kFlatContractScreen; tone.key.depthWidth = tone.key.depthHeight = 0;
-    tone.key.srvResource[1] = r.hdr; tone.key.srvView[1] = token(0x4002);
-    flatRuntimeObserve(p, tone);
+    if (!o.admission) { tone.key.srvResource[1] = r.hdr; tone.key.srvView[1] = token(0x4002); }
+    observe(tone, r.hdr);
     auto copy = draw(p.output, 28, nullptr, nullptr, flat_mono_detail::kCopyVs, flat_mono_detail::kCopyPs);
     copy.key.kind = kFlatContractOutput; copy.key.depthWidth = copy.key.depthHeight = 0;
     copy.key.srvResource[0] = tone.key.color; copy.key.srvView[0] = token(0x5002);
-    r.selected = o.viaContract ? flatRuntimeObserveContract(p, copy, *r.contract) : flatRuntimeObserve(p, copy);
+    r.whitelist = (o.viaContract || o.admission) ? flatRuntimeObserveContract(p, copy, *r.contract) : flatRuntimeObserve(p, copy);
+    r.selected = r.whitelist;
+    if (o.admission) {
+        const void* srv[4] = {copy.key.srvResource[0], nullptr, nullptr, nullptr};
+        const bool known = flatHdrCouldConsume(*r.hdrFrame, copy.key);
+        flatHdrObserveDraw(*r.hdrFrame, copy.key, p.sequence, known ? srv : nullptr, known);
+        FlatCopyPolicy policy; policy.structure = true; policy.mode = FlatMonoResolveMode::Xess;   // the flight's mode: XeSS, 960x600 into 1920x1200
+        r.selected = flatCopyAdmit(p, *r.hdrFrame, copy, r.whitelist, policy, &r.diag);
+    }
     r.target = flatRuntimeTarget(p, r.hdr);
     return r;
 }
@@ -133,90 +173,119 @@ inline int flatCameraSpatialTests() {
     const auto expect = [&](bool ok, const char* name) {
         if (!ok) { std::printf("FAIL: camera spatial %s\n", name); ++failures; }
     };
-    const auto refusedAs = [](const Run& r, FlatRuntimeConflict cause) {
-        return r.selected.reason == FlatMonoReason::ConflictingHdr && r.p->selectedConflict.cause == cause;
-    };
+    // The same cases on both paths a frame reaches the verdict by: the reducer's copy branch (a tone pass the whitelist knows) and the
+    // admission by structure (the scanner's, which no whitelist names; the path flight 135701 took).
+    for (const bool admission : {false, true}) {
+        const char* path = admission ? "[admission by structure] " : "[copy branch] ";
+        const auto say = [&](const char* text) { return std::string(path) + text; };
+        const auto check = [&](bool ok, const char* text) { expect(ok, say(text).c_str()); };
+        const auto refusedAs = [](const Run& r, FlatRuntimeConflict cause) {
+            return r.selected.reason == FlatMonoReason::ConflictingHdr && r.p->selectedConflict.cause == cause;
+        };
+        const auto make = [&](Options o) { o.admission = admission; return o; };
 
-    // ---- the control: the lighting pass alone is the pre-zoom frame, selected under either answer ----------------------------
-    for (const bool off : {true, false}) {
-        Options o; o.temporalOff = off;
-        const Run r = run(o);
-        expect(r.selected.selected() && r.selected.hdr == r.hdr && r.target && !r.target->hdrBad && r.target->badCauses == 0 &&
-                   !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
-               "the lighting pass with no reveal is selected, untouched, whichever way temporal AA is");
-        expect(std::memcmp(r.selected.camera, kDonor, sizeof(kDonor)) == 0, "...with the witness camera as the scene camera");
-    }
-    {
-        const auto fresh = std::make_unique<FlatRuntimePrefix>();
-        expect(!fresh->temporalOff && !fresh->cameraConflictWaived && !fresh->cameraConflictKept,
-               "a prefix nothing set (a replayed trace, an older build's) has temporal AA on and no waiver");
-    }
+        // ---- the control: the lighting pass alone is the pre-zoom frame, selected under either answer ------------------------------
+        for (const bool off : {true, false}) {
+            Options o; o.temporalOff = off;
+            const Run r = run(make(o));
+            check(r.selected.selected() && r.selected.hdr == r.hdr && r.target && !r.target->hdrBad && r.target->badCauses == 0 &&
+                      !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
+                  "the lighting pass with no reveal is selected, untouched, whichever way temporal AA is");
+            check(std::memcmp(r.selected.camera, kDonor, sizeof(kDonor)) == 0, "...with the witness camera as the scene camera");
+            if (admission)
+                check(r.whitelist.reason == FlatMonoReason::NoTonePass && r.diag.outcome == FlatCopyOutcome::Admitted,
+                      "...the whitelist knows no tone pass and the structure admits the frame");
+        }
 
-    // ---- the zoom: the reveal composite's camera one ulp from the reference ---------------------------------------------------
-    Run control; { Options o; control = run(o); }
-    {
-        Options o; o.reveals = 1; o.viaContract = true;
-        const Run r = run(o);
-        expect(std::memcmp(r.revealCamera, kDonor, sizeof(kDonor)) != 0, "the reveal draw's camera is not the reference's bytes");
-        expect(r.target && r.target->hdrBad && r.target->firstBad.cause == FlatRuntimeConflict::CameraChange &&
-                   r.target->badCauses == bit(FlatRuntimeConflict::CameraChange) && r.target->hdrCamera && !r.target->hdrLayoutChanged,
-               "the reveal makes the HDR bad for the camera change and for nothing else (the flight's hdr-camera-changed)");
-        expect(r.selected.selected() && r.p->cameraConflictWaived && !r.p->cameraConflictKept,
-               "temporal AA off: the camera-only fault is waived and the frame is selected");
-        expect(r.selected.hdr == control.selected.hdr && r.selected.depth == control.selected.depth && r.selected.dsv == control.selected.dsv &&
-                   r.selected.color == control.selected.color && r.selected.sceneConstants == control.selected.sceneConstants &&
-                   r.selected.renderWidth == control.selected.renderWidth && r.selected.renderHeight == control.selected.renderHeight &&
-                   std::memcmp(r.selected.camera, control.selected.camera, sizeof(r.selected.camera)) == 0 &&
-                   std::memcmp(r.selected.camera, kDonor, sizeof(kDonor)) == 0 &&
-                   std::memcmp(r.selected.camera, r.revealCamera, sizeof(kDonor)) != 0,
-               "...as the same HDR, depth and size with the reference camera, never the reveal's: the frame the lighting pass alone gives");
-        expect(r.p->selectedConflict.cause == FlatRuntimeConflict::None && r.contract->copiesUsed == 1 &&
-                   r.contract->copies[0].selected() && r.contract->copyConflicts[0].cause == FlatRuntimeConflict::None,
-               "the frame contract records the copy as selected with no conflict");
-    }
-    for (const unsigned reveals : {1u, 3u}) {
-        Options o; o.reveals = reveals; o.temporalOff = false;
-        const Run r = run(o);
-        expect(refusedAs(r, FlatRuntimeConflict::CameraChange) && !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
-               "temporal AA on: the same sequence is refused for the camera change, and neither waived nor kept");
-    }
-    {
-        Options o; o.reveals = 3;
-        const Run r = run(o);
-        expect(r.selected.selected() && r.p->cameraConflictWaived && r.target && r.target->badCauses == bit(FlatRuntimeConflict::CameraChange),
-               "temporal AA off: a reveal drawn several times is still camera-only and waived");
-    }
+        // ---- the zoom: the reveal composite's camera one ulp from the reference ------------------------------------------------------
+        Run control; { Options o; control = run(make(o)); }
+        {
+            Options o; o.reveals = 1; o.viaContract = true;
+            const Run r = run(make(o));
+            check(std::memcmp(r.revealCamera, kDonor, sizeof(kDonor)) != 0, "the reveal draw's camera is not the reference's bytes");
+            check(r.target && r.target->hdrBad && r.target->firstBad.cause == FlatRuntimeConflict::CameraChange &&
+                      r.target->badCauses == bit(FlatRuntimeConflict::CameraChange) && r.target->hdrCamera && !r.target->hdrLayoutChanged,
+                  "the reveal makes the HDR bad for the camera change and for nothing else (the flight's hdr-camera-changed)");
+            check(r.selected.selected() && r.p->cameraConflictWaived && !r.p->cameraConflictKept,
+                  "temporal AA off: the camera-only fault is waived and the frame is selected");
+            check(r.selected.hdr == control.selected.hdr && r.selected.depth == control.selected.depth && r.selected.dsv == control.selected.dsv &&
+                      r.selected.color == control.selected.color && r.selected.sceneConstants == control.selected.sceneConstants &&
+                      r.selected.renderWidth == control.selected.renderWidth && r.selected.renderHeight == control.selected.renderHeight &&
+                      std::memcmp(r.selected.camera, control.selected.camera, sizeof(r.selected.camera)) == 0 &&
+                      std::memcmp(r.selected.camera, kDonor, sizeof(kDonor)) == 0 &&
+                      std::memcmp(r.selected.camera, r.revealCamera, sizeof(kDonor)) != 0,
+                  "...as the same HDR, depth and size with the reference camera, never the reveal's: the frame the lighting pass alone gives");
+            check(r.p->selectedConflict.cause == FlatRuntimeConflict::None, "...with no conflict left on the prefix");
+            if (admission)
+                check(r.whitelist.reason == FlatMonoReason::NoTonePass && r.diag.outcome == FlatCopyOutcome::Admitted,
+                      "...admitted by structure over the whitelist's no-known-tone-pass");
+            else
+                check(r.contract->copiesUsed == 1 && r.contract->copies[0].selected() &&
+                          r.contract->copyConflicts[0].cause == FlatRuntimeConflict::None,
+                      "...and the frame contract records the copy as selected with no conflict");
+        }
+        for (const unsigned reveals : {1u, 3u}) {
+            Options o; o.reveals = reveals; o.temporalOff = false;
+            const Run r = run(make(o));
+            check(refusedAs(r, FlatRuntimeConflict::CameraChange) && !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
+                  "temporal AA on: the same sequence is refused for the camera change, and neither waived nor kept");
+            if (admission)
+                check(r.diag.outcome == FlatCopyOutcome::Refused, "...by the admission's selector (selector-refused in the census)");
+        }
+        {
+            Options o; o.reveals = 3;
+            const Run r = run(make(o));
+            check(r.selected.selected() && r.p->cameraConflictWaived && r.target && r.target->badCauses == bit(FlatRuntimeConflict::CameraChange),
+                  "temporal AA off: a reveal drawn several times is still camera-only and waived");
+        }
 
-    // ---- every other fault stays a refusal under temporal-off -----------------------------------------------------------------
-    struct Case { const char* name; Options o; FlatRuntimeConflict first; bool kept; };
-    const auto base = [] { Options o; o.reveals = 1; return o; };
-    Case cases[] = {
-        {"another depth, same camera (target identity)", [&] { auto o = base(); o.ulp = false; o.otherDepth = true; return o; }(), FlatRuntimeConflict::DepthMismatch, false},
-        {"another depth and the camera change in one draw", [&] { auto o = base(); o.otherDepth = true; return o; }(), FlatRuntimeConflict::DepthMismatch, false},
-        {"the camera change, then a draw into another depth", [&] { auto o = base(); o.lateOtherDepth = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
-        {"the camera change from a camera written last frame (provenance)", [&] { auto o = base(); o.stale = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
-        {"the camera change at another width (layout)", [&] { auto o = base(); o.wider = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
-        {"the camera change, then an explicit write of H", [&] { auto o = base(); o.explicitWrite = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
-        {"the camera change, then a mark naming no cause", [&] { auto o = base(); o.unnamedMark = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
-    };
-    for (const Case& c : cases) {
-        const Run r = run(c.o);
-        const std::string label = std::string(c.name) + ": refused under temporal-off";
-        expect(!r.selected.selected() && r.selected.reason == FlatMonoReason::ConflictingHdr && refusedAs(r, c.first) &&
-                   !r.p->cameraConflictWaived && r.p->cameraConflictKept == c.kept,
-               label.c_str());
-        if (c.kept) {
-            // ...and the same case is not camera-only: the mask holds the camera change and a second cause, or the layout changed.
-            expect(r.target && (r.target->badCauses & bit(FlatRuntimeConflict::CameraChange)) &&
-                       (r.target->badCauses != bit(FlatRuntimeConflict::CameraChange) || r.target->hdrLayoutChanged),
-                   "a kept frame's target holds the camera change and a second fault (a second cause, or a changed layout)");
+        // ---- every other fault stays a refusal under temporal-off ---------------------------------------------------------------------
+        struct Case { const char* name; Options o; FlatRuntimeConflict first; bool kept; };
+        const auto base = [] { Options o; o.reveals = 1; return o; };
+        Case cases[] = {
+            {"another depth, same camera (target identity)", [&] { auto o = base(); o.ulp = false; o.otherDepth = true; return o; }(), FlatRuntimeConflict::DepthMismatch, false},
+            {"another depth and the camera change in one draw", [&] { auto o = base(); o.otherDepth = true; return o; }(), FlatRuntimeConflict::DepthMismatch, false},
+            {"the camera change, then a draw into another depth", [&] { auto o = base(); o.lateOtherDepth = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
+            {"the camera change from a camera written last frame (provenance)", [&] { auto o = base(); o.stale = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
+            {"the camera change at another width (layout)", [&] { auto o = base(); o.wider = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
+            {"the camera change, then an explicit write of H", [&] { auto o = base(); o.explicitWrite = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
+            {"the camera change, then a mark naming no cause", [&] { auto o = base(); o.unnamedMark = true; return o; }(), FlatRuntimeConflict::CameraChange, true},
+        };
+        for (const Case& c : cases) {
+            const Run r = run(make(c.o));
+            const std::string label = std::string(c.name) + ": refused under temporal-off";
+            check(!r.selected.selected() && r.selected.reason == FlatMonoReason::ConflictingHdr && refusedAs(r, c.first) &&
+                      !r.p->cameraConflictWaived && r.p->cameraConflictKept == c.kept,
+                  label.c_str());
+            if (c.kept) {
+                // ...and the same case is not camera-only: the mask holds the camera change and a second cause, or the layout changed.
+                check(r.target && (r.target->badCauses & bit(FlatRuntimeConflict::CameraChange)) &&
+                          (r.target->badCauses != bit(FlatRuntimeConflict::CameraChange) || r.target->hdrLayoutChanged),
+                      "a kept frame's target holds the camera change and a second fault (a second cause, or a changed layout)");
+            }
+            if (admission)
+                check(r.diag.outcome == FlatCopyOutcome::Refused, "...by the admission's selector");
+        }
+        {
+            Options o = base(); o.uncertain = true;
+            const Run r = run(make(o));
+            check(r.selected.reason == FlatMonoReason::Truncated && !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
+                  "an uncertain frame is refused as it always was: the waiver is not reached");
         }
     }
+    // The route's own selection at its trigger is not the waiver's to ask: with the same bad H it refuses, and notes nothing.
     {
-        Options o = base(); o.uncertain = true;
-        const Run r = run(o);
-        expect(r.selected.reason == FlatMonoReason::Truncated && !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
-               "an uncertain frame is refused as it always was: the waiver is not reached");
+        Options o; o.reveals = 1; o.admission = true;
+        Run r = run(o);
+        r.p->cameraConflictWaived = r.p->cameraConflictKept = false;
+        const FlatMonoFrame atTrigger = flatSelectHdrRoute(*r.p, *r.hdrFrame, [](uint64_t, uint64_t) { return true; });
+        expect(atTrigger.reason == FlatMonoReason::ConflictingHdr && r.p->selectedConflict.cause == FlatRuntimeConflict::CameraChange &&
+                   !r.p->cameraConflictWaived && !r.p->cameraConflictKept,
+               "the HDR route's selection at its trigger still refuses a bad H, camera-only or not, and sets neither flag");
+        Options ok = o; ok.reveals = 0;
+        Run clean = run(ok);
+        expect(flatSelectHdrRoute(*clean.p, *clean.hdrFrame, [](uint64_t, uint64_t) { return true; }).reason != FlatMonoReason::ConflictingHdr,
+               "...and the same call over an H with no reveal is not a conflict (the control for the line above)");
     }
 
     // ---- the predicate itself: each term is needed ---------------------------------------------------------------------------
@@ -283,9 +352,24 @@ inline int flatCameraSpatialTests() {
         expect(countOf(model, "hdrBad = true") == 1 && countOf(model, "inline void flatRuntimeNoteBad(FlatRuntimeTarget& t, FlatRuntimeConflict cause) {") == 1 &&
                    countOf(forward, "hdrBad=true") == 0 && countOf(forward, "flatRuntimeNoteBad(target,FlatRuntimeConflict::None)") == 1,
                "the bad flag is set in one function, flatRuntimeNoteBad, and the forward authority's revocation names no cause through it");
-        expect(countOf(model, "if (!flatRuntimeCameraConflictSpatialOnly(p, t)) {") == 1 && countOf(model, "p.cameraConflictWaived = true;") == 1 &&
+        expect(countOf(model, "if (t.hdrBad && flatRuntimeBadTargetRefuses(p, t)) {") == 1 &&
+                   countOf(model, "inline bool flatRuntimeBadTargetRefuses(FlatRuntimePrefix& p, const FlatRuntimeTarget& t) {") == 1 &&
+                   countOf(model, "if (flatRuntimeCameraConflictSpatialOnly(p, t)) { p.cameraConflictWaived = true; return false; }") == 1 &&
                    countOf(model, "if (p.temporalOff && t.firstBad.cause == FlatRuntimeConflict::CameraChange) p.cameraConflictKept = true;") == 1,
-               "the copy branch refuses a bad target unless the predicate holds, and notes the waiver and the kept refusal");
+               "the copy branch refuses a bad target unless the one question holds, which notes the waiver and the kept refusal");
+        // The admission by structure: the scanner's frames (a tone pass no whitelist names) reach their verdict here, not in the copy branch.
+        // It is the one asker of the route's selection with the waiver; the route's own selection at its trigger is not.
+        const std::string route = slurp("src/d3d11/flat_hdr_route.h");
+        const std::string structure = slurp("src/d3d11/flat_copy_structure.h");
+        expect(!route.empty() && !structure.empty(), "the HDR route and the copy structure sources are readable from the repo root");
+        const std::string trigger = between(route, "return flatSelectHdrRouteAt(p, f, supportedPair, f.trigger.sequence,", ");");
+        expect(countOf(route, "if (target->hdrBad && (!waiveCameraOnly || flatRuntimeBadTargetRefuses(p, *target))) {") == 1 &&
+                   countOf(route, "void* qualifiedAlternateUser = nullptr, bool waiveCameraOnly = false) {") == 1 &&
+                   !trigger.empty() && trigger.find("true") == std::string::npos && trigger.find("waiveCameraOnly") == std::string::npos,
+               "the route's selection takes the waiver as a parameter that defaults off, and its own call at the trigger does not ask it");
+        expect(countOf(structure, "flatSelectHdrRouteAt(") == 1 &&
+                   countOf(structure, "FlatHdrExtentGate::UniformHalfToDouble, nullptr, nullptr, nullptr, nullptr, true);") == 1,
+               "the admission by structure asks the route's selection with the waiver, once");
         const std::string predicate = between(model, "inline bool flatRuntimeCameraConflictSpatialOnly(", "\n}\n");
         expect(predicate.find("p.temporalOff") != std::string::npos && predicate.find("t.hdrCamera") != std::string::npos &&
                    predicate.find("!t.hdrLayoutChanged") != std::string::npos && predicate.find("t.badCauses == (1u << static_cast<uint32_t>(FlatRuntimeConflict::CameraChange))") != std::string::npos,

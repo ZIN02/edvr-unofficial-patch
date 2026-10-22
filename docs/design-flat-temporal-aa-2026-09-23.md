@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. BUILT, NOT FLOWN (last entry).
+- **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. FLOWN 11:25 (`edvr_gfx_20261022_112019`, d4abc498): not enough, the G-buffer holds no camera-bearing writer at all (`why=no-witness-entry`), same cycle (403 and 473 `door-refused-untreated` per 30 s). Rule: a lighting pass over a G-buffer the game cleared and nothing wrote since is neither verified nor failed (`why=empty-gbuffer`). BUILT, NOT FLOWN (last entry).
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed. RC4 state (2026-10-17): moved to Status detail below (2026-10-21), unchanged.
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
@@ -18375,3 +18375,56 @@ blur seen there before it came from this same defect, not from the scene.
 Flight (Detailed Surface Scanner, same scene): the witness line reads `why=accepted` with `conflict=none`, `offender=0`, and `first-vs` the
 first terrain writer; no `deferred-inverse-unproven` and no `engine-source-not-ready`; `door-refused-untreated=0`; the `composite
 output 960x600` / `1920x1200` alternation stops; `treated-jittered` in every 5 s window. If a conflict remains, read `offender-*`.
+
+### 2026-10-22: the Detailed Surface Scanner's empty G-buffer (built, not flown)
+
+Evidence, `edvr_gfx_20261022_112019` (flat, XeSS, 960x600 to 1920x1200, build d4abc498 with the star pre-pass rule in): the Detailed Surface
+Scanner (GuiFocus 10) from 11:25:26, census 1 at 11:25:59. The cycle of the previous entry was still there. Per 5 s: 75
+`relevant-observations-truncated`, 75 `engine-source-not-ready`, 150 zero-phase frames treated; `door-refused-untreated` 403 and 473 in the
+30 s windows ending 11:25:50 and 11:26:20 (18 or fewer in every other window except 60 at 11:26:50 and 11:30:20); the Motion source view
+flashes. 60 of the log's 61 witness lines read `entry=0 writers=0 entries-on-depth=0 ... why=no-witness-entry`, the 61st `accepted`.
+
+Ruled out: the star pre-pass fix alone, because in census 1 of `edvr_gfx_20261022_112019` the G-buffer has no camera-bearing writer at all
+(`why=no-witness-entry`), so there was no entry for the pre-pass to have poisoned and none for the fix to have saved.
+
+Cause. Both census frames show the same order. Depth @40 is cleared at q 135; the colours @41, @44, @45 and the HDR @46 at q 137 to 140.
+Then, before the lighting pass (draw 118, q 151, SRV0 @41, SRV1 @44, SRV2 @45, SRV3 the shadow mask @60): the inert filters FC1193AF and
+E8FDC0D9 with PS 258B95AC (colour mask 0, stencil only), the star's depth-only pre-pass 0EE43D81 (mask 0), a depth copy DEF19B03/CB95394B
+into @55 with no depth, the alpha pass DEF19B03/06CD42A9 into @45 (mask 8, MIN blend, no depth; it runs in every deferred frame, the loadout
+census's draw 121 included), and the sun-shadow resolve 53211E8C into @60. None is a pool source and none is a witness writer
+(`flatProjectionB1Unread`, or no depth), so the pass found no donor. Scenes that draw geometry are different: the loadout (72 draws on the
+depth before the pass), the Maverick (27), supercruise (54) and censuses 3 to 5 of this log (GuiFocus 0, 84) all have non-exempt draws on
+the depth and into SRV0. The first camera-bearing draw into the HDR is draw 120 (VS D8D1067D, q 155), not the star's HDR draw; the `flat
+source-free content 5s` line names it as the HDR's tone record (`same-camera-draws=1`). So in this scene the HDR already takes its camera
+from its forward writers, and the zero-phase frames of the cycle are selected source-free and treated exactly that way
+(`source-free-treated=150` of 225).
+
+The rule. A lighting pass over inputs that nothing placed anything in is neither verified nor failed. At the pass
+(`flatRuntimeEmptyGBuffer`, asked by the donor resolver where no pool source and no witness entry stand on the depth) the prefix's ledger of
+cleared resources (`FlatRuntimeReached`: made by a clear only, a second clear erases it) must show all of: the depth and SRV0, SRV1, SRV2
+cleared this frame; the depth and SRV0 with no draw bound to them since, except the pairs `flatProjectionB1Unread` names; none of the four
+with a copy, update, resolve or compute write since; the HDR cleared, with no draw, no write, no camera, not bad and not an image copy's
+first write. SRV1 and SRV2 are not charged for a draw of their own (the alpha pass); a draw that placed something bound the depth and is a
+source or a witness writer. The answer is `why=empty-gbuffer` in the witness line (role stays `none`: it is never a donor, so repairs, which
+need a qualified pass, and the donor-based qualification are untouched); `gbuffer-reached` is the same state with a write the witness cannot
+see. The verifier then skips `deferred-inverse-unproven`, `failPhase` and `MarkUncertain` for it, counts it apart from a refusal, and the
+`flat deferred HDR camera:` line carries `empty-gbuffer-total`. The Probe early return and the binding-failure path are as they were (the
+latter asks the resolver without the inputs). The precedent is the HDR image copy that is the first write into its HDR (`imageCopyFirst`).
+Offline, run on the censuses in hand: this one (both frames) and the Full System Scanner's (GuiFocus 9, census 2) come out empty; the
+loadout, Maverick, supercruise and censuses 3 to 5 and the earlier scanner with 80 masking quads do not.
+
+Not covered, and said so. That the lighting output over a cleared G-buffer does not depend on the pass's camera rows is the maintainer's
+premise and is not proved by the model (the HDR is cleared to zero and the pass adds onto it; shader 7CECABDE was not read for it). Writes
+the prefix is not told of cannot defeat the rule: D3D11.1 `CopySubresourceRegion1` and `UpdateSubresource1`, `ClearView`, UAV clears,
+pixel-shader UAV writes, `GenerateMips` (the same blind spot every prefix decision has). The depth clear reaches the model as a constant
+fill through a new flag; its provenance stays `Written` for the history ledgers.
+
+Flight (Detailed Surface Scanner, same scene): the witness line reads `why=empty-gbuffer` and `accepted=0`, and `empty-gbuffer-total` climbs
+by about 300 per 5 s at 60 fps; `deferred-inverse-unproven` 0 and `engine-source-not-ready` 0; `treated-jittered` in each window;
+`door-refused-untreated=0`; the `composite output 960x600` / `1920x1200` alternation stops. If the new code never ran, the log says so:
+`empty-gbuffer-total` stays 0 while the cycle goes on. `why=empty-gbuffer` with `deferred-inverse-unproven` still counting means the pass
+failed its own shape checks (the failure ownership line gives `actual=` and `input=`). A second defect would look like:
+`why=no-witness-entry` still (an input the game did not clear reached the model as uncleared: the ledger says unknown; check the census's
+clears of @40, @41, @44, @45, @46), `why=gbuffer-reached` (a write reached an input), or `empty-gbuffer` with the cycle gone but a new
+refusal in `flat runtime refusal 5s`, most likely `conflicting-hdr-target-or-camera` if a forward writer in a jittered frame carries another
+camera than the first (the camera of the HDR is now a forward writer's, which a zero-phase frame cannot show).

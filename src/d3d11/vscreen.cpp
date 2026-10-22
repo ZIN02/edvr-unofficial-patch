@@ -4576,7 +4576,7 @@ void STDMETHODCALLTYPE hookedClearDsv(ID3D11DeviceContext* self,
             FlatMutationDetails::clearDepth(flags,depth,stencil));
         flatRuntimeWeaponFootprintClear(dsv, flags, stencil);
     }
-    if (!foreignContext(self) && (flags & D3D11_CLEAR_DEPTH) && flatRuntimeActive()) { ResourceInfo info{}; if (bindingResolve(dsv, &info)) flatRuntimeWritten(static_cast<ID3D11Resource*>(info.resource)); }
+    if (!foreignContext(self) && (flags & D3D11_CLEAR_DEPTH) && flatRuntimeActive()) { ResourceInfo info{}; if (bindingResolve(dsv, &info)) flatRuntimeWritten(static_cast<ID3D11Resource*>(info.resource), FlatOverlayMutationOp::Written, true); }
     if (!foreignContext(self) && flatTemporalCapturing()) flatTemporalClearDepth(dsv, flags, depth);
     g_state->realClearDsv(self, dsv, flags, depth, stencil);
 }

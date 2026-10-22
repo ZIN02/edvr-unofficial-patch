@@ -230,6 +230,17 @@ inline bool flatRuntimeWitnessSameCamera(const FlatRuntimeCameraWitness& a, cons
     return a.hasCamera && b.hasCamera && a.b1 == b.b1 && a.cameraHash == b.cameraHash &&
         std::memcmp(a.camera, b.camera, kFlatCameraBytes) == 0;
 }
+// What reached a resource since its last clear, kept for one question: did the deferred lighting pass's inputs receive anything this frame
+// (flatRuntimeEmptyGBuffer). An entry is made only by a clear, so a resource nothing cleared has no entry and that answer is "unknown";
+// every later draw, copy, update, resolve or compute write into a resource with an entry is counted against it, and a second clear
+// erases the count (it erased the content). A write to a resource with no entry costs a lookup and nothing else, so the buffers the game
+// maps by the hundred never fill the table. A table that overflows fails closed: unknown for the rest of the frame.
+struct FlatRuntimeReached {
+    const void* resource = nullptr;
+    uint32_t draws = 0;    // draws that bound it as RTV0 or as the depth, the pairs flatProjectionB1Unread names apart
+    uint32_t writes = 0;   // writes into it that are no clear
+};
+constexpr uint32_t kFlatRuntimeReached = 64;
 struct FlatRuntimePrefix {
     FlatRuntimeTarget targets[128]{};
     FlatContractRecord sources[32]{};
@@ -237,6 +248,10 @@ struct FlatRuntimePrefix {
     FlatRuntimeCameraWitness witnesses[kFlatRuntimeWitnesses]{};
     uint32_t witnessesUsed = 0;
     bool witnessOverflow = false;
+    // The cleared resources and what reached them since (FlatRuntimeReached).
+    FlatRuntimeReached reached[kFlatRuntimeReached]{};
+    uint32_t reachedUsed = 0;
+    bool reachedOverflow = false;
     uint32_t targetsUsed = 0, sourcesUsed = 0, sequence = 0, copies = 0;
     uint32_t imageCopiesAccepted = 0, imageCopiesRefused = 0;
     // Verified image copies that were the first write into their HDR and so conflicted with nothing (FlatRuntimeTarget::imageCopyFirst).
@@ -380,8 +395,12 @@ inline const char* flatDeferredDonorOwnershipName(FlatDeferredDonorRole r) {
 }
 // Why no donor, for the witness line. Uncertain: the prefix is. Shape: the draw is not the deferred lighting pass the resolver can judge
 // (its pair, targets, views or viewport). PoolRule: a source record exists on the depth, so the pool rule alone decided and said no.
+// EmptyGBuffer is no donor and no refusal: nothing a camera placed reached the pass's inputs this frame (flatRuntimeEmptyGBuffer), so there
+// is no camera for its rows to be verified against and none for them to misplace. GBufferReached: no writer on the depth, yet something
+// the witness cannot see (a draw with no depth, a copy, a compute write) reached the inputs, so the pass stays unverified and refused.
 enum class FlatDeferredDonorWhy : uint8_t {
-    None, Uncertain, Shape, PoolRule, NoEntry, Overflow, Conflict, SameColor, Layout, Viewport, Camera, Late, OtherCamera, Count
+    None, Uncertain, Shape, PoolRule, NoEntry, Overflow, Conflict, SameColor, Layout, Viewport, Camera, Late, OtherCamera,
+    EmptyGBuffer, GBufferReached, Count
 };
 inline const char* flatDeferredDonorWhyName(FlatDeferredDonorWhy w) {
     switch (w) {
@@ -397,9 +416,77 @@ inline const char* flatDeferredDonorWhyName(FlatDeferredDonorWhy w) {
     case FlatDeferredDonorWhy::Camera: return "witness-camera-not-current";
     case FlatDeferredDonorWhy::Late: return "witness-not-before-draw";
     case FlatDeferredDonorWhy::OtherCamera: return "second-camera-on-depth";
+    case FlatDeferredDonorWhy::EmptyGBuffer: return "empty-gbuffer";
+    case FlatDeferredDonorWhy::GBufferReached: return "gbuffer-reached";
     default: return "accepted";
     }
 }
+// ---- what reached the deferred lighting pass's inputs ----------------------------------------------------------
+inline FlatRuntimeReached* flatRuntimeReachedFind(FlatRuntimePrefix& p, const void* resource) {
+    if (!resource) return nullptr;
+    for (uint32_t i = 0; i < p.reachedUsed; ++i) if (p.reached[i].resource == resource) return &p.reached[i];
+    return nullptr;
+}
+inline const FlatRuntimeReached* flatRuntimeReachedFind(const FlatRuntimePrefix& p, const void* resource) {
+    if (!resource) return nullptr;
+    for (uint32_t i = 0; i < p.reachedUsed; ++i) if (p.reached[i].resource == resource) return &p.reached[i];
+    return nullptr;
+}
+// A write into `resource` that is not a draw: a clear (constantFill) makes or resets its entry, anything else is counted on an entry that
+// exists and ignored where none does. The clear is the only way in, which is the point: the rule asks for an input the game cleared this
+// frame and nothing wrote since, and what was written before a clear is gone.
+inline void flatRuntimeReachedWrite(FlatRuntimePrefix& p, const void* resource, bool constantFill) {
+    if (!resource) return;
+    FlatRuntimeReached* e = flatRuntimeReachedFind(p, resource);
+    if (!constantFill) { if (e) ++e->writes; return; }
+    if (!e) {
+        if (p.reachedUsed == kFlatRuntimeReached) { p.reachedOverflow = true; return; }
+        e = &p.reached[p.reachedUsed++];
+        e->resource = resource;
+    }
+    e->draws = e->writes = 0;
+}
+// A draw's two bindings. The pairs that never read the b1 they happen to have bound, and write nothing a camera placed (the inert
+// filters, the sun-shadow resolve, the star's depth-only pre-pass), are not counted: they are what the witness already looks past.
+inline void flatRuntimeReachedDraw(FlatRuntimePrefix& p, const FlatContractObservation& k) {
+    if (!p.reachedUsed || flatProjectionB1Unread(k.vs, k.ps)) return;
+    for (uint32_t i = 0; i < p.reachedUsed; ++i) {
+        auto& e = p.reached[i];
+        if ((k.depth && e.resource == k.depth) || (k.color && e.resource == k.color)) ++e.draws;
+    }
+}
+// Whether the deferred lighting pass reads inputs a camera placed nothing in this frame. `gbuffer` is the pass's SRV0..SRV2 resources.
+// Empty needs all of: no pool source and no witness entry on the depth (nothing with a camera drew there); the depth and the three inputs
+// cleared this frame, the depth and SRV0 with no draw bound to them since (a draw is counted unless its pair never reads b1) and none of
+// the four with a copy, update, resolve or compute write since; the HDR cleared this frame, not written, and not bad. SRV1 and SRV2 are
+// not charged for a draw of their own: the game's last G-buffer pass draws the alpha of SRV2 with no depth bound in every frame (a
+// full-screen triangle, mask 8), a draw that places nothing; geometry that placed something bound the depth and is a source or a writer
+// above. Reached: the writer tables are empty and something else reached an input, which is what the answer is to say. Unknown: anything
+// less than the whole, the prefix being uncertain among it.
+enum class FlatEmptyGBuffer : uint8_t { Unknown, Reached, Empty };
+inline FlatEmptyGBuffer flatRuntimeEmptyGBuffer(const FlatRuntimePrefix& p, const FlatContractObservation& k, const void* const* gbuffer) {
+    if (p.uncertain || p.reachedOverflow || p.witnessOverflow || !gbuffer || !k.depth || !k.color) return FlatEmptyGBuffer::Unknown;
+    if (gbuffer[0] != k.srvResource[0]) return FlatEmptyGBuffer::Unknown;
+    for (uint32_t i = 0; i < 3; ++i)
+        if (!gbuffer[i] || gbuffer[i] == k.color || gbuffer[i] == k.depth) return FlatEmptyGBuffer::Unknown;
+    for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == k.depth) return FlatEmptyGBuffer::Unknown;
+    for (uint32_t i = 0; i < p.witnessesUsed; ++i) if (p.witnesses[i].depth == k.depth) return FlatEmptyGBuffer::Unknown;
+    for (uint32_t i = 0; i < p.targetsUsed; ++i) {
+        const auto& t = p.targets[i];
+        if (t.resource == k.color && (t.writes.draws || t.hdrBad || t.hdrCamera || t.hdrLayoutChanged || t.imageCopyFirst))
+            return FlatEmptyGBuffer::Unknown;
+    }
+    const auto* hdr = flatRuntimeReachedFind(p, k.color);
+    if (!hdr || hdr->draws || hdr->writes) return FlatEmptyGBuffer::Unknown;
+    const auto* depth = flatRuntimeReachedFind(p, k.depth);
+    const auto* in0 = flatRuntimeReachedFind(p, gbuffer[0]);
+    const auto* in1 = flatRuntimeReachedFind(p, gbuffer[1]);
+    const auto* in2 = flatRuntimeReachedFind(p, gbuffer[2]);
+    if (!depth || !in0 || !in1 || !in2) return FlatEmptyGBuffer::Unknown;
+    if (depth->draws || depth->writes || in0->draws || in0->writes || in1->writes || in2->writes) return FlatEmptyGBuffer::Reached;
+    return FlatEmptyGBuffer::Empty;
+}
+
 // What the deferred lighting pass is verified against: one camera, from one of two proofs, or none. The pool fields are a source record's;
 // the witness fields an entry's. camera is the 96 rows (null with no donor) and lives in the prefix. The diagnostic block is filled
 // whether or not a donor comes back.
@@ -438,9 +525,12 @@ struct FlatDeferredDonor {
 // (a) The pool rule is the single qualified source record on the depth, writing the draw's SRV0. (b) Only where no source record of any
 // kind exists on the depth does the witness stand in. (c) It must be an unconflicted entry for (depth, SRV0) of another target, of the
 // draw's dsv, depth format and extent, with a full viewport and a current camera, written before q; (d) and no other entry on the
-// depth may carry a different camera, so a second camera on the depth fails closed.
+// depth may carry a different camera, so a second camera on the depth fails closed. (e) Where no source record and no entry stand on the
+// depth at all, the caller that names the pass's three inputs (`gbuffer`, SRV0..SRV2) can have the answer "empty": no donor, and
+// why == EmptyGBuffer rather than NoEntry (flatRuntimeEmptyGBuffer). It is never a donor: role stays None, so nothing that asks a donor
+// for a camera gets one.
 inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
-        const FlatContractObservation& k,uint32_t q) {
+        const FlatContractObservation& k,uint32_t q,const void* const* gbuffer=nullptr) {
     using namespace flat_mono_detail;
     FlatDeferredDonor out;
     if(k.depth)for(uint32_t i=0;i<p.sourcesUsed;++i)if(p.sources[i].key.depth==k.depth)++out.poolRecords;
@@ -481,7 +571,15 @@ inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
     if(e){out.entry=true;out.writers=e->writers;out.conflict=e->conflict;out.entryCameraHash=e->hasCamera?e->cameraHash:0;out.entryB1=e->b1;
         out.entryFirst=e->first;out.entryFirstVs=e->firstVs;out.entryFirstPs=e->firstPs;out.entryHasCamera=e->hasCamera;out.offender=e->offender;}
     if(p.witnessOverflow){out.why=FlatDeferredDonorWhy::Overflow;return out;}
-    if(!e){out.why=FlatDeferredDonorWhy::NoEntry;return out;}
+    if(!e){
+        out.why=FlatDeferredDonorWhy::NoEntry;
+        if(!out.witnessEntries) {
+            const auto empty=flatRuntimeEmptyGBuffer(p,k,gbuffer);
+            if(empty==FlatEmptyGBuffer::Empty)out.why=FlatDeferredDonorWhy::EmptyGBuffer;
+            else if(empty==FlatEmptyGBuffer::Reached)out.why=FlatDeferredDonorWhy::GBufferReached;
+        }
+        return out;
+    }
     if(e->conflict!=FlatWitnessConflict::None){out.why=FlatDeferredDonorWhy::Conflict;return out;}
     if(!e->writers){out.why=FlatDeferredDonorWhy::NoEntry;return out;}   // a colour write restarted it, no writer since
     if(e->color==k.color){out.why=FlatDeferredDonorWhy::SameColor;return out;}
@@ -607,7 +705,7 @@ inline void flatRuntimeWitnessWritten(FlatRuntimePrefix& p, const void* resource
         }
     }
 }
-inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource) {
+inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource, bool constantFill = false) {
     for (uint32_t i = 0; i < p.targetsUsed; ++i) {
         auto& t = p.targets[i];
         if (t.overlayOpen && resource == t.overlayDepth) {
@@ -622,6 +720,7 @@ inline void flatRuntimeWritten(FlatRuntimePrefix& p, const void* resource) {
     }
     for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == resource) p.sources[i].key.camera = nullptr;
     flatRuntimeWitnessWritten(p, resource);
+    flatRuntimeReachedWrite(p, resource, constantFill);   // constantFill: a clear, which carries no content
 }
 inline void flatRuntimeOverlayFailed(FlatRuntimePrefix& p, const void* resource = nullptr) {
     for (uint32_t i = 0; i < p.targetsUsed; ++i) {
@@ -672,6 +771,7 @@ inline void flatRuntimeDispatchObserveWritten(FlatRuntimePrefix& p, const void* 
     for (uint32_t i = 0; i < p.sourcesUsed; ++i) if (p.sources[i].key.depth == resource)
         flatRuntimeMarkUncertain(p, FlatRuntimeUncertainCause::SourceUavWrite, resource, p.sources[i].key.color);
     flatRuntimeWitnessWritten(p, resource);
+    flatRuntimeReachedWrite(p, resource, false);
 }
 // Whether the selected frame's contract came through the verified menu HDR copy: the HDR the
 // tone pass reads (`hdr`, the selection's) is the copy's inherited destination. That is the 3D
@@ -783,6 +883,7 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
             (d.effectiveStencilWrite && !d.overlayProtected)) && k.depth == suffix.overlayDepth)
             bad(suffix, FlatRuntimeConflict::OverlaySuffix, suffix.tone);
     }
+    flatRuntimeReachedDraw(p, k);   // a draw reaches its depth and its colour, and a depth-only draw its depth
     if (d.poolFamilyVs) ++p.unsupportedFamilyDraws;
     if (!k.color) return out;
     auto* t = flatRuntimeTarget(p, k.color); if (!t) return out;

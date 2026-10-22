@@ -521,7 +521,7 @@ struct State {
     HdrCaptureWrite hdrCaptureWrites[256]{};
     uint32_t hdrCaptureWriteNext = 0;
     uint32_t hdrCaptureWriteEvictions = 0;
-    uint64_t deferredCameraChecks = 0, deferredCameraAccepted = 0, deferredCameraRefused = 0;
+    uint64_t deferredCameraChecks = 0, deferredCameraAccepted = 0, deferredCameraRefused = 0, deferredEmptyGBuffer = 0;
     uint64_t deferredCameraLastLog = 0, deferredInverseLastLog = 0, deferredInverseExecutions = 0;
     uint64_t deferredWitnessCalls = 0, deferredWitnessLastLog = 0, deferredWitnessRefusedLastLog = 0;
     bool deferredInverseLastBound = false;
@@ -2029,7 +2029,13 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     D3D11_SHADER_RESOURCE_VIEW_DESC view{};if(srv)srv->GetDesc(&view);
     D3D11_TEXTURE2D_DESC desc{};if(sourceTexture)sourceTexture->GetDesc(&desc);
     k.srvView[0]=srv.Get();k.srvResource[0]=source.Get();
-    const auto donor=flatRuntimeDeferredDonor(s.prefix,k,s.prefix.sequence+1);
+    // SRV1 and SRV2, the pass's other G-buffer inputs: named to the resolver for its empty-G-buffer answer and kept out of the key, whose
+    // views the frame contract hashes.
+    Ptr<ID3D11ShaderResourceView> srv1,srv2;Ptr<ID3D11Resource> source1,source2;
+    s.context->PSGetShaderResources(1,1,&srv1);s.context->PSGetShaderResources(2,1,&srv2);
+    if(srv1)srv1->GetResource(&source1);if(srv2)srv2->GetResource(&source2);
+    const void* const gbuffer[3]={source.Get(),source1.Get(),source2.Get()};
+    const auto donor=flatRuntimeDeferredDonor(s.prefix,k,s.prefix.sequence+1,gbuffer);
     Ptr<ID3D11Buffer> buffer;UINT first=0,count=0;
     if(s.projectionContext)s.projectionContext->VSGetConstantBuffers1(2,1,&buffer,&first,&count);
     const auto metadata=s.projection?s.projection->constantsMetadata(buffer.Get()):FlatProjectionShadowMetadata{};
@@ -2055,6 +2061,10 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         desc.ArraySize==1 && desc.SampleDesc.Count==1;
     const auto match=donor && copied?flatMatchDeferredCamera(donor.camera,raw):FlatDeferredCameraMatch::Unavailable;
     const bool qualified=actual && input && donor && copied && !foreignWork.load(std::memory_order_acquire);
+    // No donor because nothing a camera placed reached the pass's inputs this frame (flatRuntimeEmptyGBuffer): the pass has nothing in its
+    // G-buffer for its camera rows to misplace and no camera to be checked against. Neither verified nor failed; the HDR's camera is its
+    // later writers'. Whatever else is wrong with the pass (its shaders, views, formats) it is not this.
+    const bool emptyGBuffer=donor.why==FlatDeferredDonorWhy::EmptyGBuffer && actual && input && !foreignWork.load(std::memory_order_acquire);
     const float requestedPhaseX=s.phase.currentX,requestedPhaseY=s.phase.currentY;
     const uint64_t requestedApplied=s.phase.applied,requestedFrame=s.prefix.frame;
     const uint32_t requestedQ=s.prefix.sequence+1;
@@ -2134,7 +2144,7 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     const bool executionCoherent=flatDeferredExecutionCoherent(qualified,match,prepared);
     // Later exact consumers cannot hide a changed/unavailable inverse behind
     // the first H witness. This consumer's execution must remain coherent too.
-    if(flatCameraInjectUpstreamOwns() && nonzero && !executionCoherent && !repairing) {
+    if(flatCameraInjectUpstreamOwns() && nonzero && !executionCoherent && !repairing && !emptyGBuffer) {
         reportFailure("deferred-inverse-unproven");
         failPhase(s,"deferred-inverse-unproven");
         flatRuntimeMarkUncertain(s.prefix,FlatRuntimeUncertainCause::DeferredExecution,k.color,k.depth,k.vs,k.ps);
@@ -2148,7 +2158,8 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
         uint32_t hash=2166136261u;for(unsigned char byte:raw){hash^=byte;hash*=16777619u;}projection.hash=hash;
         std::memcpy(draw.camera,donor.camera,kFlatCameraBytes);k.cameraHash=donor.cameraHash;
         ++s.deferredCameraAccepted;
-    } else ++s.deferredCameraRefused;
+    } else if(emptyGBuffer)++s.deferredEmptyGBuffer;
+    else ++s.deferredCameraRefused;
     const uint64_t now=GetTickCount64();
     // The pool rule found no record on this depth: the witness of the G-buffer writers was the only donor to be had, and this says what it
     // saw. First occurrence, then at most once per 5 s, the ownership report's budget -- a refusal on its own budget, so frames that
@@ -2170,11 +2181,12 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     }
     if(s.deferredCameraChecks<=8 ||
        (nonzero && !s.deferredCameraNonzeroLogged) || now-s.deferredCameraLastLog>=5000) {
-        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u donor-role=%s source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
+        Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u donor-role=%s source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu empty-gbuffer-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",
             (unsigned long long)s.prefix.frame,s.prefix.sequence+1,k.color,k.b1,buffer.Get(),first,count,original?1u:0u,current?1u:0u,
             (unsigned long long)metadata.writeFrame,metadata.writeSequence,donor.b1,donor.last,flatDeferredDonorRoleName(donor.role),source.Get(),
             actual?1u:0u,input?1u:0u,flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,repairName,missingPhase?1u:0u,prepared?1u:0u,warmed?1u:0u,s.phase.currentX,s.phase.currentY,
-            (unsigned long long)s.deferredCameraChecks,(unsigned long long)s.deferredCameraAccepted,(unsigned long long)s.deferredCameraRefused,flatWorkName(s.work));
+            (unsigned long long)s.deferredCameraChecks,(unsigned long long)s.deferredCameraAccepted,(unsigned long long)s.deferredCameraRefused,
+            (unsigned long long)s.deferredEmptyGBuffer,flatWorkName(s.work));
         s.deferredCameraLastLog=now;if(nonzero)s.deferredCameraNonzeroLogged=true;
     }
     return deferredPlan;
@@ -5013,7 +5025,7 @@ FlatRuntimeDispatchScope::FlatRuntimeDispatchScope(ID3D11DeviceContext* ctx) {
 // body flatRuntimeWritten, Map and Update share, timed by the caller's scope.
 static void resourceWritten(State& s, ID3D11Resource* res,const char* entry,
                             FlatOverlayMutationOp provenance=FlatOverlayMutationOp::Written,
-                            const HistoryWriteExtent& extent=HistoryWriteExtent{}) {
+                            const HistoryWriteExtent& extent=HistoryWriteExtent{},bool constantFill=false) {
     forwardMutation(s,reinterpret_cast<uintptr_t>(res));
     lightAuditMutation(s,res);
     if(s.projectionFrames && s.hdrProjectionCapture.armed && !s.hdrProjectionCapture.exhausted()) {
@@ -5038,7 +5050,7 @@ static void resourceWritten(State& s, ID3D11Resource* res,const char* entry,
         }
     }
     { flatcpu::Scope trace(flatcpu::kTrace); flatTraceMark(s.traceRing, kFlatTraceEventWriteResource, res); }
-    flatRuntimeWritten(s.prefix, res);
+    flatRuntimeWritten(s.prefix, res, constantFill);
     if (flatOriginCaptureEnabled()) s.passiveScene.explicitWrite(reinterpret_cast<uintptr_t>(res));
     flatHdrObserveExplicitWrite(s.hdr, res);   // a write into the HDR target after the route's trigger is counted
     if (auto* c = camera(res, false)) s.cameras.invalidate(*c);
@@ -5058,12 +5070,13 @@ HistoryWriteExtent flatRuntimeUpdateExtent(UINT dstSub,const D3D11_BOX* box) {
     if(dstSub!=0 || !box || box->right<=box->left)return historyWholeWrite(HistoryWriteEntry::Update);
     return historyRangedWrite(HistoryWriteEntry::Update,box->left,box->right);
 }
-void flatRuntimeWritten(ID3D11Resource* res,FlatOverlayMutationOp provenance) {
+void flatRuntimeWritten(ID3D11Resource* res,FlatOverlayMutationOp provenance,bool constantFill) {
     if (!owner() || state().work == FlatWork::Paused) return;
     flatcpu::Scope lookup(flatcpu::kResource);   // prefix target and source lookup, camera lookup
     const bool clear=provenance==FlatOverlayMutationOp::ClearRtv || provenance==FlatOverlayMutationOp::ClearDsv ||
                      provenance==FlatOverlayMutationOp::ClearUav;
-    resourceWritten(state(), res,"flatRuntimeWritten",provenance,historyWholeWrite(clear?HistoryWriteEntry::Clear:HistoryWriteEntry::Other));
+    resourceWritten(state(), res,"flatRuntimeWritten",provenance,historyWholeWrite(clear?HistoryWriteEntry::Clear:HistoryWriteEntry::Other),
+                    clear || constantFill);
 }
 void flatRuntimeWrittenExtent(ID3D11Resource* res,const HistoryWriteExtent& extent) {
     if (!owner() || state().work == FlatWork::Paused) return;

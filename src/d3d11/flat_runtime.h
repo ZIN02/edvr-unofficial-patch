@@ -84,7 +84,9 @@ void flatRuntimeViewport(UINT, const D3D11_VIEWPORT*);
 void flatRuntimeMap(ID3D11Resource*, D3D11_MAP, void*);
 void flatRuntimeUnmap(ID3D11Resource*);
 void flatRuntimeUpdate(ID3D11Resource*, const void*, const D3D11_BOX*);
-void flatRuntimeWritten(ID3D11Resource*, FlatOverlayMutationOp provenance=FlatOverlayMutationOp::Written);
+// constantFill: the write is a clear or another fill with a constant (the depth clear, whose provenance stays Written for the history
+// ledgers). It carries no content, which the prefix's record of what reached a resource (FlatRuntimeReached) needs to know.
+void flatRuntimeWritten(ID3D11Resource*, FlatOverlayMutationOp provenance=FlatOverlayMutationOp::Written, bool constantFill=false);
 // A write whose bytes the hook knows (section 104, range-aware invalidation of the first-person history): the extents the hooks pass.
 void flatRuntimeWrittenExtent(ID3D11Resource*, const HistoryWriteExtent&);
 HistoryWriteExtent flatRuntimeCopyExtent(UINT dstSub, UINT dstX, const void* src, const D3D11_BOX* box);

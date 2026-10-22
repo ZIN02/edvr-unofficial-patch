@@ -51,6 +51,7 @@
 #include "flat_deferred_failure_capture_tests.h"
 #include "flat_deferred_failure_payload_tests.h"
 #include "flat_deferred_witness_tests.h"
+#include "flat_deferred_empty_gbuffer_tests.h"
 #include "flat_copy_structure_tests.h"
 #include "flat_copy_weapon_tests.h"
 #include "flat_noscene_spatial_tests.h"
@@ -3528,7 +3529,7 @@ void testFlatOverlayMutationWiring() {
     };
     check(clearTyped(rtvClear) &&
           written.find("FlatMutationDetails::named(provenance,entry)")!=std::string::npos &&
-          written.find("flatRuntimeWritten(s.prefix,res);")!=std::string::npos &&
+          written.find("flatRuntimeWritten(s.prefix,res,constantFill);")!=std::string::npos &&
           written.find("flatHdrObserveExplicitWrite(s.hdr,res);")!=std::string::npos &&
           written.find("s.cameras.invalidate(*c);")!=std::string::npos &&
           written.find("s.projection->invalidate(res);")!=std::string::npos &&
@@ -4097,6 +4098,7 @@ int main(int argc, char** argv) {
     check(flatDeferredFailureCaptureTests() == 0, "completed failure-frame diagnostic snapshot");
     failures += deferred_failure_payload_test::run();
     failures += deferred_witness_test::run();
+    failures += deferred_empty_gbuffer_test::run();
     check(laser_scene_tone_test::run() == 0, "qualified laser scene tone preserves guarded HDR lineage");
     flatRuntimeMenuCopyTests();
     testFrameContractTrace();

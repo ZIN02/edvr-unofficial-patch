@@ -18180,3 +18180,20 @@ Next:
 - **Side findings, not folded in:** the `flat refusal census 5s` line
   hard-codes `view=off`; `flat engine motion unkeyed 5s` reads binds=0 while
   the census shows unkeyed family draws every frame.
+
+### Flown 06:05 (`7c81d42a`, main merged): hangar band gone
+
+`edvr_gfx_20261022_060530`. Sean: the hangar is better. Home at 06:12:36,
+camera still (`moved=0`), 960x600: stale-refused is 0.0002% (16-18 px per
+sample), against 1.64% before, with stale-kept at about 700k px per sample.
+H1 confirmed: the band was the point test refusing a still slope, and the
+planar footprint keeps it.
+
+A railing at the front of the pad still shimmers. The view shows it blue
+(pool surface, camera term), which is correct motion for a static rail.
+With the camera still, history is accepted on every frame (no resets) and
+nothing is refused. So EDVR's motion and history are not the cause. The
+railing is about one render pixel wide at 960x600, a thin feature the
+upscaler's history rectification cannot hold steady at a 2x upscale.
+Discriminators: the same pose at render 1920x1200, and the same pose with
+FSR instead of XeSS.

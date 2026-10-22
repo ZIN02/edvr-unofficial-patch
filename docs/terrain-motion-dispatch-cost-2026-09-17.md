@@ -2,6 +2,11 @@
 
 ## Status
 
+- 2026-10-22, FLAT GATE FIXED, NOT FLOWN: the 10-15 port never ran in flat. Its
+  supercruise gate read journalSupercruise*(), which answer flat with "unknown",
+  so every `celestial motion 5s` line said gated-off (edvr_gfx_20261022_044106,
+  Sean: the planet still smears in supercruise). Flat now reads Flags bit 4
+  through journalFlatSupercruise. Flight: `gate ON`, then `flat celestial:`.
 - 2026-10-15, FLAT PORT BUILT, NOT FLOWN: an RC1 flat user's planet smeared on
   an orbital descent. Flat rows carry no supercruise translation either (journal
   top entry) and this path was VR-only; flat now binds eye 0's records at t18
@@ -916,3 +921,38 @@ Ruled out along the way:
 - ruled out: the depth/luma probes as the delta, because their line counts
   are the same in the 09:15, 10:55 and 12:29 sessions (357/402/434 depth,
   243/279/175 luma) while only 12:29 was over terrain.
+
+### 2026-10-22: the flat port's supercruise gate was shut in flat
+
+Sean, flat on the Panther Lake handheld (Arc B390, XeSS, 960x600 to 1920x1200),
+build `cd48ef3b`: in supercruise toward Siris 5 c the planet surface smears with
+motion. `edvr_gfx_20261022_044106`, census 04:49:00 (frame 31089): 27 patch draws
+(VS 72BDD292154158AD / PS 76849D64AC657DB9). The runtime is treated-jittered with
+history accepted every frame, the deferred camera is `repair=inverse`, and the
+camera rows match (max-err 2.2e-7). But the only gate line is `celestial motion:
+gate OFF at frame 0 ... (no status yet)`, every 5 s line says `gated-off=N
+(supercruise gate: off (status unknown))`, and no `flat celestial:` line was ever
+written in any log. In supercruise row 275 stays within 60 m, so the camera term
+carries no ship translation and the planet takes it alone.
+
+Cause: `tickCelestialStatus` read `journalSupercruiseKnown()` and
+`journalSupercruise()`. Both go through `journalWatchActive()`, which is false in
+flat by design; the watcher parses Flags bit 4 there all the same. Fix: a flat
+reader beside `journalFlatGuiFocus`, `journalFlatSupercruise`, used by
+`tickCelestialStatus` in flat; the VR accessors are unchanged. gate_test covers
+the reader through the worker (bit 4 set, cleared), and the celestial rig's pin
+requires both branches.
+
+- ruled out: float precision of the flat camera rows as the cause, because row
+  275 stays within 60 m (spacing 3.8e-6 m) through supercruise.
+- ruled out: the deferred inverse or whole-camera repair, because the scene is
+  `repair=inverse` with zero refusals and zero resets.
+- ruled out: a history reset or refusal gap, because history is accepted on
+  every frame.
+
+Flight signature: `gate ON ... Status.json Flags says supercruise` at entry and
+`gate OFF` at the drop; the one-shot `flat celestial: planet patch records bound
+... translation |t| X m/frame` with X in the tens to hundreds; `gated-off=0`.
+If the smear remains with those present, the next question is whether pixels
+take path 12 in flat, which nothing counts yet (the pixel count is fed by the
+VR pass only).

@@ -18245,3 +18245,31 @@ Tests:
 - a receding mover: refused;
 - the sky and border cases unchanged;
 - every existing history-depth case unchanged.
+
+Built (`46542e60`, not flown): the persistence test as designed.
+`cameraAfter` mirrors `cameraBefore`; the round trip is within 0.00026 px.
+Quad order: +x, -x, +y, -y. The TAA dispatch now binds `SceneDepth` at t1
+for `taa()`.
+
+Model at 960x600, still camera:
+- **Crease:** every floor pixel-frame with a solid footprint that the old
+  rule refused is kept (10,208 of 10,208).
+- **Parked hull:** 1,130 of 1,130 kept.
+- **Receding plate:** refused.
+- **Ghost guard, a hull moving 2 px per frame:** 0 of 2,659 uncovered
+  floor pixel-frames kept. Half 1 passes for 535 of them and half 2
+  refuses them all.
+- **Limit:** below about 1 px per frame a mover's old texels still land on
+  the mover, so its trailing edge leaks. The uncovered-set keep rate goes
+  from 12% to 50% at 1 px.
+
+GPU-side agreement runs only on Windows CI.
+
+Temporary instrument in the same build (`6454231b`, observe-only): the
+flat star dump. On a Home census it logs every solar-list draw
+(`eye_draw_snapshot.h`) with its VS and PS constant buffers b0-b7 from the
+CPU shadow. It also logs `journal star:` lines (StartJump class, FSDJump,
+star Scan fields), which put system and body names in logs; the
+`flat star dump: truth` lines carry that ground truth into each dump.
+Purpose: find the constants that carry a star's temperature, radius and
+intensity for the star-glow design. Remove both once that is read.

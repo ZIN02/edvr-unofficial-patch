@@ -198,6 +198,10 @@ struct FlatRuntimeDrawScope {
     void beginActualDraw(ID3D11Buffer* indirectArgs=nullptr, UINT indirectOffset=0);
     void endActualDraw();
     bool recover(const char* reason);
+    // The spatial recovery at the output copy of a frame with no 3D scene (flat_noscene_spatial.h): the copy's source through SMAA 1x
+    // and EASU, in place of the game's bilinear stretch, with no jitter and no history. `stoodDown` is a paused frame's call. True
+    // when the copy now reads the recovery's picture; false leaves the copy exactly as the game bound it.
+    bool treatNoScene(bool stoodDown);
     // The HDR route's treatment at its trigger draw (flat_hdr_route.h, design section 81): the resolve of the game's HDR
     // scene target H, written back into H, before the game's pass that reads it. `srvSlot` is the pixel-shader slot that
     // binds H for this draw. Declines quietly (the copy route then serves the frame) and never leaves H half-written.

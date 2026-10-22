@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open.
+- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
@@ -17943,3 +17943,170 @@ both shapes.
 
 Not covered by this flight: planetary flight (the second scene in the
 report), and the transition back out of supercruise.
+
+## 2026-10-21: suit/weapon loadout screen, no deferred donor
+
+Sean, same rig (`v0.20.1-17-g6b8f62c1`, `edvr_gfx_20261021_143902`):
+the commander and weapons on the loadout screen are not upscaled, and the
+Motion source view flickers there, and only there. Home pressed at
+14:48:15 (census `frame=36976`, two frames).
+
+Runtime, from 14:42:01 on the loadout screen: per 5 s, 150 treated and
+150 refused. Refusals are 75 `deferred-inverse-unproven` and 75
+`engine-source-not-ready`; the treated frames are `treated-zero-jitter`.
+So XeSS never accumulates jittered history. The refusal view draws only on
+treated frames, which explains the flicker: no separate fault in the view.
+
+Cause. The deferred HDR camera logs `relation=unavailable` with
+`donor=0000000000000000 donor-role=unavailable`.
+`flatRuntimeDeferredDonor` finds no `kFlatContractPool` record on the
+deferred depth at all (`sources=0/32`, `eligible-draws(pool,...)=0`).
+- **Draws on that depth:** the 74 G-buffer draws are pairs flat does not
+  key. 114AF608, D99AFDC2, 8B589D25 and 7B0DC42D are `vrOnly` in
+  `engine_velocity_families.h`; F516BF02 (depth prepass), CFCA8FFC,
+  6D2158CF, FC1193AF and E8FDC0D9 are not in the table.
+- **Source-free:** the selector marks the scene source-free and treats
+  it, but the deferred verifier still requires a pool donor.
+- **SRV0:** the deferred SRV0 is the same resource the G-buffer draws
+  write, so the lineage is right; no writer qualifies as a source.
+- **Comparison:** the supercruise census (13:40:36) had about 9 keyed
+  pool draws on its deferred depth.
+
+`engine-source-not-ready` is downstream. A refused frame never
+snapshots its scene constants, so the next source-free frame has no
+previous constants (`no previous scene constants 450` of 1349 asked,
+one frame in four).
+
+Prediction, from the CB2 alone (no donor bytes exist): the loadout CB2's
+forward rows satisfy the translation identity with the logged camera
+origin to 5e-8. The forward x inverse product misses by 5.56e-4 at [1][2],
+which equals the applied phase (0, -1/6 px) at 600 rows: the inverse-only
+omission the shipped repair covers. Once a pool scene returns (14:51:48),
+the same H and CB2 log `inverse-mismatch accepted=1 repair=inverse`.
+
+Rejected options:
+- Keying the `vrOnly` pairs for flat: it changes the on-foot weapon path,
+  which has only been flown with them unkeyed, and those draws may
+  classify as first-person cohort and still not become sources.
+- Withholding jitter when there is no donor: compensation.
+
+Chosen: a source-free camera witness. When the depth has no pool record,
+a camera-current writer of SRV0 on the same depth, dsv and extent, all
+sharing one camera, may stand as the donor. The existing strict matcher,
+the inverse and whole-camera repairs, and the upload certification
+decide as before. The build also logs the witness's writer count,
+distinct camera count and relation, so a refusal is explained from the
+log.
+
+### Flown 15:51 (`dc2735ef`): witness found, refused by its own write rule
+
+Sean: no change on the screen. `edvr_gfx_20261021_155121` matches the
+build. Every `flat deferred witness:` line has `entry=1 writers=96..98
+distinct-cameras=1 conflict=explicit-write donor-role=none
+why=witness-conflict`. The witness found the G-buffer writers, all with one
+camera, then refused them.
+
+Cause, from the 14:48 census:
+1. The depth is cleared at q=67.
+2. A depth prepass (F516BF02, 25 draws, q=68..92) binds the G-buffer `@33`
+   with its colour write mask 0. That opens the witness entry.
+3. The game clears `@33` at q=94.
+4. The real G-buffer draws begin at q=98.
+
+The build marked any explicit write to a witnessed colour as a permanent
+conflict. That rule was added beyond the spec and is stricter than the pool
+rule, which ignores colour writes.
+
+Ruled out: a second camera on the loadout depth as the blocker, because
+`distinct-cameras=1` and no `veto=` in any line.
+
+Fix (built, not flown): a write to a witnessed colour restarts its
+entry, so only writers after the last write speak for it. A write with no
+writer after it leaves no witness (`why=no-witness-entry`). A write to
+the depth stays a conflict, and a later colour write does not undo it.
+
+### Flown 16:29 (`786a1c80`): witness accepted on most frames, refused in clusters
+
+`edvr_gfx_20261021_162929` matches the build. On the loadout screen, 268-284
+of 300 frames per 5 s are now treated with jitter, against 150 before. The
+witness is accepted with one camera (A01CDF4B6B05ADD3), `relation=match` or
+`inverse-mismatch`, and the inverse-only repair applies. Sean: the Motion
+source view now flickers in pulses with pauses between them.
+
+The remaining 8-16 refusals per 5 s are `deferred-inverse-unproven`. Each
+is reported again as `engine-source-not-ready` for the same frame; that
+reason is the frame's final one, not the next frame's.
+
+First reading, corrected by the trace below: the refusals are not the
+`writers=1 camera=0 why=witness-camera-not-current` lines at q=8-11. Those
+were probe frames during a stand-down while the scene loaded (16:33:11 to
+16:34:04, 296 of 300 frames stood down per 5 s).
+
+The trace `flat_trace_20491.bin` (16:34:04) holds frames 20488-20491, with
+20491 refused. It was decoded through the real reducer
+(scratchpad/trace20491). In 20491:
+- the 22 camera-bearing G-buffer writers are all present (camera
+  8DCD81D259CCBA2C, b1 7AC7B8E0);
+- between them and the lighting pass, the game renders an auxiliary
+  612x436 deferred scene on its own depth, which rewrites the shared b1
+  buffer with its camera (A940677EFC9D02A6);
+- the sun-shadow resolve pairs 53211E8C/7EAC7196 and 53211E8C/B403F48C then
+  write an R8 target on the main depth with that camera still bound. They
+  open a second witness entry, and rule (d) refuses as
+  `second-camera-on-depth`.
+
+Accepted frames 20488-20490 have no auxiliary scene there.
+`flat_trace_13455.bin` (15:53) shows the same pattern. VS 53211E8C declares
+no constant buffer; PS B403F48C is empty; PS 7EAC7196 reads only its own
+cb2. So the veto is a false positive. `flatMatchDeferredCamera` on 20491's
+own CB2 gives `inverse-mismatch` against the 22-writer camera, as in every
+accepted frame.
+
+Correction to the 15:51 entry: "a second camera on the loadout depth"
+was ruled out for that flight only. In this flight a stale b1 binding on
+b1-free shaders is the blocker in the auxiliary-scene frames.
+
+Fix (built, not flown): `flatProjectionB1Unread`. It covers the verified
+inert pairs (`flatProjectionDrawUnchanged`, now in the D3D-free
+`flat_inert_pairs.h`) plus 53211E8C/7EAC7196. The witness neither opens
+nor conflicts an entry for them. Refused witness lines get their own
+5-second log budget, so accepted frames cannot hide them.
+
+### Flown 17:08 (`591b66ee`): one suit still refused, below the scene's draw minimum
+
+`edvr_gfx_20261021_170848` matches the build. Sean: the other suits look
+right now; the Maverick suit's preview is still not upscaled. Home was
+pressed at 17:12:39.
+- **The witness:** no second-camera refusals remain. Probe frames accept
+  the witness (`why=accepted`, one camera, 19-25 writers).
+- **The new blocker:** the copy route's `flatSceneFacts`. The main HDR
+  target (960x600 R11G11B10F) receives exactly 7 draws in both census
+  frames: the deferred lighting pass, the sky (F8FA801F), 33A5025C x2,
+  617C6E44, 025B4B9F and 8289669D. That is below `kFlatSceneMinDraws` = 8.
+- **What follows:** `flat scene candidates: winner none`; on the frames
+  where the auxiliary 612x436 preview scene has 8 or more draws it wins
+  off-shape. The copy structure reports `no-scene` (132 of 290 frames),
+  and the runtime refuses `no-3d-scene` and stands down after 5 s.
+- **Why only this suit:** when the main scene does qualify, it has
+  `draws=8`. The other suits evidently add a draw or two.
+
+Lowering the minimum would let a few-draw HDR target, such as the loading
+hologram's, back into temporal treatment. The planned rule instead admits a
+target below the minimum when a verified deferred lighting pass
+(`t.tone.deferredCamera`, `t.hdrCamera`) wrote it: a lit G-buffer is a 3D
+scene. The loading hologram has no such pass. Built (with main merged and the
+no-scene spatial pass, 163b0306), flown below.
+
+### Flown 18:00 (`5ffb3644`): PASS
+
+`edvr_gfx_20261021_180006` matches the build. Sean: the Maverick suit works
+now, and the loading screen looks much better.
+- **The witness:** accepted on the loadout (`why=accepted`, one camera).
+  Only 4 frames in the whole log were refused as `deferred-inverse-unproven`.
+- **The runtime:** `treated-jittered` in scenes and `no-scene-spatial` on
+  loading and menu screens.
+- **The no-scene spatial pass:** `flat no-scene spatial 5s` treated 80-294
+  frames per 5 s, mostly on the stood-down path (`stood-down=290`), with
+  declined=0 and refused=0.
+- **Other refusals:** one 5 s window of `no-known-tone-pass` (58 frames at
+  18:04:13). The rest are single digits.

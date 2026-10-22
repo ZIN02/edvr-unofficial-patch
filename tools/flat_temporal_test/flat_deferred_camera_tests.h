@@ -88,7 +88,7 @@ inline unsigned run(){
  // certified bytes, and a prepared repair of either kind keeps the later unproven-execution gate quiet.
  const auto formsForward=verifier.find("{FlatProjectionPatchLayout::ForwardDp4,kFlatDeferredCameraFirstRow*16,{}}");
  const auto formsInverse=verifier.find("{FlatProjectionPatchLayout::InverseUvRay,kFlatDeferredInverseFirstRow*16,{}}");
- const auto wholeRepair=verifier.find("flatRepairDeferredWholeOmission(donor->camera,raw,jitter,certified)");
+ const auto wholeRepair=verifier.find("flatRepairDeferredWholeOmission(donor.camera,raw,jitter,certified)");
  const auto acceptance=verifier.find("std::memcmp(uploaded,certified,sizeof(uploaded))==0 &&");
  const auto wholeFailure=verifier.find("reportFailure(\"deferred-whole-preparation-failed\")");
  expect(formsForward!=std::string::npos&&formsInverse!=std::string::npos&&formsForward<formsInverse&&wholeRepair!=std::string::npos&&

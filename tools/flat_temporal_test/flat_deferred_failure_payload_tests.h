@@ -94,7 +94,7 @@ inline unsigned run() {
     expect(queries!=std::string::npos&&record.find("FlatDeferredFailureWitness witness=sameCall?*sameCall:FlatDeferredFailureWitness{};")<queries&&
         record.find("if(!sameCall){witness.frame=s.prefix.frame;witness.q=s.prefix.sequence+1;")<queries&&
         record.rfind("witness.phaseX=s.phase.currentX;witness.phaseY=s.phase.currentY;witness.applied=s.phase.applied;")<queries&&
-        record.find("if(donor->key.camera){std::memcpy(donorCamera,donor->camera,sizeof(donorCamera));witness.donorCamera=donorCamera;}")<queries,
+        record.find("if(donor.camera){std::memcpy(donorCamera,donor.camera,sizeof(donorCamera));witness.donorCamera=donorCamera;}")<queries,
         "same-call phase is retained and default phase plus available donor bytes freeze before old context queries");
     expect(record.find("deferredFailureCapture.request")>stamp&&record.find("cameraProbe")==std::string::npos,
         "detail reporting does not depend on Full/probe/manual snapshot admission");

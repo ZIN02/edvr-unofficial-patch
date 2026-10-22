@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), every jittered frame refused; source-free camera witness in progress (last entry).
+- **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
@@ -18095,4 +18095,18 @@ hologram's, back into temporal treatment. The planned rule instead admits a
 target below the minimum when a verified deferred lighting pass
 (`t.tone.deferredCamera`, `t.hdrCamera`) wrote it: a lit G-buffer is a 3D
 scene. The loading hologram has no such pass. Built (with main merged and the
-no-scene spatial pass, 163b0306), not flown.
+no-scene spatial pass, 163b0306), flown below.
+
+### Flown 18:00 (`5ffb3644`): PASS
+
+`edvr_gfx_20261021_180006` matches the build. Sean: the Maverick suit works
+now, and the loading screen looks much better.
+- **The witness:** accepted on the loadout (`why=accepted`, one camera).
+  Only 4 frames in the whole log were refused as `deferred-inverse-unproven`.
+- **The runtime:** `treated-jittered` in scenes and `no-scene-spatial` on
+  loading and menu screens.
+- **The no-scene spatial pass:** `flat no-scene spatial 5s` treated 80-294
+  frames per 5 s, mostly on the stood-down path (`stood-down=290`), with
+  declined=0 and refused=0.
+- **Other refusals:** one 5 s window of `no-known-tone-pass` (58 frames at
+  18:04:13). The rest are single digits.

@@ -32,7 +32,8 @@
   the game's own bilinear stretch is what shows), but the frames refuse for the wrong reason: every frame is
   `conflicting-hdr-target-or-camera`, cause `image-copy-source`. The glow layer's additive copy (CFA91824/DFCBA0EC) is the
   first write to the scene HDR, and the image-copy rule (flat_runtime_model.h, HDR image-copy branch) requires a prior
-  camera-bearing write. Open: a spatial pass (SMAA + EASU, as on the maps) for no-scene frames below native; Sean to decide.
+  camera-bearing write. Sean chose a spatial pass: no-scene copy frames below native now get SMAA + EASU at the output
+  copy (163b0306, flat_noscene_spatial.h), also while stood down; FLOWN 2026-10-21 18:00 on 5ffb3644, "looks much better".
 - ruled out: blank-scene/no-scene as the cause of the SS 0.5 refusal, because image-copy-source preempts both.
 
 ## Journal

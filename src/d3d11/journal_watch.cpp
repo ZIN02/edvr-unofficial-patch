@@ -223,15 +223,6 @@ void ioSite(const char* site) {
     if (const JournalWorkHook hook = g_workHook.load(std::memory_order_relaxed)) hook(site);
 }
 
-// The star facts (journal_star.h): the latest hyperspace StartJump and the stars scanned in the current system. The worker inserts
-// under the lock, once per star event; the render thread copies the table whole (journalStarSnapshot) when a star dump begins. One
-// table for the process, emptied by each configure, because the facts belong to the game's journal and not to a worker.
-std::mutex g_starMutex;
-journalstar::Table g_stars;
-// 'journal star:' lines written a session, at most. A journal that is replayed from the top (a proven-ours file) writes one line per
-// star scanned since the game started, and the cap keeps a long session's history from filling the log.
-constexpr uint32_t kStarNoteCap = 256;
-
 struct Session {
     // ---- Fixed before the thread starts; read-only after.
     std::wstring dir;
@@ -260,16 +251,6 @@ struct Session {
     // boundary is still seen. Sixteen bytes covers `"event":"` plus slack.
     char         carry[32] = {};
     uint32_t     carryLen = 0;
-    // The line being assembled for the star facts (journal_star.h): the chunked reads above cut lines anywhere, and a Scan is far
-    // longer than the carry. A line past the cap is skipped, and a skipped star event is counted and said (scanLines).
-    char         lineBuf[journalstar::kLineCap] = {};
-    uint32_t     lineLen = 0;
-    bool         lineOver = false;
-    uint32_t     starNotes = 0;       // 'journal star:' lines written, capped (kStarNoteCap)
-    uint32_t     starOversize = 0;    // star events too long to read
-    uint32_t     starMalformed = 0;   // star events without the fields that make them usable
-    bool         starCapNoted = false;
-    bool         starFullNoted = false;
     // Consecutive Status.json parse misses. The game rewrites the file about
     // once a second and a read can land mid-write; one blip must not read as
     // the player teleporting off their feet, so `known` only drops after a
@@ -330,8 +311,6 @@ void closeFile(Session& s) {
     }
     s.offset = 0;
     s.carryLen = 0;
-    s.lineLen = 0;
-    s.lineOver = false;
 }
 
 // FILETIME is a 64-bit count in two halves; the decision below wants one
@@ -567,94 +546,6 @@ void scanEvents(Session& s, const char* data, uint32_t len) {
     s.carryLen = keep;
 }
 
-// ---- The star facts: whole lines out of the chunked reads -----------------------------------------------------------------------------
-//
-// scanEvents above sees an event's NAME and keeps sixteen bytes of carry; a Scan is hundreds of bytes and a chunk can end inside one. The
-// lines are assembled here, in a buffer of the session's own, and only a line that is a StartJump, an FSDJump or a Scan is parsed.
-
-void noteStar(Session& s, const char* fmt, const char* text) {
-    if (s.starNotes >= kStarNoteCap) {
-        if (!s.starCapNoted) {
-            s.starCapNoted = true;
-            Log::get().note("journal star: %u lines written; the rest of the session's star events are read and kept in the table but not "
-                            "written here.", kStarNoteCap);
-        }
-        return;
-    }
-    ++s.starNotes;
-    Log::get().note(fmt, text);
-}
-
-void finishLine(Session& s) {
-    using namespace journalstar;
-    size_t n = s.lineLen;
-    while (n && (s.lineBuf[n - 1] == '\r' || s.lineBuf[n - 1] == ' ')) --n;
-    char ev[24];
-    if (!n || !journalstar::jsonString(s.lineBuf, n, "event", ev, sizeof(ev))) return;   // not an event line, or an oversize one with no name in its first bytes
-    const bool star = std::strcmp(ev, "Scan") == 0, jump = std::strcmp(ev, "StartJump") == 0, arrive = std::strcmp(ev, "FSDJump") == 0;
-    if (!star && !jump && !arrive) return;
-    if (s.lineOver) {
-        // Only the first kLineCap bytes were kept: enough to know what it was, not to read it.
-        if (++s.starOversize <= 3)
-            Log::get().note("journal star: a %s line is longer than %u bytes and was not read (%u so far).", ev, kLineCap, s.starOversize);
-        return;
-    }
-    Star st;
-    Jump jp;
-    Outcome o;
-    {
-        std::lock_guard<std::mutex> lock(g_starMutex);
-        o = applyLine(g_stars, s.lineBuf, n, &st, &jp);
-    }
-    char text[512];
-    switch (o) {
-    case Outcome::JumpHyperspace:
-        formatJump(text, sizeof(text), jp);
-        noteStar(s, "journal star: StartJump hyperspace %s (the stars of the system left are cleared)", text);
-        break;
-    case Outcome::Arrived:
-        std::snprintf(text, sizeof(text), "system=\"%s\" jump-class=%s", jp.system, jp.arrived ? jp.starClass : "-");
-        noteStar(s, "journal star: FSDJump arrived %s (the stars of the system left are cleared)", text);
-        break;
-    case Outcome::StarAdded:
-        formatStar(text, sizeof(text), st);
-        noteStar(s, "journal star: Scan %s", text);
-        break;
-    case Outcome::StarFull:
-        if (!s.starFullNoted) {
-            s.starFullNoted = true;
-            Log::get().note("journal star: this system has more than %u stars; the rest are counted in the table, not kept.", kMaxStars);
-        }
-        break;
-    case Outcome::Malformed:
-        if (++s.starMalformed <= 3)
-            Log::get().note("journal star: a %s line named a StarType without a usable body name and was not kept (%u so far).", ev,
-                            s.starMalformed);
-        break;
-    default:
-        break;   // JumpOther (a supercruise StartJump), StarRepeat (a body already scanned), Ignored (a planet): nothing to say
-    }
-}
-
-void scanLines(Session& s, const char* p, uint32_t n) {
-    uint32_t i = 0;
-    while (i < n) {
-        const char* nl = static_cast<const char*>(std::memchr(p + i, '\n', n - i));
-        const uint32_t end = nl ? static_cast<uint32_t>(nl - p) : n;
-        const uint32_t take = end - i;
-        const uint32_t room = journalstar::kLineCap - s.lineLen;
-        if (take > room) s.lineOver = true;
-        const uint32_t copy = take < room ? take : room;
-        if (copy) std::memcpy(s.lineBuf + s.lineLen, p + i, copy);
-        s.lineLen += copy;
-        if (!nl) return;   // the rest of the line arrives with the next read
-        finishLine(s);
-        s.lineLen = 0;
-        s.lineOver = false;
-        i = end + 1;
-    }
-}
-
 // Everything that is due, once. This is what journalWatchTick() used to do on
 // the Present thread; it runs on the worker now and is otherwise the same code.
 // Returns false when the watcher has retired.
@@ -798,7 +689,6 @@ bool pass(Session& s, char* buf) {
         if (got > 0) {
             s.offset += got;
             scanEvents(s, buf, got);
-            scanLines(s, buf, got);
             s.faults = 0;
         }
     }
@@ -976,10 +866,6 @@ void journalWatchConfigure() {
     endSession();
     g_stopped.store(false);
     resetVisible();
-    {
-        std::lock_guard<std::mutex> lock(g_starMutex);
-        g_stars.clearAll();
-    }
 
     Config& cfg = Config::get();
     if (!cfg.getBool("d3d11.journal_watch", true)) return;
@@ -1063,9 +949,7 @@ void journalWatchConfigure() {
         // patch motion (journalFlatSupercruise). The accessors above answer flat with the no-journal values, so this line is the
         // only place the watcher says it runs there.
         Log::get().note("journal: flat profile -- Status.json is read for the map's GuiFocus (temporal AA off on the maps) and for "
-                        "supercruise (planet patch motion). The journal's events are tailed but not used in flat, except that "
-                        "StartJump (hyperspace), FSDJump and the Scan of a star are read for their star facts and logged as "
-                        "'journal star:' lines; nothing acts on them.");
+                        "supercruise (planet patch motion). The journal's events are tailed but not used in flat.");
         return;
     }
     Log::get().note("journal: watching the game's own event stream for the "
@@ -1073,9 +957,7 @@ void journalWatchConfigure() {
                     "(LoadGame), on-foot sessions beginning (Disembark), and "
                     "jumps (StartJump, resolved by FSDJump or "
                     "SupercruiseEntry) for the witchspace star fix. Event "
-                    "names only, except that StartJump (hyperspace), FSDJump "
-                    "and the Scan of a star are read for their star facts and "
-                    "logged as 'journal star:' lines; nothing acts on them.");
+                    "names only; nothing else is read or kept.");
 }
 
 void journalWatchTick() {
@@ -1188,13 +1070,6 @@ bool journalVehicleKnown() { return journalWatchActive() && peek(g_v.vehicleKnow
 bool journalVehicle() { return !runtimeFlatProfile() && peek(g_v.vehicle); }
 uint32_t journalSeatKind() { return runtimeFlatProfile() ? 0u : peek(g_v.seatKind); }
 uint32_t journalStatusSamples() { return runtimeFlatProfile() ? 0u : peek(g_v.statusSamples); }
-
-bool journalStarSnapshot(journalstar::Table* out) {
-    if (!out) return false;
-    std::lock_guard<std::mutex> lock(g_starMutex);
-    *out = g_stars;
-    return g_stars.jump.valid || g_stars.count || g_stars.arrivals;
-}
 
 JournalRawStatus journalRawStatus() {
     JournalRawStatus r;

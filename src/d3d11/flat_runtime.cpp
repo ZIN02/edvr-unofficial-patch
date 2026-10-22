@@ -3265,42 +3265,6 @@ void flatRuntimeCreateBuffer(ID3D11Buffer* buffer, const void* initialData) {
         state().projection->observeCreateBuffer(buffer,initialData);
     }
 }
-void flatRuntimeObserveConstants(ID3D11DeviceContext* ctx, bool pixel, uint32_t slot, uint32_t cap, void* out, FlatBoundConstants* info) {
-    if (!info) return;
-    FlatBoundConstants r;
-    const auto done = [&](const char* why) { r.why = why; *info = r; };
-    if (!ctx || !out || !cap || slot >= D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT) return done("invalid-request");
-    auto& s = state();
-    r.frame = s.prefix.frame;
-    if (!owner()) return done("not-owner-thread");
-    if (ctx != s.context.Get()) return done("not-owner-context");
-    Ptr<ID3D11DeviceContext1> c1 = s.projectionContext;
-    if (!c1 && FAILED(ctx->QueryInterface(IID_PPV_ARGS(c1.GetAddressOf())))) return done("no-context1");
-    Ptr<ID3D11Buffer> buffer;
-    UINT first = 0, count = 0;
-    if (pixel) c1->PSGetConstantBuffers1(slot, 1, buffer.GetAddressOf(), &first, &count);
-    else c1->VSGetConstantBuffers1(slot, 1, buffer.GetAddressOf(), &first, &count);
-    if (!buffer) return done("unbound");
-    D3D11_BUFFER_DESC bd{};
-    buffer->GetDesc(&bd);
-    r.bound = true;
-    r.buffer = buffer.Get();
-    r.width = bd.ByteWidth;
-    const uint64_t firstByte = uint64_t(first) * 16u;
-    if (firstByte >= bd.ByteWidth) { r.firstByte = first <= UINT32_MAX / 16u ? first * 16u : UINT32_MAX; return done("window-outside-buffer"); }
-    r.firstByte = uint32_t(firstByte);
-    const uint64_t room = bd.ByteWidth - firstByte;
-    const uint64_t asked = uint64_t(count) * 16u;
-    r.windowBytes = uint32_t(asked && asked < room ? asked : room);
-    if (!s.projection) return done("no-projection-runtime");
-    const FlatProjectionShadowMetadata meta = s.projection->constantsMetadata(buffer.Get());
-    r.tracked = meta.tracked;
-    r.writeFrame = meta.writeFrame;
-    const uint32_t n = r.windowBytes < cap ? r.windowBytes : cap;
-    FlatProjectionCopyFailure failure{};
-    if (s.projection->copyConstants(buffer.Get(), r.firstByte, n, out, &failure)) { r.copied = n; return done(""); }
-    done(flatProjectionCopyFailureName(failure.kind));
-}
 // The trace window for the frame that starts now: full while a capture reads
 // the ring (draw packets, a pending F10 dump), the narrow idle window otherwise.
 void traceWindow(State& s) {

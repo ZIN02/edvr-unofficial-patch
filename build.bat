@@ -628,7 +628,7 @@ python tools\compile_cache.py --prune --keep thunks.obj cl.exe %CFLAGS% %NGXFLAG
     "src\d3d11\binding_shadow.cpp" ^
     "src\d3d11\vr_runtime.cpp" ^
     "src\d3d11\journal_watch.cpp" "src\d3d11\terrain_checkerboard.cpp" ^
-    "src\d3d11\elite_binds.cpp" "src\d3d11\draw_census.cpp" "src\d3d11\flat_star_dump.cpp" ^
+    "src\d3d11\elite_binds.cpp" "src\d3d11\draw_census.cpp" ^
     "src\d3d11\object_probe.cpp" ^
     "src\d3d11\pixel_probe.cpp" ^
     "src\d3d11\object_record_writer_probe.cpp" "src\d3d11\object_record_writer_hook.cpp" ^

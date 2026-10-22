@@ -63,7 +63,6 @@
 #include "flat_sibling_policy_tests.h"
 #include "flat_shadow_model_tests.h"
 #include "flat_log_line_tests.h"
-#include "flat_star_dump_tests.h"
 #include "flat_history_depth_tests.h"
 #include "flat_owner_gate_tests.h"
 #include "../../src/d3d11/flat_runtime.h"
@@ -4155,7 +4154,6 @@ int main(int argc, char** argv) {
     failures += flatShadowAccumulateTests();
     failures += flatShadowWiringTests();
     failures += flatLogLineTests();
-    failures += flatStarDumpTests();
     failures += flatHistoryDepthTests();
     flat_discovery_policy_tests::run(check);
     if (failures) return 1;

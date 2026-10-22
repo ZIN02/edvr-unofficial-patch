@@ -39,7 +39,6 @@
 #include "night_vision.h"
 #include "device_hook.h"  // contextHookModeFor
 #include "draw_census.h"
-#include "flat_star_dump.h"   // flatCensusDraw: the star dump's one-time sighting
 #include "draw_gate.h"    // the sampled subscriber gate the draw path reads
 #include "draw_fast_path.h"   // the AA-off draw path's decisions (2026-10-13)
 #include "../common/temporal_mode.h"  // temporalModeEnabledFor: the AA-off fast path's switch
@@ -4927,10 +4926,6 @@ struct DrawClock {
 // recorded as an offscreen (DCO) line: flat has no eye textures to count, and the census arms its offscreen record for flat.
 // Armed is one bool load; the record is drawCensusOffDraw's own gate (frames left and offscreen), so an unarmed census costs nothing.
 static void flatCensusDraw(ID3D11DeviceContext* self, char kind, uint32_t count, uint32_t instances, const DrawArgs& args) {
-    // The star dump's one-time sighting (flat_star_dump.h): the first draw of the session in a solar list, logged whether or not a census runs.
-    // Owner context only (its bindings are the ones the shadow holds); a flag load per draw once it has fired. Logs and changes nothing.
-    if (!flatStarFirstSightDone() && self == g_state->ownerCtx)
-        flatStarDumpNoteDraw(bindingShaderHash(BindSlot::Vs), bindingShaderHash(BindSlot::Ps), kind, count, instances);
     if (drawCensusArmed()) drawCensusOffDraw(self, kind, count, instances, args);
 }
 

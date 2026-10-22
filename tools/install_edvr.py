@@ -47,6 +47,10 @@ edvr-flat.ini instead. --ini writes the settings files of the chosen scope:
 both writes edvr.ini and edvr-flat.ini, vr writes edvr.ini, flat writes
 edvr-flat.ini. A scope that includes flat seeds a missing edvr-flat.ini from
 the existing edvr.ini, so the two halves stop sharing one file's settings.
+A --compile-only build carries no edvr-flat.ini (its recipe stops before the
+generator step that writes one), so --ini derives the flat template in memory
+from gen_installer_rc.flat_ini_bytes(), the function that writes it for a full
+build. The build directory is never written, and the plan says so.
 
 --scope both|vr|flat (default both) is what the install is for. Every scope
 except flat installs the VR payload (runtime, graphics, loader, notice,
@@ -86,6 +90,10 @@ try:
     from tools import steam_library
 except ImportError:
     import steam_library
+try:
+    from tools import gen_installer_rc
+except ImportError:
+    import gen_installer_rc
 
 GAME_EXE = "EliteDangerous64.exe"
 
@@ -973,6 +981,8 @@ def _validate_v2_receipt_in(r):
                    "ini": _ini_source(root, "flat"), "profile": "generated"}
         for e in files:
             expected = sources[e["key"]]
+            if e["key"] == "ini" and e.get("source") == INI_GENERATED and r.get("build") == COMPILE_ONLY_MARK:
+                continue   # a compile-only build has no flat template file; see _ini_template
             if e.get("source") != (os.path.abspath(expected) if expected != "generated" else expected):
                 raise ValueError("unsafe flat source: " + e["key"])
     if r["kind"] == FLAT_KIND and _flat_vr_leftovers(target):
@@ -1518,6 +1528,29 @@ def _ini_source(root, half):
         os.path.join(build_dir(root), "edvr-flat.ini")
 
 
+# A receipt's `source` for a template that was derived in memory and has no file.
+INI_GENERATED = "generated"
+
+
+def _ini_template(root, half):
+    """(source, bytes) for a half's settings template; bytes is None when there is none.
+
+    `source` is the template file's path, or INI_GENERATED. A compile-only
+    build has no edvr-flat.ini: its recipe stops before build.bat's
+    gen_installer_rc.py step, which is what writes that file. When the
+    compile-only output lacks it, the flat template is the generator's own
+    flat_ini_bytes(), derived here in memory. Nothing is written to the build
+    directory, and a dry run stays a dry run. A full build never derives: a
+    build/ without its edvr-flat.ini is a broken build, and still says so."""
+    path = _ini_source(root, half)
+    if os.path.isfile(path):
+        with open(path, "rb") as stream:
+            return os.path.abspath(path), stream.read()
+    if half == "flat" and _BUILD_OVERRIDE:
+        return INI_GENERATED, gen_installer_rc.flat_ini_bytes()
+    return os.path.abspath(path), None
+
+
 def _ini_target(target, half):
     """The flat half keeps its settings in a file of its own, so one half's
     install never clobbers the other half's tuning."""
@@ -1525,15 +1558,18 @@ def _ini_target(target, half):
 
 
 def _ini_pairs(root, target, scope):
-    """(source, target, receipt key) for each settings file the scope owns. A
-    both install's flat file is keyed ini_flat; a flat install's is ini, as
-    its receipt has always named it."""
+    """(source, target, receipt key, bytes) for each settings file the scope
+    owns; see _ini_template for source and bytes. A both install's flat file
+    is keyed ini_flat; a flat install's is ini, as its receipt has always
+    named it."""
     pairs = []
     if scope in ("both", "vr"):
-        pairs.append((_ini_source(root, "vr"), _ini_target(target, "vr"), "ini"))
+        source, data = _ini_template(root, "vr")
+        pairs.append((source, _ini_target(target, "vr"), "ini", data))
     if scope in ("both", "flat"):
-        pairs.append((_ini_source(root, "flat"), _ini_target(target, "flat"),
-                      "ini" if scope == "flat" else "ini_flat"))
+        source, data = _ini_template(root, "flat")
+        pairs.append((source, _ini_target(target, "flat"),
+                      "ini" if scope == "flat" else "ini_flat", data))
     return pairs
 
 
@@ -1847,12 +1883,11 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
         for key, name in xess_names:
             if not os.path.isfile(os.path.join(build_dir(root), name)):
                 errors.append("missing XeSS source %s" % os.path.join(build_dir(root), name))
-    # Each settings file the scope owns, as (source, target, receipt key).
-    ini_pairs = _ini_pairs(root, target, scope)
-    if include_ini:
-        for source, _, _ in ini_pairs:
-            if not os.path.isfile(source):
-                errors.append("missing %s INI source %s" % (scope, source))
+    # Each settings file the scope owns, as (source, target, receipt key, template bytes).
+    ini_pairs = _ini_pairs(root, target, scope) if include_ini else []
+    for source, _, _, data in ini_pairs:
+        if data is None:
+            errors.append("missing %s INI source %s" % (scope, source))
     if not os.path.isfile(p["game"]):
         errors.append("missing target executable %s" % p["game"])
     if errors:
@@ -1928,11 +1963,9 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                 print("[edvr] WARNING: the ini selects XeSS but its runtime/notices are not verified "
                       "(%s); install with --xess" % ", ".join(missing))
                 ok = False
-        if include_ini:
-            for source, ini_target, _ in ini_pairs:
-                if (not os.path.isfile(ini_target) or not os.path.isfile(source) or
-                        open(ini_target, "rb").read() != open(source, "rb").read()):
-                    print("[edvr] %s verify mismatch: %s" % (scope, ini_target)); ok = False
+        for _, ini_target, _, data in ini_pairs:
+            if not os.path.isfile(ini_target) or data is None or open(ini_target, "rb").read() != data:
+                print("[edvr] %s verify mismatch: %s" % (scope, ini_target)); ok = False
         if ok: print("[edvr] %s payload and descriptor verified" % scope)
         return 0 if ok else 1
     if os.path.isfile(p["graphics_target"]):
@@ -1970,12 +2003,15 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                             "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
                             "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
                             "installed_sha256": sha256(src)})
-    if include_ini:
-        for src, dst, key in ini_pairs:
-            entries.append({"key": key, "source": os.path.abspath(src), "target": os.path.abspath(dst),
-                            "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
-                            "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
-                            "installed_sha256": sha256(src)})
+    # A template with no file (INI_GENERATED) is installed from its bytes, in memory.
+    generated_ini = {}
+    for src, dst, key, data in ini_pairs:
+        if src == INI_GENERATED:
+            generated_ini[key] = data
+        entries.append({"key": key, "source": src, "target": os.path.abspath(dst),
+                        "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
+                        "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
+                        "installed_sha256": hashlib.sha256(data).hexdigest().upper()})
     if native:
         entries.append({"key": "config", "source": "generated", "target": os.path.abspath(p["config"]),
                         "backup": _native_backup_name(p["config"], tag, stamp) if os.path.isfile(p["config"]) else None,
@@ -1997,12 +2033,16 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
     # --ini is about to replace both files with their templates (which then replaces the value too).
     migration = None if include_ini else real_dll_migration(target)
     if include_ini:
-        for _, ini_target, _ in ini_pairs:
+        for _, ini_target, _, _ in ini_pairs:
             if os.path.isfile(ini_target) and ini_real_dll(_ini_read(ini_target)[0]):
                 print("[edvr] NOTE: --ini replaces %s, including its advanced.real_dll; set it again in edvr.ini "
                       "(one value for both profiles)" % ini_target)
     print("[edvr] %s plan%s: %s" % (scope, " (DRY RUN -- nothing will be written)" if dry_run else "", target))
     for e in entries: print("       %-7s %s" % (e["key"], e["target"]))
+    for e in entries:
+        if e["key"] in generated_ini:
+            print("       derive   %s from gen_installer_rc.flat_ini_bytes() (this compile-only build has no "
+                  "edvr-flat.ini; nothing is written to %s)" % (e["target"], build_dir(root)))
     if seed_ini:
         print("       seed     %s (from edvr.ini; a new file, so no backup)" % _ini_target(target, "flat"))
     if migration:
@@ -2032,6 +2072,8 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                 with open(e["target"], "wb") as stream: stream.write(config_bytes)
             elif e["key"] == "profile":
                 with open(e["target"], "wb") as stream: stream.write(descriptor_bytes)
+            elif e["key"] in generated_ini:
+                with open(e["target"], "wb") as stream: stream.write(generated_ini[e["key"]])
             else: shutil.copy2(e["source"], e["target"])
             if sha256(e["target"]) != e["installed_sha256"]: raise ValueError("installed hash verification failed: %s" % e["key"])
         journal["state"] = "installed"; _replace_receipt(receipt, journal)
@@ -2588,7 +2630,9 @@ def _main(argv=None):
     ap.add_argument("--ini", action="store_true",
                     help="also overwrite the scope's settings files (edvr.ini "
                          "for both and vr, edvr-flat.ini for both and flat) "
-                         "with their templates -- this discards tuned settings")
+                         "with their templates -- this discards tuned settings. "
+                         "A --compile-only build has no edvr-flat.ini, so that "
+                         "template is derived in memory")
     ap.add_argument("--all", action="store_true",
                     help="selected scope plus available DLSS and XeSS (never ini)")
     ap.add_argument("--native-openxr", action="store_true",
@@ -3189,6 +3233,25 @@ def _compile_only_self_test():
             print("compile-only install did not mark its receipt: %r" % installed.get("build")); ok = False
         if run(args + ["--verify-only"])[0] != 0:
             print("compile-only --verify-only rejected its own install"); ok = False
+        # --ini: the compile-only output holds no edvr-flat.ini, so the template is derived, in a
+        # game directory of its own so the case below still restores game/ to what it began as.
+        game2 = Path(tmp, "game2")
+        game2.mkdir()
+        (game2 / GAME_EXE).write_bytes(b"GAME")
+        args2 = ["--root", str(root), "--target", str(game2), "--scope", "flat", "--compile-only",
+                 "--tag", "ini", "--ini"]
+        outputs = lambda: sorted((p.name, p.read_bytes()) for p in cbuild.iterdir())
+        names2 = lambda: sorted(p.name for p in game2.rglob("*"))
+        outputs_before, game2_before = outputs(), names2()
+        code, text = run(args2 + ["--dry-run"])
+        if code != 0 or outputs() != outputs_before or names2() != game2_before or "derive" not in text:
+            print("compile-only --ini --dry-run wrote files or did not plan the derived template: %r %r" % (code, text)); ok = False
+        code, text = run(args2)
+        if code != 0 or outputs() != outputs_before or \
+                (game2 / "edvr-flat.ini").read_bytes() != gen_installer_rc.flat_ini_bytes():
+            print("compile-only --ini did not install the generator's flat template: %r %r" % (code, text)); ok = False
+        if run(args2 + ["--verify-only"])[0] != 0:
+            print("compile-only --ini --verify-only rejected its own install"); ok = False
         (game / "d3d11.dll").write_bytes(b"CHANGED")
         if run(args + ["--verify-only"])[0] != 1:
             print("compile-only --verify-only accepted a changed d3d11.dll"); ok = False
@@ -3234,6 +3297,198 @@ def _compile_only_self_test():
             openxr_pe.Image, openxr_pe._exports = saved_pe
         if old_env is not None:
             os.environ["EDVR_TOOLCHAIN_DIR"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _compile_only_ini_self_test():
+    """--compile-only --ini: the compile-only output has no edvr-flat.ini, so
+    --scope flat and --scope both derive it from the generator's own
+    flat_ini_bytes() -- in a dry run and a real run, never writing into the
+    build directory, with the backup and receipt a full build's template gets,
+    and the installed bytes the ones a full build's edvr-flat.ini would give.
+    A full build that lacks its edvr-flat.ini still refuses."""
+    import contextlib
+    import io
+    import openxr_pe as _pe
+    import fetch_openxr_loader as _loader
+
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="edvr_compile_ini_test_")
+    saved = (globals()["validate_elite_game"], globals()["strict_game_running"],
+             globals()["compile_only_build"], _pe.validate_native_pair, _loader.verify,
+             _pe.Image, _pe._exports)
+
+    def check(cond, what):
+        nonlocal ok
+        if not cond:
+            print("compile-only --ini self-test: %s" % what); ok = False
+
+    try:
+        root = os.path.join(tmp, "repo")
+        build = os.path.join(root, "build")
+        cbuild = os.path.join(build, "compile-build")
+        os.makedirs(cbuild)
+        user_vr, root_ini = b"[user]\nkeep=1\n", b"[fix]\nvr_template = 1\n"
+        user_flat = b"[user]\nflat=1\n"
+        generated = gen_installer_rc.flat_ini_bytes()
+        payload = {"d3d11.dll": b"FLAT-GRAPHICS", "edvr_openxr_graphics.dll": b"NATIVE-GRAPHICS",
+                   "edvr_openxr_runtime.dll": b"RUNTIME", "openxr_loader.dll": b"LOADER",
+                   "OPENXR-LOADER-LICENSE.txt": b"LICENSE"}
+        Path(root, "edvr.ini").write_bytes(root_ini)
+        for name, data in payload.items():
+            Path(cbuild, name).write_bytes(data)
+            Path(build, name).write_bytes(data)
+        # A full build's template sits in build/. A compile-only install must never read it.
+        Path(build, "edvr-flat.ini").write_bytes(b"NOT-THE-COMPILE-ONLY-TEMPLATE")
+
+        globals()["compile_only_build"] = lambda root_, require_current=True, out=print: cbuild
+        _loader.verify = lambda path: None
+        _pe.validate_native_pair = lambda *args: None
+        _pe.Image = lambda data: data
+        _pe._exports = lambda image: ({0: "edvr_graphics"}, None)
+        globals()["validate_elite_game"] = lambda path: None
+        globals()["strict_game_running"] = lambda *args: (True, False)
+
+        def game(name, user_ini=None, user_flat_ini=None):
+            g = os.path.join(tmp, name)
+            os.makedirs(os.path.join(g, "Openvr", "win64"))
+            Path(g, GAME_EXE).write_bytes(b"GAME")
+            if user_ini is not None: Path(g, "edvr.ini").write_bytes(user_ini)
+            if user_flat_ini is not None: Path(g, "edvr-flat.ini").write_bytes(user_flat_ini)
+            return g
+
+        def tree(g):
+            return sorted((str(p.relative_to(g)), p.read_bytes() if p.is_file() else None)
+                          for p in Path(g).rglob("*"))
+
+        def run(argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    return main(argv), out.getvalue()
+                except SystemExit as stop:
+                    return stop.code, out.getvalue()
+
+        def args_for(g, scope, *extra, tag="co", compile_only=True):
+            return (["--root", root, "--target", g, "--tag", tag, "--scope", scope, "--ini"] +
+                    (["--compile-only"] if compile_only else []) + list(extra))
+
+        def backups(g, name):
+            return sorted(Path(g).glob(name + ".pre-*.bak"))
+
+        def receipt_of(g, scope):
+            path = os.path.join(g, "edvr_flat_receipt.json" if scope == "flat" else "edvr_native_receipt.json")
+            return path, json.loads(Path(path).read_text(encoding="utf-8"))
+
+        flat_key = {"flat": "ini", "both": "ini_flat"}
+        for scope in ("flat", "both"):
+            g = game("co-" + scope, user_ini=user_vr, user_flat_ini=user_flat)
+            build_before, game_before = tree(build), tree(g)
+            code, text = run(args_for(g, scope, "--dry-run", tag="dry"))
+            check(code == 0, "%s --dry-run failed: %r %r" % (scope, code, text))
+            check(tree(g) == game_before, "%s --dry-run wrote into the game directory" % scope)
+            check(tree(build) == build_before, "%s --dry-run wrote into the build directory" % scope)
+            check("derive" in text and "flat_ini_bytes" in text and "edvr-flat.ini" in text,
+                  "%s --dry-run did not report the derived template: %r" % (scope, text))
+
+            code, text = run(args_for(g, scope))
+            check(code == 0, "%s --ini failed on a compile-only build: %r %r" % (scope, code, text))
+            check(tree(build) == build_before and not Path(cbuild, "edvr-flat.ini").exists(),
+                  "%s --ini wrote into the build directory" % scope)
+            check(Path(g, "edvr-flat.ini").read_bytes() == generated,
+                  "%s --ini did not install the generator's flat template" % scope)
+            kept = backups(g, "edvr-flat.ini")
+            check(len(kept) == 1 and kept[0].read_bytes() == user_flat,
+                  "%s --ini did not back up the existing edvr-flat.ini" % scope)
+            if scope == "flat":
+                check(Path(g, "edvr.ini").read_bytes() == user_vr and not backups(g, "edvr.ini"),
+                      "--scope flat --ini touched edvr.ini")
+            else:
+                check(Path(g, "edvr.ini").read_bytes() == root_ini,
+                      "--scope both --ini did not write edvr.ini from the repo root")
+                vr_kept = backups(g, "edvr.ini")
+                check(len(vr_kept) == 1 and vr_kept[0].read_bytes() == user_vr,
+                      "--scope both --ini did not back up edvr.ini")
+            receipt, record = receipt_of(g, scope)
+            entry = next((e for e in record["files"] if e["key"] == flat_key[scope]), None)
+            check(record.get("build") == COMPILE_ONLY_MARK, "%s receipt is not marked compile-only" % scope)
+            check(entry is not None and entry["source"] == INI_GENERATED and
+                  entry["target"] == os.path.abspath(os.path.join(g, "edvr-flat.ini")) and
+                  entry["installed_sha256"] == hashlib.sha256(generated).hexdigest().upper() and
+                  entry["backup"] and Path(entry["backup"]).read_bytes() == user_flat and
+                  entry["before_sha256"] == hashlib.sha256(user_flat).hexdigest().upper(),
+                  "%s receipt entry for the flat template is wrong: %r" % (scope, entry))
+            try:
+                check(verify_native_receipt(receipt, g)["version"] == 2, "%s receipt does not verify" % scope)
+            except (OSError, ValueError) as exc:
+                check(False, "%s receipt does not verify: %s" % (scope, exc))
+            code, _ = run(args_for(g, scope, "--verify-only"))
+            check(code == 0, "%s --ini --verify-only failed after the install" % scope)
+            Path(g, "edvr-flat.ini").write_bytes(b"[fix]\ntemporal_aa=dlss\n")
+            code, _ = run(args_for(g, scope, "--verify-only"))
+            check(code == 1, "%s --ini --verify-only passed with an edited edvr-flat.ini" % scope)
+            Path(g, "edvr-flat.ini").write_bytes(generated)
+            code, _ = run(["--restore-native", receipt])
+            check(code == 0 and Path(g, "edvr-flat.ini").read_bytes() == user_flat and
+                  (scope == "flat" or Path(g, "edvr.ini").read_bytes() == user_vr),
+                  "%s restore did not put the settings files back: %r" % (scope, code))
+
+        # No settings file in the game yet: written new, nothing to back up.
+        g = game("co-fresh")
+        code, text = run(args_for(g, "flat"))
+        _, record = receipt_of(g, "flat") if code == 0 else (None, {"files": []})
+        check(code == 0 and Path(g, "edvr-flat.ini").read_bytes() == generated and
+              not backups(g, "edvr-flat.ini") and
+              all(e["backup"] is None for e in record["files"] if e["key"] == "ini"),
+              "--scope flat --ini into a game with no edvr-flat.ini: %r %r" % (code, text))
+
+        # A compile-only output that does carry its own edvr-flat.ini uses it, as a full build does.
+        own = b"[fix]\ntemporal_aa = dlss\n"
+        Path(cbuild, "edvr-flat.ini").write_bytes(own)
+        g = game("co-own")
+        code, text = run(args_for(g, "flat"))
+        _, record = receipt_of(g, "flat") if code == 0 else (None, {"files": []})
+        check(code == 0 and Path(g, "edvr-flat.ini").read_bytes() == own and
+              any(e["key"] == "ini" and e["source"] == os.path.abspath(os.path.join(cbuild, "edvr-flat.ini"))
+                  for e in record["files"]),
+              "a compile-only edvr-flat.ini was not preferred to the derived one: %r %r" % (code, text))
+        Path(cbuild, "edvr-flat.ini").unlink()
+
+        # A full build's template is the generator's bytes, installed the same way; so a full-build
+        # install and a compile-only install leave the same edvr-flat.ini, whatever the scope.
+        Path(build, "edvr-flat.ini").write_bytes(generated)
+        for scope in ("flat", "both"):
+            g = game("full-" + scope, user_ini=user_vr, user_flat_ini=user_flat)
+            code, text = run(args_for(g, scope, tag="full", compile_only=False))
+            _, full_record = receipt_of(g, scope) if code == 0 else (None, {"files": []})
+            full_entry = next((e for e in full_record["files"] if e["key"] == flat_key[scope]), {})
+            check(code == 0 and Path(g, "edvr-flat.ini").read_bytes() == generated and
+                  full_entry.get("source") == os.path.abspath(os.path.join(build, "edvr-flat.ini")) and
+                  full_entry.get("installed_sha256") == hashlib.sha256(generated).hexdigest().upper(),
+                  "%s full-build install of the generator's template: %r %r" % (scope, code, text))
+
+        # A full build that lacks its edvr-flat.ini is a broken build, not a reason to derive one.
+        Path(build, "edvr-flat.ini").unlink()
+        for scope in ("flat", "both"):
+            g = game("full-missing-" + scope, user_ini=user_vr, user_flat_ini=user_flat)
+            before = tree(g)
+            code, _ = run(args_for(g, scope, "--dry-run", tag="miss", compile_only=False))
+            check("missing %s INI source" % scope in str(code) and tree(g) == before,
+                  "%s without --compile-only derived or accepted a missing build/edvr-flat.ini: %r" % (scope, code))
+        # --scope vr --ini never needed the flat template.
+        g = game("co-vr", user_ini=user_vr)
+        code, text = run(args_for(g, "vr"))
+        check(code == 0 and Path(g, "edvr.ini").read_bytes() == root_ini and not Path(g, "edvr-flat.ini").exists(),
+              "--scope vr --ini on a compile-only build: %r %r" % (code, text))
+        check(_BUILD_OVERRIDE is None, "the build override was left set")
+        return ok
+    except (AssertionError, OSError, ValueError, KeyError, StopIteration) as exc:
+        print("compile-only --ini self-test failed: %r" % exc)
+        return False
+    finally:
+        (globals()["validate_elite_game"], globals()["strict_game_running"],
+         globals()["compile_only_build"], _pe.validate_native_pair, _loader.verify,
+         _pe.Image, _pe._exports) = saved
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -3452,6 +3707,7 @@ def self_test():
     if not _game_probe_self_test(): ok = False
     if not _xess_opt_in_self_test(): ok = False
     if not _compile_only_self_test(): ok = False
+    if not _compile_only_ini_self_test(): ok = False
 
     # The path-aware game probe: only a game running from the install target
     # blocks staging; an unresolvable image path fails closed.

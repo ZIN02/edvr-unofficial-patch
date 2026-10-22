@@ -10,6 +10,7 @@
   layer's light at the chain's first level, so the game's own chain, tier and
   tone make the halo. The user also runs an HDR monitor with RenoDX (untested
   here). VR unaffected (flat only). See "2026-10-21: the HUD's bloom".
+  The feed now area-weights each pixel's footprint (318ca8d0, review), BUILT, NOT FLOWN.
 - **State (2026-10-20): bloom counted twice, FIXED, FLOWN flat** (Sean, XeSS).
   The re-issue kept the tone's bloom bound and added T(bloom) over the frame;
   the HUD's steps now read zero there, and their own source at the DoF blur
@@ -1121,6 +1122,16 @@ through the bloom the frame already carries. The tone re-issue is unchanged
 - **Not fed:** a trigger that is not half-size (Bloom off: the DoF composite or
   the tone), an ambiguous trigger, a binding that is not H, an H that is not
   R11G11B10_FLOAT. The weapons' layer (`fix.sharp_weapons`) is not fed.
+- **Filter (2026-10-21 review fix, 318ca8d0):** the first version took n x n
+  equally weighted point samples per H pixel, so at a fractional layer-to-H
+  ratio a thin HUD detail sent 0.5 to 1.0 of its light by column (20/13 at
+  1248x780 of 1920x1200). The feed now integrates the layer texels in each
+  pixel's footprint by covered area, the UI composite's formula
+  (`uiGlowFeedFootprint`, ui_layer_math.h, up to 5 taps per axis). Line and
+  texel energy are position-independent at every ratio
+  (`ui_quality_test --flat-cpu`: 0.65 and 0.4225 at 20/13). Flight check:
+  thin halos (pips, radar ring, text strokes) keep their brightness as the
+  HUD moves.
 - **Approximation:** the light is added, not blended over H, so behind an
   opaque panel over a bright scene the halo reads slightly bright where stock's
   panel would have replaced the scene (the G-F regime of Decision 1).

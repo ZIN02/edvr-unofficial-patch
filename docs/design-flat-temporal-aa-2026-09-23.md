@@ -18265,6 +18265,22 @@ Model at 960x600, still camera:
 
 GPU-side agreement runs only on Windows CI.
 
+Flown 08:03 (`437b3bfd`, `edvr_gfx_20261022_080341`), under the parked
+ship, still camera (`moved=0`), Home at 08:07:21. Stale-refused is 0.087 to
+0.090%, against 0.26% on the build before. About two thirds are gone, not
+the near-zero the model gave. The view shows specks, no longer lines, at the
+far floor line.
+
+Sean: more stable; some shimmer remains at the back. Much of the back reads
+blue or green: camera term, history kept, so the upscalers' thin-feature
+limit as with the railing.
+
+Not measured: the residual specks. Leading guess: the other surface at
+those junctions (the hull's underside) is itself grazing, so half 2's point
+test in the current frame fails on it as the floor's did before. The
+refused-pixel anatomy census (reason per refused pixel) would separate
+this from other causes.
+
 Temporary instrument in the same build (`6454231b`, observe-only): the
 flat star dump. On a Home census it logs every solar-list draw
 (`eye_draw_snapshot.h`) with its VS and PS constant buffers b0-b7 from the

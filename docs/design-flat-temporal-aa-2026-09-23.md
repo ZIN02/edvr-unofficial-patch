@@ -2,9 +2,10 @@
 
 ## Status
 
-- **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. FLOWN 11:25 (`edvr_gfx_20261022_112019`, d4abc498): not enough, the G-buffer holds no camera-bearing writer at all (`why=no-witness-entry`), same cycle (403 and 473 `door-refused-untreated` per 30 s). Rule: a lighting pass over a G-buffer the game cleared and nothing wrote since is neither verified nor failed (`why=empty-gbuffer`). BUILT, NOT FLOWN (last entry).
+- **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. FLOWN 11:25 (`edvr_gfx_20261022_112019`, d4abc498): not enough, the G-buffer holds no camera-bearing writer at all (`why=no-witness-entry`), same cycle (403 and 473 `door-refused-untreated` per 30 s). Rule: a lighting pass over a G-buffer the game cleared and nothing wrote since is neither verified nor failed (`why=empty-gbuffer`). FLOWN 13:07 (`edvr_gfx_20261022_130004`, a7a5f5ac): panels steady; that body had a witness, so the rule ran only on entry/exit frames: still to be seen on a body with none.
+- **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`): the stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth; DoF off fixed it (user). MERGED (CI green, 618f1454): the composite taken as the scene HDR's alias (`dofCompositeVerified`, `flat dof composite:` line); the user reports it works with DoF on (no log read yet). See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
-- **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed. RC4 state (2026-10-17): moved to Status detail below (2026-10-21), unchanged.
+- **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed. (The 2026-10-17 RC4 state moved to Status detail below, 2026-10-21, unchanged.)
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
   treatment (34-37); cockpit projection and smoother DLSS edges (40-43); PS91
   motion ownership and rigid BFE shell motion (49-51); on-foot weapon camera
@@ -30,9 +31,8 @@
   corona-smear regression and mod effect ordering. Scene/depth identity, camera
   encoding and handoff have flight evidence; correct motion for every rendered
   surface and VR regression remain unqualified.
-- **Ruled-out pointer:** the kinematic arc's Status records rejected motion
-  estimates and the nonexistent engine velocity buffer. Reuse engine-record
-  motion; do not revive estimation or the retired deferred UI replay.
+- **Ruled-out pointer:** the kinematic arc's Status (rejected motion estimates,
+  no engine velocity buffer); do not revive estimation or deferred UI replay.
 - **Ruled out (103-104):** dormant SRC1 false rejection; forced-early UAV
   capture; raising the 64-draw/64-record bounds; a weapon-only cause;
   identity-pooled sibling motion (mean or affine) as the cover for lost history.
@@ -18428,3 +18428,124 @@ failed its own shape checks (the failure ownership line gives `actual=` and `inp
 clears of @40, @41, @44, @45, @46), `why=gbuffer-reached` (a write reached an input), or `empty-gbuffer` with the cycle gone but a new
 refusal in `flat runtime refusal 5s`, most likely `conflicting-hdr-target-or-camera` if a forward writer in a jittered frame carries another
 camera than the first (the camera of the HDR is now a forward writer's, which a zero-phase frame cannot show).
+
+## 2026-10-22: the 3D main menu at render below output
+
+Report (a user, v0.20.2, with clips): at the main menu with the Anaconda MkII
+hologram EDVR seems not to work; after loading, a carrier menu shows strobing
+and blur behind the UI; in ship outfitting it works and stops again at the main
+menu. The log `edvr_gfx_20261022_115444` (flat, RTX 3080, game SS 0.75: render
+2580x1080 on a 3440x1440 display, DLSS, UI quality 125, Bloom off, DoF 2, game
+AA off) was flown with a NumLock census on the menu. The carrier menu is not
+covered here.
+
+Evidence.
+
+- The menu is stood down for 87 s (`no-3d-scene`, GPU census 0.000 ms/frame).
+  The scenes it passes through, by the discovery selector and the probes:
+  11:54:56-11:55:03 `no-known-tone-pass` (the first menu scene, tone
+  `F9CFC798/6E83D02E`); 11:55:08 `conflicting-hdr-target-or-camera` (the ship
+  loading, 63 world records, none dropped); 11:55:15 and 11:55:21
+  `relevant-observations-truncated`.
+- That truncation is the passive discovery's own buffer (`kContracts` 224 in
+  flat_temporal.cpp: `world-retained=224 world-dropped-draw-observations=11`,
+  about 610-630 eligible pool draws). It is a diagnostic and does not decide
+  treatment. The stand-down's own probe at 11:55:21 says `conflicting-hdr-
+  target-or-camera`, from the runtime's copy-stage selector, and the runtime's
+  `selector-receipts` stay 0 (no `Truncated` verdict there).
+- The census frame (11:55:26, frame 2336), as render-target passes: the scene H
+  (2580x1080 fmt 26, depth fmt 19) takes 4, 2, 11 and 1 draws; a separate
+  1024x1024 fmt 26 target with its own depth (fmt 53) takes 11 (the ship
+  hologram), then 11 draws into H (`EB787F98/3B0B38CD`); about 1,100 depth-only
+  draws go to a 512x512 shadow target; the DoF/exposure chain (645x270, 430x180,
+  322x134) and the tone `F9CFC798/FEE777E9` (known) follow, then the output copy
+  `20F383BB/DED87960` to 3440x1440. The tone and the copy are recognisable; the
+  H record is what the selector refuses.
+- Why no cause was named: `reportConflict` (flat_runtime.cpp) runs after the
+  `if (s.observing) return`, and a stood-down probe frame is an observing frame.
+  The runtime model had the cause (`FlatRuntimeConflict`: viewport, depth,
+  camera change, camera provenance, image-copy-source, menu-copy-source,
+  selector layout/camera) and never logged it.
+
+Built, not flown (branch from main 7ea35f54). The conflict is now reported at the
+copy's verdict (`verdictConflicting`), once a frame (`conflictReportedFrame`), so
+the next menu log names the cause with the first writer's and the offending
+writer's VS/PS, viewport, depth and camera words. No behaviour changes: the
+selector, the route and the stand-down are untouched.
+
+Flight signature: `flat runtime conflict: frame=... cause=<name> ...` and
+`flat runtime conflict camera: ...` in the stood-down menu (up to four a cause),
+and the 5 s runtime line's conflicts. The cause decides the fix: `camera-change`
+or `selector-hdr-camera-conflict` is the hologram draws' own camera;
+`image-copy-source` or `menu-copy-source` is H written by a copy rather than
+scene draws (the SS 0.5 loading hologram's refusal); `depth-or-dsv-changed` or
+`viewport` is the 1024x1024 target being taken for a second H.
+
+- ruled out: raising the discovery's 224-record capacity as the fix. It is the
+  diagnostic's buffer (flat_temporal.cpp), not the runtime selector's, and the
+  runtime's verdict was a conflict, not a truncation.
+- ruled out (corrects the 10-22 first reading): "the main menu's tone pass is
+  unknown". `6E83D02E` is the first menu scene's tone only; the ship scene's is
+  the known `FEE777E9`.
+Flown (12:15, v0.20.2-20-g0419a682, the same user and settings, an Anaconda
+menu, two minutes): `flat runtime conflict: cause=missing-depth-or-dsv`, count
+1 to 4 in the 5 s windows, the writer `20F383BB/BF2302BC` into a 2580x1080 fmt 26
+target with no depth or dsv (cur-dim 2580x1080/0x0, a full viewport), the hdr the
+tone's input. `flat copy structure` said `last=untouched`: by design it only
+looks at a frame the whitelist refused for its tone pass. In the census that
+writer is the last of the DoF chain: scene draws into H (fmt 26, depth), the
+quarter-size blur chain reading H (645x270, 430x180), `FDB74215`/`80631A09`/
+`E16E27A0` into fmt 9 (the first reads H at t0 and the depth at t1), then
+`BF2302BC` reading H at t0 and the last fmt 9 image at t1 and writing a new f26
+image the tone (`FEE777E9`, t1) reads. One more draw writes H between the blur
+chain and the composite (`94D5C556/912477AE` with depth, reading two 2048x1024
+BC textures): the next conflict may be that late write.
+
+Result: with Elite's Depth of Field off the user's main menu was treated (user
+report, no log). That confirms the DoF composite as the blocker; the earlier
+reporter's menu was treated at DoF 0. Not yet known: whether the late write
+`94D5C556/912477AE` also conflicts once the composite is aliased, and whether
+a treated menu ghosts. Candidate fix: accept the composite as an alias of its
+t0 scene H in flatRuntimeObserveContract, as the menu copy (DEF19B03/DED87960)
+is, with a context check like verifyMenuHdrCopy; log every conflict on the chain
+in the same flight.
+
+Built, merged to main as 618f1454 (branch claude/dof-composite-alias, from the cause logger);
+the user reports the menu works with Depth of Field on, the log not yet read: the
+depth-of-field composite is accepted as the scene HDR's alias.
+
+- **Model** (flat_runtime_model.h): a format 26 draw with VS `20F383BB` and PS
+  `BF2302BC` is checked like the menu copy (a verified draw; a source HDR with
+  draws, depth, a current same camera and no earlier conflict; a fresh depthless
+  destination; a full viewport). Accepted, the destination inherits the source's
+  depth and camera (`flatRuntimeInheritSceneHdr`, now shared with the menu
+  copy) and is marked `dofInherited`, so a compute write into it invalidates
+  it as for the menu copy. It is NOT `menuInherited`: the menu's static-scene
+  stale-slot policy keys on the plain menu copy, so this frame reaches the
+  resolver as an ordinary scene frame. A refusal keeps the source's own first
+  conflict where it has one, and records the failed conditions as `kDof*` bits.
+- **Context check** (flat_runtime.cpp `verifyDofComposite`): the actual shaders,
+  the scene HDR at t0 and the R16G16B16A16 typeless blur at t1 as one-mip 2D
+  views of the scene's size, a depthless R11G11B10 output of that size, a full
+  viewport. Trace flag bit 18 carries it to replay.
+- **Log:** `flat dof composite: accepted=N refused=M last-refusal-frame=F
+  last-refusal-mask=XXXX source-first-bad=<cause>` every 5 s. The mask bits are
+  the `kDof*` constants in order (0 not verified, 1 no input, 2 no source, 3
+  source has no draws, 4 source already bad, 5 layout changed, 6 no camera, 7
+  format, 8 size, 9 depth, 10 order, 11 stale camera, 12 camera differs, 13
+  destination written, 14 output has depth, 15 viewport).
+- **Rig:** the menu copy's replay test now runs for both pairs (flat_temporal_test
+  `flatRuntimeInheritedCopyTests`): valid, unverified, source depth, viewport,
+  layout, stale, camera change, explicit write, missing, alias, prior destination
+  write, compute overwrite, wrong pair. The `kCopyVerify` scope count pin is 5.
+
+Flight signature, the same user at the menu with Depth of Field on: `flat dof
+composite: accepted>0` and the stand-down ends at the menu (a treated menu:
+`flat runtime: ... last=treated-jittered`). With `refused>0 accepted=0` the mask
+and `source-first-bad` name what else stands on the chain: the late write
+`94D5C556/912477AE` into the scene HDR is the candidate (`hdr-camera-changed`).
+Watch the menu hologram and the ship for ghosting and shimmer: it is treated as an
+ordinary scene frame, not with the menu's static-scene policy.
+
+- Risk if the menu is later treated: a rotating hologram can ghost (the loading
+  screen's ghost, flat-loading-hologram-ghost-2026-10-09.md).

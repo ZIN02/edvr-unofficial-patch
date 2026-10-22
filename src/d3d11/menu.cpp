@@ -725,9 +725,9 @@ std::string afterRestartFacts(const ResolutionView& v) {
 }
 
 std::string openxrResolutionLabel(const ResolutionView& v) {
-    if (!v.headset) return "OpenXR res.";
+    if (!v.headset) return "Per eye resolution";
     char text[48];
-    snprintf(text, sizeof(text), "OpenXR res. %u px", v.width);
+    snprintf(text, sizeof(text), "Per eye resolution %u px", v.width);
     return text;
 }
 

@@ -33,6 +33,10 @@ struct FlatRuntimeDraw {
     bool hdrCopyVerified = false;
     // Exact menu HDR-to-HDR copy, with live views and typed texture layout verified.
     bool menuHdrCopyVerified = false;
+    // The depth-of-field composite (kDofCompositeVs/Ps): the bridge verified its actual shaders, its scene-HDR input at t0, its blurred
+    // image at t1, its depthless HDR output and the viewport. It makes a new HDR image of the scene with the blur laid in, which the
+    // tone then reads in the scene's place (the 3D main menu at Depth of Field 2).
+    bool dofCompositeVerified = false;
     // The bridge verified the actual camera-independent format 9 image shaders
     // and their RT/DSV views. The model also checks the exact shader pair.
     bool imageSourceCameraIndependentVerified = false;
@@ -78,7 +82,7 @@ inline bool flatRuntimeCameraIndependentImageSourcePair(uint64_t vs, uint64_t ps
 enum class FlatRuntimeConflict : uint32_t {
     None, Viewport, MissingDepth, DepthMismatch, CameraChange,
     CameraProvenance, ExplicitWrite, ImageCopySource, MenuCopySource, SelectorLayout,
-    SelectorCamera, SelectorCameraProvenance, OverlaySuffix, Count
+    SelectorCamera, SelectorCameraProvenance, OverlaySuffix, DofCompositeSource, Count
 };
 inline const char* flatRuntimeConflictName(FlatRuntimeConflict c) {
     switch (c) {
@@ -94,6 +98,7 @@ inline const char* flatRuntimeConflictName(FlatRuntimeConflict c) {
     case FlatRuntimeConflict::SelectorCamera: return "selector-hdr-camera-conflict";
     case FlatRuntimeConflict::SelectorCameraProvenance: return "selector-hdr-camera-provenance";
     case FlatRuntimeConflict::OverlaySuffix: return "unprotected-late-hdr-overlay-or-depth-write";
+    case FlatRuntimeConflict::DofCompositeSource: return "dof-composite-source";
     default: return "none";
     }
 }
@@ -132,6 +137,7 @@ struct FlatRuntimeTarget {
     FlatContractRecord writes{}, tone{};
     bool hdrBad = false, hdrCamera = false, hdrLayoutChanged = false, imageSourceBad = false;
     bool menuInherited = false;
+    bool dofInherited = false;   // the depth-of-field composite's output, taken as the scene HDR's alias (not the menu's static-scene policy)
     bool imageHasCamera = false;
     // The target's first write was a verified HDR image copy (the glow layer of a screen with no scene, drawn before anything else
     // into the HDR). That copy is not recorded as a write (it carries no depth and no camera, so as the HDR's first record it could
@@ -261,6 +267,10 @@ struct FlatRuntimePrefix {
     // Verified image copies that were the first write into their HDR and so conflicted with nothing (FlatRuntimeTarget::imageCopyFirst).
     uint32_t imageCopiesFirstWrite = 0;
     uint32_t menuCopiesAccepted = 0, menuCopiesRefused = 0;
+    // The depth-of-field composite's own counts, the failed conditions of its refusals (kDof* bits below, ORed over the frame) and the
+    // first conflict its source HDR already carried: the log names them, so one flight reads every cause on the chain.
+    uint32_t dofCompositesAccepted = 0, dofCompositesRefused = 0, dofRefusalMask = 0;
+    FlatRuntimeConflict dofSourceBad = FlatRuntimeConflict::None;
     uint64_t frame = 0;
     const void* output = nullptr;
     uint32_t width = 0, height = 0, format = 0;
@@ -779,9 +789,9 @@ inline bool flatRuntimeOverlaySeal(FlatRuntimePrefix& p, const void* resource) {
 inline void flatRuntimeComputeWritten(FlatRuntimePrefix& p, const void* resource) {
     // Lighting may write the original scene HDR before the menu copy. An
     // inherited destination has no such exemption: its contents are a copy.
-    if (!p.menuCopiesAccepted) return;
+    if (!p.menuCopiesAccepted && !p.dofCompositesAccepted) return;
     for (uint32_t i = 0; i < p.targetsUsed; ++i)
-        if (p.targets[i].resource == resource && p.targets[i].menuInherited) {
+        if (p.targets[i].resource == resource && (p.targets[i].menuInherited || p.targets[i].dofInherited)) {
             flatRuntimeWritten(p, resource);
             return;
         }
@@ -822,6 +832,42 @@ inline bool flatFrameThroughMenuCopy(const FlatRuntimePrefix& p, const void* hdr
         if (p.targets[i].resource == hdr) return p.targets[i].menuInherited;
     return false;
 }
+// A depthless HDR image made from a verified scene HDR (the menu copy; the depth-of-field composite): it comes into existence at the draw,
+// and its scene and camera provenance is the source's, never the draw's own b1. `cur` is the draw's record.
+inline void flatRuntimeInheritSceneHdr(FlatRuntimeTarget& t, const FlatRuntimeTarget& source, const FlatContractRecord& cur) {
+    t.writes = cur;
+    t.writes.key.depth = source.writes.key.depth;
+    t.writes.key.dsv = source.writes.key.dsv;
+    t.writes.key.depthWidth = source.writes.key.depthWidth;
+    t.writes.key.depthHeight = source.writes.key.depthHeight;
+    t.writes.key.depthFormat = source.writes.key.depthFormat;
+    t.writes.key.camera = nullptr;
+    t.tone = cur;
+    t.tone.key.depth = t.writes.key.depth;
+    t.tone.key.dsv = t.writes.key.dsv;
+    t.tone.key.depthWidth = t.writes.key.depthWidth;
+    t.tone.key.depthHeight = t.writes.key.depthHeight;
+    t.tone.key.depthFormat = t.writes.key.depthFormat;
+    t.tone.key.b1 = source.tone.key.b1;
+    t.tone.deferredCamera = source.tone.deferredCamera;
+    t.tone.forwardLightCamera = source.tone.forwardLightCamera;
+    t.tone.deferredInverseRepaired = source.tone.deferredInverseRepaired;
+    t.tone.sceneCameraB1 = source.tone.sceneCameraB1;
+    t.tone.sceneCameraWriteEpoch = source.tone.sceneCameraWriteEpoch;
+    t.tone.sceneCameraWriteSeq = source.tone.sceneCameraWriteSeq;
+    if (t.tone.deferredCamera) t.tone.key.projection[1] = source.tone.key.projection[1];
+    t.tone.key.cameraHash = source.tone.key.cameraHash;
+    t.tone.firstWriteEpoch = t.tone.lastWriteEpoch = source.tone.firstWriteEpoch;
+    t.tone.firstWriteSeq = t.tone.lastWriteSeq = source.tone.firstWriteSeq;
+    std::memcpy(t.tone.camera, source.tone.camera, sizeof(t.tone.camera));
+    t.tone.key.camera = t.tone.camera;
+    t.hdrCamera = true;
+}
+// The depth-of-field composite's failed conditions, one bit each (FlatRuntimePrefix::dofRefusalMask, the log's last-refusal-mask).
+constexpr uint32_t kDofNotVerified = 1u << 0, kDofNoInput = 1u << 1, kDofNoSource = 1u << 2, kDofSourceNoDraws = 1u << 3,
+                   kDofSourceBad = 1u << 4, kDofSourceLayout = 1u << 5, kDofSourceNoCamera = 1u << 6, kDofSourceFormat = 1u << 7,
+                   kDofSourceSize = 1u << 8, kDofSourceDepth = 1u << 9, kDofSourceOrder = 1u << 10, kDofSourceStale = 1u << 11,
+                   kDofSourceCamera = 1u << 12, kDofDestination = 1u << 13, kDofOutputDepth = 1u << 14, kDofViewport = 1u << 15;
 // Optional sink for the copy branch's assembled fixture records: the frame
 // contract's carrier (flat_frame_contract.h). count is set only when the
 // copy branch ran, so count != 0 means the reducer produced a contract.
@@ -930,6 +976,8 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
     constexpr uint64_t kHdrImageCopyPs = 0xDFCBA0EC70B03C9Bull;
     constexpr uint64_t kMenuCopyVs = 0xDEF19B035D5EDEDCull;
     constexpr uint64_t kMenuCopyPs = 0xDED8796049C7BB4Aull;
+    constexpr uint64_t kDofCompositeVs = 0x20F383BBAC05C031ull;   // the shared full-screen VS (also the output copy's)
+    constexpr uint64_t kDofCompositePs = 0xBF2302BCC7B434DBull;
     if (k.format == 26 && k.vs == kMenuCopyVs && k.ps == kMenuCopyPs) {
         FlatRuntimeTarget* source = nullptr;
         for (uint32_t i = 0; i < p.targetsUsed; ++i)
@@ -959,34 +1007,55 @@ inline FlatMonoFrame flatRuntimeObserve(FlatRuntimePrefix& p, const FlatRuntimeD
         ++p.menuCopiesAccepted;
         // The destination comes into existence at this copy. Its scene and camera
         // provenance is inherited from the verified source, never from copy b1.
-        t->writes = current();
-        t->writes.key.depth = source->writes.key.depth;
-        t->writes.key.dsv = source->writes.key.dsv;
-        t->writes.key.depthWidth = source->writes.key.depthWidth;
-        t->writes.key.depthHeight = source->writes.key.depthHeight;
-        t->writes.key.depthFormat = source->writes.key.depthFormat;
-        t->writes.key.camera = nullptr;
-        t->tone = current();
-        t->tone.key.depth = t->writes.key.depth;
-        t->tone.key.dsv = t->writes.key.dsv;
-        t->tone.key.depthWidth = t->writes.key.depthWidth;
-        t->tone.key.depthHeight = t->writes.key.depthHeight;
-        t->tone.key.depthFormat = t->writes.key.depthFormat;
-        t->tone.key.b1 = source->tone.key.b1;
-        t->tone.deferredCamera=source->tone.deferredCamera;
-        t->tone.forwardLightCamera=source->tone.forwardLightCamera;
-        t->tone.deferredInverseRepaired=source->tone.deferredInverseRepaired;
-        t->tone.sceneCameraB1=source->tone.sceneCameraB1;
-        t->tone.sceneCameraWriteEpoch=source->tone.sceneCameraWriteEpoch;
-        t->tone.sceneCameraWriteSeq=source->tone.sceneCameraWriteSeq;
-        if(t->tone.deferredCamera)t->tone.key.projection[1]=source->tone.key.projection[1];
-        t->tone.key.cameraHash = source->tone.key.cameraHash;
-        t->tone.firstWriteEpoch = t->tone.lastWriteEpoch = source->tone.firstWriteEpoch;
-        t->tone.firstWriteSeq = t->tone.lastWriteSeq = source->tone.firstWriteSeq;
-        std::memcpy(t->tone.camera, source->tone.camera, sizeof(t->tone.camera));
-        t->tone.key.camera = t->tone.camera;
-        t->hdrCamera = true;
+        flatRuntimeInheritSceneHdr(*t, *source, current());
         t->menuInherited = true;
+        return out;
+    }
+    // The depth-of-field composite (2026-10-22, the 3D main menu at render below output with Depth of Field 2): the game's blur chain reads
+    // the scene HDR, and this full-screen pass lays the blurred image over it, writing a NEW depthless HDR image that the exposure chain and
+    // the tone then read in the scene's place. Left to the ordinary HDR rules it is a writer with no depth (MissingDepth) into the tone's
+    // input. Taken, like the menu copy, as the scene HDR's alias: the verified draw reads the scene HDR at t0 and the destination inherits
+    // its depth and camera. Not menuInherited: the menu's static-scene policy keys on the plain menu copy, and this frame is an ordinary
+    // scene frame for the resolver. A refusal keeps the source's own first conflict where it has one, so the frame names the original cause.
+    if (k.format == 26 && k.vs == kDofCompositeVs && k.ps == kDofCompositePs) {
+        FlatRuntimeTarget* source = nullptr;
+        for (uint32_t i = 0; i < p.targetsUsed; ++i)
+            if (p.targets[i].resource == k.srvResource[0]) source = &p.targets[i];
+        uint32_t why = 0;
+        const auto need = [&](bool ok, uint32_t bit) { if (!ok) why |= bit; };
+        need(d.dofCompositeVerified, kDofNotVerified);
+        need(k.srvView[0] && k.srvResource[0] && k.srvResource[0] != k.color, kDofNoInput);
+        need(source && source != t, kDofNoSource);
+        if (source) {
+            const auto& w = source->writes;
+            need(w.draws != 0, kDofSourceNoDraws);
+            need(!source->hdrBad, kDofSourceBad);
+            need(!source->hdrLayoutChanged, kDofSourceLayout);
+            need(source->hdrCamera, kDofSourceNoCamera);
+            need(w.key.format == 26 && w.key.rtv, kDofSourceFormat);
+            need(w.key.width == k.width && w.key.height == k.height, kDofSourceSize);
+            need(w.key.depth && w.key.dsv && w.key.depthFormat && w.key.depthWidth == k.width && w.key.depthHeight == k.height,
+                 kDofSourceDepth);
+            need(w.last < q, kDofSourceOrder);
+            need(cameraCurrent(source->tone, p.frame), kDofSourceStale);
+            need(!w.key.camera || sameCamera(w, source->tone), kDofSourceCamera);
+        }
+        need(!t->writes.draws && !t->hdrBad, kDofDestination);
+        need(!k.depth && !k.dsv, kDofOutputDepth);
+        need(fullViewport(k, k.width, k.height), kDofViewport);
+        if (why) {
+            ++p.dofCompositesRefused;
+            p.dofRefusalMask |= why;
+            if (source && source->firstBad.cause != FlatRuntimeConflict::None) p.dofSourceBad = source->firstBad.cause;
+            const bool firstConflict = t->firstBad.cause == FlatRuntimeConflict::None;
+            bad(*t, FlatRuntimeConflict::DofCompositeSource, source ? source->writes : t->writes);
+            if (firstConflict && source && source->firstBad.cause != FlatRuntimeConflict::None) t->firstBad = source->firstBad;
+            if (!t->writes.draws) t->writes = current();
+            return out;
+        }
+        ++p.dofCompositesAccepted;
+        flatRuntimeInheritSceneHdr(*t, *source, current());
+        t->dofInherited = true;
         return out;
     }
     const bool imageCameraIndependent = k.format == 9 &&

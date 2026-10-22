@@ -558,16 +558,16 @@ struct UiLayerPrivateDepthGuard {
 // copy), up to three at s = 1.25, 1.5 or 2. The HLSL in ui_layer_shaders.h is this
 // loop, transcribed; the rig compares the two on WARP.
 constexpr int kUiLayerMaxTaps = 4;  // s <= 2 needs at most 3; one spare
-inline int uiLayerFootprint(double x0, double x1, uint32_t layerDim, uint32_t* first,
-                            float weights[kUiLayerMaxTaps]) {
-    if (!(x1 > x0) || layerDim == 0 || !first) return 0;
+inline int uiLayerFootprintTaps(double x0, double x1, uint32_t layerDim, uint32_t* first, float* weights,
+                                int maxTaps) {
+    if (!(x1 > x0) || layerDim == 0 || !first || !weights) return 0;
     int64_t k0 = static_cast<int64_t>(std::floor(x0));
     int64_t k1 = static_cast<int64_t>(std::ceil(x1)) - 1;
     if (k0 < 0) k0 = 0;
     if (k1 > static_cast<int64_t>(layerDim) - 1) k1 = static_cast<int64_t>(layerDim) - 1;
     int n = 0;
     double total = 0.0;
-    for (int64_t k = k0; k <= k1 && n < kUiLayerMaxTaps; ++k) {
+    for (int64_t k = k0; k <= k1 && n < maxTaps; ++k) {
         const double a = (x0 > static_cast<double>(k)) ? x0 : static_cast<double>(k);
         const double b = (x1 < static_cast<double>(k + 1)) ? x1 : static_cast<double>(k + 1);
         const double w = b - a;
@@ -578,6 +578,28 @@ inline int uiLayerFootprint(double x0, double x1, uint32_t layerDim, uint32_t* f
     }
     for (int j = 0; j < n; ++j) weights[j] = static_cast<float>(weights[j] / total);
     return n;
+}
+inline int uiLayerFootprint(double x0, double x1, uint32_t layerDim, uint32_t* first,
+                            float weights[kUiLayerMaxTaps]) {
+    return uiLayerFootprintTaps(x0, x1, layerDim, first, weights, kUiLayerMaxTaps);
+}
+
+// THE HUD'S BLOOM FEED'S FILTER (fixed_shader_source.h kUiGlowFeedPsHlsl; ui_layer.h UiGlowFeed). The feed reads the HUD layer, which is the
+// display's size times the quality target, at the scene H's size: a pixel of H covers `scale` layer texels per axis, 1.0 on the grid, 20/13 at
+// quality 100 of a 1248x780 scene on a 1920x1200 display, 1.25 at quality 125 at native size. Pixel i integrates the texels of [i*scale,
+// (i+1)*scale) by the area they cover, the composite's weights above: the footprints tile the layer, so a detail sends the same light to the
+// bloom wherever it falls on H's grid -- a one-texel line a total of 1/scale per row of pixels, a single texel 1/(scale.x*scale.y). A footprint
+// wider than kUiGlowFeedMaxSpan texels (a ratio past 4) is cut to its central kUiGlowFeedMaxSpan, which keeps the pass at 5 loads an axis
+// and the mean of a flat field. The HLSL is this loop, transcribed; the rig replays it for the energy.
+constexpr int kUiGlowFeedMaxTaps = 5;          // a footprint of kUiGlowFeedMaxSpan texels crosses at most 5
+constexpr double kUiGlowFeedMaxSpan = 4.0;
+inline int uiGlowFeedFootprint(uint32_t pixel, double scale, uint32_t layerDim, uint32_t* first,
+                               float weights[kUiGlowFeedMaxTaps]) {
+    if (!(scale > 0.0)) return 0;
+    const double x0 = static_cast<double>(pixel) * scale;
+    const double x1 = x0 + scale;
+    const double cut = (scale > kUiGlowFeedMaxSpan) ? (scale - kUiGlowFeedMaxSpan) * 0.5 : 0.0;
+    return uiLayerFootprintTaps(x0 + cut, x1 - cut, layerDim, first, weights, kUiGlowFeedMaxTaps);
 }
 
 // ------------------------------------------------------ the classifier gate --

@@ -20,6 +20,8 @@ import shutil
 
 WINDOWS_FALLBACK = r"C:\Steam"
 ELITE_DIR = "Elite Dangerous"
+# steam_dirs(fallback=...) default: use WINDOWS_FALLBACK as it is when called.
+_MODULE_FALLBACK = object()
 # Relative to $HOME. The two first are the ones a Steam Deck has; the Flatpak
 # copy keeps its own tree.
 LINUX_ROOTS = (".local/share/Steam", ".steam/steam", ".steam/root",
@@ -79,13 +81,20 @@ def products_under(root, game_exe):
     return found
 
 
-def steam_dirs(game_exe, windows=None, home=None, registry=_registry_steam_path):
-    """Every Steam copy of the game, once each."""
+def steam_dirs(game_exe, windows=None, home=None, registry=_registry_steam_path,
+               fallback=_MODULE_FALLBACK):
+    """Every Steam copy of the game, once each.
+
+    `fallback` is the Windows last-resort Steam root; it defaults to
+    WINDOWS_FALLBACK, and None means there is none. A test passes its own, so
+    it never consults the real C:\\Steam of the machine it runs on."""
     if windows is None:
         windows = os.name == "nt"
+    if fallback is _MODULE_FALLBACK:
+        fallback = WINDOWS_FALLBACK
     libs = library_paths(steam_roots(windows, home, registry))
-    if windows:
-        libs.append(WINDOWS_FALLBACK)
+    if windows and fallback:
+        libs.append(fallback)
     # Deduplicated case- and separator-insensitively. The registry hands
     # back `c:/steam` and the fallback is `C:\Steam`; compared as strings
     # those are two installs, and the tool then refuses to act because it
@@ -165,22 +174,72 @@ def self_test():
         check(steam_dirs(exe, False, os.path.join(tmp, "nobody")) == [], "no Steam must give no installs, not an error")
         check(steam_roots(False, os.path.join(tmp, "nobody")) == [], "no Steam roots on a bare home")
 
-        # --- Windows: registry root, vdf libraries, the C:\Steam fallback, case-insensitive dedup ---
-        # (the paths are POSIX temp dirs here; only the rules are under test)
+        # --- Windows: registry root, vdf libraries, the fallback, case-insensitive dedup ---
+        # (the paths are POSIX temp dirs here; only the rules are under test.)
+        # Every Windows call below names its own fallback. The real one is
+        # C:\Steam, which holds a game on a PC that keeps Elite there, and this
+        # test must give the same answer on that PC and on a bare CI runner.
         wroot = os.path.join(tmp, "wsteam")
         wgame = game(wroot)
         wextra = os.path.join(tmp, "wd")
         wother = game(wextra)
         vdf(wroot, wroot, wextra)
-        got = steam_dirs(exe, True, None, lambda: wroot)
+        got = steam_dirs(exe, True, None, lambda: wroot, None)
         check(got == [wgame, wother], "Windows: registry root then its vdf libraries: %r" % got)
-        got = steam_dirs(exe, True, None, lambda: None)
-        check(got == [], "Windows with no registry entry falls back to C:\\Steam, which is absent here: %r" % got)
+        got = steam_dirs(exe, True, None, lambda: None, None)
+        check(got == [], "Windows with no registry entry and no fallback has no installs: %r" % got)
         check(steam_roots(True, registry=lambda: None) == [], "Windows with no registry entry has no roots")
-        # The registry spelling and the fallback must not both count: same leaf listed twice is one install.
+
+        # An empty fallback (a Steam tree with no game) adds nothing, with or without a registry entry.
+        wempty = os.path.join(tmp, "wempty")
+        os.makedirs(os.path.join(wempty, "steamapps", "common", ELITE_DIR, "Products", "stub"))
+        got = steam_dirs(exe, True, None, lambda: None, wempty)
+        check(got == [], "Windows: an empty fallback must give no installs: %r" % got)
+        got = steam_dirs(exe, True, None, lambda: wroot, wempty)
+        check(got == [wgame, wother], "Windows: an empty fallback must add nothing to the registry's: %r" % got)
+
+        # A populated fallback is the install when the registry entry is missing, and follows the
+        # registry's installs when it is a different library.
+        wfall = os.path.join(tmp, "wfallback")
+        wfgame = game(wfall)
+        got = steam_dirs(exe, True, None, lambda: None, wfall)
+        check(got == [wfgame], "Windows: a populated fallback is the install when the registry has none: %r" % got)
+        got = steam_dirs(exe, True, None, lambda: wroot, wfall)
+        check(got == [wgame, wother, wfgame], "Windows: registry installs, then the fallback's: %r" % got)
+        # The fallback is a Windows rule: a Linux host never searches it.
+        got = steam_dirs(exe, False, os.path.join(tmp, "nobody"), fallback=wfall)
+        check(got == [], "a Linux host must not search the Windows fallback: %r" % got)
+
+        # The same library reached through the registry and through the fallback is one install,
+        # however the two spell it.
+        for label, spelled in (("identically", wroot),
+                               ("with a trailing separator", wroot + os.sep),
+                               ("with forward slashes", wroot.replace(os.sep, "/")),
+                               ("in upper case", wroot.upper() if os.path.normcase("A") != "A" else wroot)):
+            got = steam_dirs(exe, True, None, lambda: wroot, spelled)
+            check(got == [wgame, wother],
+                  "Windows: one library via the registry and the fallback, spelled %s, must be one install: %r"
+                  % (label, got))
+        # The registry's own vdf can name the fallback's library too.
+        vdf(wroot, wroot, wfall)
+        got = steam_dirs(exe, True, None, lambda: wroot, wfall)
+        check(got == [wgame, wfgame], "Windows: a library named by the vdf and by the fallback is one install: %r" % got)
+        # The same library named twice by the vdf is one install.
         vdf(wroot, wroot, wroot)
-        check(steam_dirs(exe, True, None, lambda: wroot) == [wgame],
+        check(steam_dirs(exe, True, None, lambda: wroot, None) == [wgame],
               "the same library named twice must give one install")
+
+        # Production reads WINDOWS_FALLBACK when no fallback is passed. Point the module at the
+        # fixture, so the default path is covered without the real C:\Steam being read.
+        real_fallback = WINDOWS_FALLBACK
+        globals()["WINDOWS_FALLBACK"] = wfall
+        try:
+            got = steam_dirs(exe, True, None, lambda: None)
+            check(got == [wfgame], "the default fallback must be WINDOWS_FALLBACK: %r" % got)
+            got = steam_dirs(exe, True, None, lambda: None, None)
+            check(got == [], "fallback=None must override the module default: %r" % got)
+        finally:
+            globals()["WINDOWS_FALLBACK"] = real_fallback
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("steam_library self-test: %s" % ("PASS" if ok else "FAIL"))

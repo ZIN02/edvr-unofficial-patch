@@ -2,13 +2,16 @@
 
 ## Status
 
-- **State (2026-10-21): FIXED in flat and merged to main.** The artifact
-  was undithered 8-bit banding of Elite's own bloom, at Bloom Medium, High
-  and Ultra. `fix.smooth_gradients` (on by default, live, F8) dithers the
-  tone write. It was flown flat and the bands are gone (see "Fix A
-  flown"). The release's full build validates it; CI was skipped at
-  merge by Sean's choice. Base Elite, EDVR's AA off, flat System Map and
-  loading screens, builds 332841 and 334473.
+- **State (2026-10-21): diagnosed; the fix was REVERTED and is not in any
+  release.** The artifact is undithered 8-bit banding of Elite's own bloom,
+  at Bloom Medium, High and Ultra. The dither fix, `fix.smooth_gradients`,
+  was flown flat and removed the bands (see "Fix A flown", base Elite,
+  EDVR's AA off, flat System Map and loading screens, builds 332841 and
+  334473). It was reverted in `d765c5b2` before the v0.20.1 tag: on the tag
+  run it failed two `flat_temporal_test` gates (the flat F8 card's line
+  count and the flat draw hooks' begin-to-end window). The key, its
+  sources, shaders and rig are gone; Elite's bloom bands as before. A
+  return would start from that history and those two gates.
 - **What looked ugly on Sean's laptop was mostly the display.** KDE ran
   its AMOLED panel (AMS881KB01) in HDR, mapping SDR to 485 nits with 33%
   software brightness. That rendered the glow's faint tail as blotches
@@ -35,12 +38,11 @@
     floor (E8948389's fitted curve clamps inputs below about 0.0013 to
     0). A soft-toe experiment was built and discarded once HDR-off
     showed the rim was not the problem.
-- **Next:** one VR launch with `glare_shader_dump = 1` for VR's tone
-  shader (`99C21CEB`, and `D0A16B9E` at another tier); EDHM's and the old
-  map tone's bytecode the same way. Until then those draw stock.
-- **Fix:** `smooth_gradients_ps.h` and `smooth_gradients.cpp`, with the rig
-  `tools/smooth_gradients_test` (101 checks passing under Wine's D3D11).
-  Bloom stays everywhere.
+- **Next:** none while the fix is reverted. The VR, EDHM and old map tone
+  dumps listed in the history below were for the reverted fix.
+- **Fix (historical, reverted in `d765c5b2`):** `smooth_gradients_ps.h` and
+  `smooth_gradients.cpp`, with the rig `tools/smooth_gradients_test` (101
+  checks under Wine's D3D11). None of these files exist at HEAD.
 - **Environment:** flat, 1920x1200 output, DoF 2, Elite AA off. The map
   flight ran at SSAA 0.65 (HDR 1248x780); the lossless loading screens
   ran at HDR 1920x1200. Not tested: VR, where Elite's VR presets ship

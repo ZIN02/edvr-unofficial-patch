@@ -124,7 +124,8 @@ struct FlatMonoResolveFrame {
     // section 82, the depth-validated steady detail): a pixel whose engine slot a later draw overdrew takes the camera term
     // instead of refusing its history ONLY where last frame's depth confirms the camera term -- the depth, in the best of the four
     // texels around the previous raster position, is within 1% (floor 1e-6, kFlatMonoStaleDepthRelative) of the depth this surface would
-    // have had there had it not moved -- and is refused exactly as before wherever it does not. The check needs last frame's depth: TAA
+    // have had there had it not moved, or those four texels are one plane whose depth at that position is -- and is refused exactly as
+    // before wherever it does not. The check needs last frame's depth: TAA
     // keeps it already; the other backends get a second depth image, made on the first frame that asks, and from then on the depth the
     // backend is handed alternates between the two (never while this is false: those frames write the one image they always did). Masked
     // records, corrupt slots, the sky and the first-person pixels are untouched. staticScene (the menu's blanket form) wins when both are

@@ -71,8 +71,10 @@ constexpr uint32_t kFlatMonoRefusalCounters = kFlatMonoRefusalSlots + kFlatMonoW
 // The steady-detail depth check's tolerance (flat_mono_shader_source.h, kStaleDepthRel and kStaleDepthFloor, which the resolver's rig
 // holds to these): a stale pixel keeps its camera-term history only where last frame's depth, in the best of the four texels around the
 // position the camera term sends the pixel to, is within max(kFlatMonoStaleDepthFloor, expected * kFlatMonoStaleDepthRelative) of
-// the depth the camera term expects there. Reversed-Z float32 depth (d = near / z): a relative error in d is the same relative
-// error in z at any range. 1% and 1e-6 are the numbers the resolver's own TAA applies in taa() before it trusts history.
+// the depth the camera term expects there; or where those four texels lie on one plane (their cross difference d00 + d11 - d10 - d01 is
+// within that same tolerance) and their bilinear value at the exact position is within it. The second form is for a slope, where no
+// texel is near enough; it has no tolerance of its own. Reversed-Z float32 depth (d = near / z): a relative error in d is the same
+// relative error in z at any range. 1% and 1e-6 are the numbers the resolver's own TAA applies in taa() before it trusts history.
 constexpr double kFlatMonoStaleDepthRelative = 0.01;
 constexpr double kFlatMonoStaleDepthFloor = 1e-6;
 

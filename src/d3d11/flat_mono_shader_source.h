@@ -140,6 +140,18 @@ uint celestialBefore(float2 rawUv, float depth, out float4 before) {
 // doc). True = confirmed; false = refused: the prep refuses the stale slot's history, as it always did, and taa() shows the current
 // colour. The prep calls it for a stale pixel whose camera term was already formed and in range, and only then; taa() for a pixel the
 // prep did not reject.
+// The best of four is a point test, and a point test has an error floor on a slope. A far floor seen at a grazing angle is a plane, and the
+// depth of a plane is affine in screen space (reversed-Z, d = near/z), so across delta pixels it changes by about delta/y of itself, y being
+// the rows below the horizon. The nearest texel is up to half a texel of jitter away from the exact position, so within about 33 rows of the
+// horizon at 960x600 it is off by more than 1% in most frames and a still camera showed those rows raw. When the point test refuses, the
+// four texels are asked once more as a footprint: they confirm the surface if they lie on one plane (the cross difference
+// d00+d11-d10-d01, zero for any plane, is within the tolerance) and their bilinear value at the exact position is within the tolerance of
+// `expected`. A slope is exactly bilinear and passes. A step in depth is not a plane: a corner or a
+// diagonal edge has a large cross difference, and an edge along one axis leaves a bilinear value between the two sides that is not the
+// surface's depth. A disocclusion or a mover shows another depth and fails the second test. The tolerance is `expected`'s for both: it is
+// the pixel being validated that defines it, never the texels, whose magnitude an occluder inflates. Only a footprint wholly inside the
+// image whose four texels are finite and non-zero (no sky, no cleared texel, no clamped copy of an edge texel) takes this path; anywhere
+// else the answer is the point test's.
 static const float kStaleDepthRel=.01, kStaleDepthFloor=1e-6;   // named for the rule they were written for; taa() shares them
 bool historyDepthMatches(float2 prev,float expected) {
     const int2 hi=int2(size.xy)-1;
@@ -148,7 +160,15 @@ bool historyDepthMatches(float2 prev,float expected) {
     const float tol=max(kStaleDepthFloor,expected*kStaleDepthRel);
     float best=3.402823e38;
     [unroll]for(int y=0;y<2;++y)[unroll]for(int x=0;x<2;++x)best=min(best,abs(HistoryDepth.Load(int3(clamp(base+int2(x,y),0,hi),0))-expected));
-    return best<=tol;
+    if(best<=tol)return true;
+    if(any(base<0) || any(base>=hi))return false;
+    const float d00=HistoryDepth.Load(int3(base,0)), d10=HistoryDepth.Load(int3(base+int2(1,0),0));
+    const float d01=HistoryDepth.Load(int3(base+int2(0,1),0)), d11=HistoryDepth.Load(int3(base+int2(1,1),0));
+    const float4 footprint=float4(d00,d10,d01,d11);
+    if(!all(isfinite(footprint)) || !all(footprint>0))return false;
+    const float2 at=raster-float2(base);
+    const float planeDepth=lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y);
+    return abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol;
 }
 // 0 = camera term, 1 = exact engine motion, 2 = explicitly reject history, 3 = the camera term if the depth check confirms it (a stale
 // slot with flags.w==2). `cls` is what the pixel is (kClass*): the refusal census and view read it, nothing else does, and no return

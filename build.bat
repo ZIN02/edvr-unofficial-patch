@@ -603,6 +603,7 @@ python tools\compile_cache.py --prune --keep thunks.obj cl.exe %CFLAGS% %NGXFLAG
     "src\d3d11\menu_keys.cpp" ^
     "src\d3d11\menu_panel.cpp" "src\d3d11\perf_monitor.cpp" "src\d3d11\native_perf_history.cpp" "src\d3d11\native_benchmark_collector.cpp" ^
     "src\d3d11\stall_watch.cpp" "src\d3d11\vram_tick.cpp" ^
+    "src\d3d11\mem_tick.cpp" ^
     "src\d3d11\native_menu.cpp" ^
     "src\d3d11\native_temporal.cpp" "src\d3d11\flat_temporal.cpp" "src\d3d11\flat_compute_capture.cpp" "src\d3d11\flat_compute_readback.cpp" ^
     "src\d3d11\flat_runtime.cpp" "src\d3d11\flat_mono_resolve.cpp" "src\d3d11\xess_engine.cpp" "src\d3d11\map_easu.cpp" "src\d3d11\map_smaa.cpp" "src\d3d11\flat_projection_scope.cpp" "src\d3d11\flat_projection_runtime.cpp" ^
@@ -1333,6 +1334,26 @@ if errorlevel 1 ( echo [edvr] ERROR: vram_watch_test build failed & exit /b 1 )
 "%OBJ%\vramwatch\vram_watch_test.exe" --dry-run || exit /b 1
 "%OBJ%\vramwatch\vram_watch_test.exe" --self-test "%ROOT%" || exit /b 1
 python "tools\vram_watch_test\mutants.py" --self-test || exit /b 1
+exit /b 0
+
+:rig_mem_watch_test
+echo [edvr] === mem_watch_test.exe ===
+REM Build gate for the process memory watch (src\common\mem_watch.h, src\common\log_reserve.h, src\d3d11\mem_tick.cpp,
+REM docs\memory-growth-2026-10-22.md): the cadence (a line every 60 s, every 5 s while the machine's commit is at or over 90% of
+REM its limit, the armed line first whatever the figures), the lines' text (whole MB rounded, a group that cannot be read left out
+REM and named once in the armed line, egpu=implausible and eheap=implausible, every line inside its buffer), the plausibility
+REM checks on the figures read out of Elite's memory (each rejection), the log's post-cap reserve accounting (1 MiB, one notice,
+REM then nothing), and by source text that hookedPresent calls memWatchTick once after the graphics memory watch's tick, that
+REM every mem: line is written through Log::noteReserved, and that build.bat compiles the glue. It links nothing of the DLLs.
+if not exist "%OBJ%\memwatch" mkdir "%OBJ%\memwatch"
+%CC% /nologo /O2 /MT /std:c++17 /EHsc /W4 /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
+    /D_CRT_SECURE_NO_WARNINGS /I"src\common" ^
+    /Fo"%OBJ%\memwatch"\ /Fe"%OBJ%\memwatch\mem_watch_test.exe" ^
+    "tools\mem_watch_test\mem_watch_test.cpp" ^
+    /link /INCREMENTAL:NO
+if errorlevel 1 ( echo [edvr] ERROR: mem_watch_test build failed & exit /b 1 )
+"%OBJ%\memwatch\mem_watch_test.exe" --dry-run || exit /b 1
+"%OBJ%\memwatch\mem_watch_test.exe" --self-test "%ROOT%" || exit /b 1
 exit /b 0
 
 :rig_skin_ledger_test

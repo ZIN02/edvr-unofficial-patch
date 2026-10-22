@@ -2,11 +2,11 @@
 
 ## Status
 
-- FLAT PORT (10-15) and its GATE (10-22) BUILT, NOT FLOWN: flat rows carry no
+- FLAT PORT (10-15) and its GATE (10-22) FLOWN OK 2026-10-22 (7c81d42a): flat rows carry no
   supercruise translation, so flat binds eye 0's records at t18 (`celestialBefore`).
   The port never ran: its gate read journalSupercruise*(), which answer flat with
   "unknown" (edvr_gfx_20261022_044106, planet still smears); flat now reads Flags
-  bit 4 via journalFlatSupercruise. Flight: `gate ON`, then `flat celestial:`.
+  bit 4 via journalFlatSupercruise. Sean: "planet looks good in super cruise".
 - State: planet patch motion FLOWN OK 2026-10-07 (v0.18.2-62-gc136ba80 on
   Frontier, ON MAIN c947620c). Sean: "Planet looks great now". Each body's
   rigid motion, read from its patch constants on the CPU, replaces the camera
@@ -952,3 +952,15 @@ Flight signature: `gate ON ... Status.json Flags says supercruise` at entry and
 If the smear remains with those present, the next question is whether pixels
 take path 12 in flat, which nothing counts yet (the pixel count is fed by the
 VR pass only).
+
+Flown 2026-10-22 06:21 (`7c81d42a`, `edvr_gfx_20261022_060530`). Sean: the
+planet looks good in supercruise.
+- `celestial motion: gate ON at frame 47591 ... (Status.json Flags says
+  supercruise)`;
+- `flat celestial: planet patch records bound to the flat resolve (t18): 1
+  body with a record, nearest patch 185 km, translation |t| 5.57 m/frame`;
+- the 5 s lines: 5.5 patches per frame, 5.4 matched, 1 body.
+
+The flat port runs and its records reach the resolve. The gate also says
+OFF with "Status.json Flags says not supercruise" in normal space, so the
+flat reader works both ways.

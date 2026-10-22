@@ -17,8 +17,10 @@
 //      where the point test refused a band of it; the borders, the horizon row and a sloped roof's edge against the sky decided as before; a near object
 //      that moved away still refused; a surface 2% deeper last frame (a mover receding 2% a frame) still refused, one 0.9% deeper kept;
 //   4. the 16x16 scenes the GPU rig runs, each held to what it is for and to catching each mutant of the rule the rig is held to.
-// Every mutant of the rule (a Rule with a field changed) must fail one of 2-4, and every rule-level mutant the GPU rig runs must change the prediction
-// of one of the GPU scenes.
+// Every mutant of the rule (a Rule with a field changed) must fail one of 2-4 or one of flat_history_junction_tests.h's (the junction test, the third form of
+// the check: its text, the camera math it needs, its single footprints and its 960x600 scenes), and every rule-level mutant the GPU rig runs must change the
+// prediction of one of the GPU scenes. The cases here run with the junction test on, as shipped: the scenes of 3 and 4 are the ones the footprint test was
+// written for, and it must leave their answers as they were (a still floor is kept in full; the object that moved away, the sky and the movers are not).
 //
 // Geometry. The frames (3) model the prep's call: the position handed to the check is the previous position of the raster texel's own surface point (its
 // true position, q + .5 - c, run through the camera term), and `expected` is that same point's depth, so a still plane's history is exactly bilinear.
@@ -36,6 +38,7 @@
 #include "../../src/d3d11/flat_mono_refusal.h"
 #include "../../src/d3d11/flat_mono_shader_source.h"
 #include "flat_history_depth_model.h"
+#include "flat_history_junction_tests.h"
 
 namespace flat_history_depth {
 using histdepth::Image;
@@ -80,7 +83,8 @@ inline const std::vector<std::string>& pins() {
         "if(!all(isfinite(footprint)) || !all(footprint>0))return false;",
         "const float2 at=raster-float2(base);",
         "const float planeDepth=lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y);",
-        "return abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol;\n}",
+        "if(abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol)return true;",
+        "return junctionPersists(base,raster,footprint,expected,tol);\n}",
     };
     return p;
 }
@@ -92,7 +96,7 @@ inline size_t countOf(const std::string& text, const std::string& needle) {
 // Empty when the source holds the rule; otherwise the first thing it does not hold.
 inline std::string pinFailure(const std::string& source) {
     const size_t first = source.find("bool historyDepthMatches(");
-    const std::string tail = "return abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol;\n}";
+    const std::string tail = "return junctionPersists(base,raster,footprint,expected,tol);\n}";
     const size_t last = source.find(tail);
     if (first == std::string::npos || last == std::string::npos || last < first) return "the function's end is not where the model ends it";
     const std::string fn = source.substr(first, last + tail.size() - first);
@@ -103,8 +107,9 @@ inline std::string pinFailure(const std::string& source) {
         if (at < from) return "out of order: " + pin;
         from = at;
     }
-    // 1 (the point test's) + 4 (the footprint's) reads, all inside the function.
-    if (countOf(source, "HistoryDepth.Load(") != 5 || countOf(fn, "HistoryDepth.Load(") != 5) return "HistoryDepth is read somewhere else, or not by every texel";
+    // 1 (the point test's) + 4 (the footprint's) reads inside the function, and the 4 of the junction test's quad (historyQuad, pinned in
+    // flat_history_junction_tests.h).
+    if (countOf(source, "HistoryDepth.Load(") != 9 || countOf(fn, "HistoryDepth.Load(") != 5) return "HistoryDepth is read somewhere else, or not by every texel";
     return std::string();
 }
 
@@ -126,8 +131,10 @@ inline void textPins(Sink& t) {
         {"if(!all(isfinite(footprint)) || !all(footprint>0))return false;", "if(!all(footprint>0))return false;"},
         {"lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y)", "(d00+d10+d01+d11)*.25"},
         {"lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y)", "lerp(lerp(d00,d10,at.y),lerp(d01,d11,at.y),at.x)"},
-        {" && abs(d00+d11-d10-d01)<=tol;", ";"},
+        {" && abs(d00+d11-d10-d01)<=tol)return true;", ")return true;"},
         {"abs(d00+d11-d10-d01)<=tol", "abs(d00+d11-d10-d01)<=8.0*tol"},
+        {"return junctionPersists(base,raster,footprint,expected,tol);", "return false;"},
+        {"return junctionPersists(base,raster,footprint,expected,tol);", "return junctionPersists(base,raster,footprint,expected,2.0*tol);"},
         {"abs(planeDepth-expected)<=tol", "abs(planeDepth-expected)<=2.0*tol"},
         {"if(best<=tol)return true;", "if(best<=tol)return true;\n    if(best<=tol)return true;"},
         {"const float2 at=raster-float2(base);", "const float2 at=float2(.5,.5);"},
@@ -293,20 +300,28 @@ template <class Before, class Now, class Visit>
 inline void sweep(Before before, Now now, int x0, int y0, int x1, int y1, const Rule& rule, Visit visit) {
     const Rule old = pointOnly();
     const int fx0 = std::max(0, x0 - 2), fx1 = std::min(W, x1 + 3), fy0 = std::max(0, y0 - 2), fy1 = std::min(H, y1 + 3);
+    Image hist(W, H), cur(W, H);   // each phase rewrites the region the pixels read; nothing outside it is read
     for (unsigned n = 0; n < kCycle; ++n) {
         float cx, cy, px, py;
         histdepth::rig16::phaseOf(n, &cx, &cy);
         histdepth::rig16::phaseOf(n + kCycle - 1, &px, &py);
-        Image hist(W, H);
         for (int y = fy0; y < fy1; ++y)
-            for (int x = fx0; x < fx1; ++x) hist.at(x, y) = before(float(x) + 0.5f - px, float(y) + 0.5f - py);
+            for (int x = fx0; x < fx1; ++x) {
+                hist.at(x, y) = before(float(x) + 0.5f - px, float(y) + 0.5f - py);
+                cur.at(x, y) = now(float(x) + 0.5f - cx, float(y) + 0.5f - cy);
+            }
+        // The junction test reads this frame's depth and the cameras: the camera is still.
+        histdepth::CurrentFrame frame;
+        frame.depth = &cur;
+        frame.now = frame.old = histdepth::stillCamera();
+        frame.jx = cx; frame.jy = cy;
         for (int y = y0; y < y1; ++y)
             for (int x = x0; x < x1; ++x) {
                 const float tx = float(x) + 0.5f - cx, ty = float(y) + 0.5f - cy;
                 const float expected = now(tx, ty);
                 if (!(expected > 0)) continue;
                 const float u = tx / float(W), v = ty / float(H);
-                visit(y, histdepth::decide(hist, u, v, px, py, expected, rule), histdepth::decide(hist, u, v, px, py, expected, old));
+                visit(y, histdepth::decide(hist, u, v, px, py, expected, rule, &frame), histdepth::decide(hist, u, v, px, py, expected, old));
             }
     }
 }
@@ -479,6 +494,7 @@ inline void rigScenes(Sink& t, const Rule& r) {
         const histdepth::rig16::Scene s = histdepth::rig16::build(plan[i]);
         const auto v = histdepth::rig16::predict(s, r), p = histdepth::rig16::predict(s, old);
         size_t shown = 0, ambiguous = 0, solid = 0, solidKept = 0, openDiffers = 0, reachDiffers = 0, byFootprint = 0, pointKept = 0, newKept = 0;
+        size_t byJunction = 0, ghosts = 0, ghostsKept = 0, reachedRefused = 0;
         for (size_t k = 0; k < v.size(); ++k) {
             if (!(s.now[k] > 0)) continue;
             ++shown;
@@ -486,6 +502,10 @@ inline void rigScenes(Sink& t, const Rule& r) {
             pointKept += p[k].kept;
             newKept += v[k].kept;
             byFootprint += v[k].byFootprint;
+            byJunction += v[k].byJunction;
+            reachedRefused += v[k].own >= 0 && !v[k].kept;
+            // The hull that moved 2 columns right: the pixels whose centre it covered and no longer covers (columns 5 and 6, rows 5..9) show the floor now.
+            if (plan[i].kind == 'g' && (k % size_t(histdepth::rig16::N) == 5 || k % size_t(histdepth::rig16::N) == 6) && k / size_t(histdepth::rig16::N) >= 5 && k / size_t(histdepth::rig16::N) <= 9) { ++ghosts; ghostsKept += v[k].kept; }
             const bool reachesObject = plan[i].kind == 'o' && v[k].highest >= 0.04f;
             if (reachesObject) reachDiffers += v[k].kept != p[k].kept;
             else if (v[k].solid) { ++solid; solidKept += v[k].kept; }
@@ -509,6 +529,27 @@ inline void rigScenes(Sink& t, const Rule& r) {
                                                   "and the point test alone refuses more than the rule", i, s.name);
                 t.expect(openDiffers == 0 && reachDiffers == 0 && solid > 0 && solidKept == solid && pointKept < newKept, what);
                 break;
+            case 'w':
+                std::snprintf(what, sizeof(what), "GPU scene %zu (%s): the junction test keeps a row of pixels the footprint test refused (%zu)", i, s.name, byJunction);
+                t.expect(byJunction >= 8, what);
+                break;
+            case 'p':
+                std::snprintf(what, sizeof(what), "GPU scene %zu (%s): the junction test keeps the floor at the hull's edges the footprint test refused (%zu)", i, s.name, byJunction);
+                t.expect(byJunction >= 3, what);
+                break;
+            case 'g':
+                std::snprintf(what, sizeof(what), "GPU scene %zu (%s): the %zu pixels the hull uncovered are all refused (%zu kept), and the ghost guard is reached (%zu pixels have their own surface and are refused by half b)",
+                              i, s.name, ghosts, ghostsKept, reachedRefused);
+                t.expect(ghosts == 10 && ghostsKept == 0 && reachedRefused >= 4, what);
+                break;
+            case 'i': {
+                const auto nf = histdepth::rig16::predict(s, [] { Rule x; x.footprint = false; return x; }());
+                size_t withoutFootprint = 0;
+                for (size_t k = 0; k < nf.size(); ++k) withoutFootprint += nf[k].kept && s.now[k] > 0;
+                std::snprintf(what, sizeof(what), "GPU scene %zu (%s): the footprint test keeps a pixel no quad beside it can (%zu kept by the footprint test, %zu kept without it)", i, s.name, byFootprint, withoutFootprint);
+                t.expect(byFootprint >= 1 && withoutFootprint < newKept, what);
+                break;
+            }
             default:   // 'c'
                 std::snprintf(what, sizeof(what), "GPU scene %zu (%s): the footprint test keeps nothing (not planar)", i, s.name);
                 t.expect(byFootprint == 0, what);
@@ -526,7 +567,9 @@ struct Mutant {
 inline std::vector<Mutant> mutants() {
     std::vector<Mutant> m;
     const auto add = [&](const char* name, bool rigRun, auto edit) { Rule r; edit(r); m.push_back({name, r, rigRun}); };
-    add("the point test alone (the check as it was)", true, [](Rule& r) { r.footprint = false; });
+    // The footprint test (the second form).
+    add("the point test alone (the check as it was before the footprint test)", true, [](Rule& r) { r.footprint = false; r.junction = false; });
+    add("no footprint test (the junction test stays)", true, [](Rule& r) { r.footprint = false; });
     add("no cross difference test", true, [](Rule& r) { r.planar = false; });
     add("the cross difference is allowed 8 tolerances", true, [](Rule& r) { r.planarScale = 8.0f; });
     add("the mean of the four texels, not the value at the exact position", true, [](Rule& r) { r.exactPosition = false; });
@@ -537,6 +580,18 @@ inline std::vector<Mutant> mutants() {
     add("the tolerance is 0.5%", false, [](Rule& r) { r.rel = 0.005f; });
     add("the floor is zero", false, [](Rule& r) { r.floor = 0.0f; });
     add("the floor is 1e-5", false, [](Rule& r) { r.floor = 1e-5f; });
+    // The junction test (the third form). The GPU rig's camera is still and its rows carry no jitter, so the two camera mutants are the CPU cases' alone.
+    add("no junction test (the check as it was before it)", true, [](Rule& r) { r.junction = false; });
+    add("no persistence half: the pixel's own surface beside the footprint is enough", true, [](Rule& r) { r.persist = false; });
+    add("a footprint texel that lands outside the image reads the current depth's edge texels", true, [](Rule& r) { r.insideCheck = false; });
+    add("the camera-origin term is not reversed (cameraAfter keeps cameraBefore's sign)", false, [](Rule& r) { r.reverseOrigin = true; });
+    add("cameraAfter keeps the NDC shift the rows carry", false, [](Rule& r) { r.unjitter = false; });
+    add("the adjacent quad's cross difference is not asked", true, [](Rule& r) { r.ownPlanar = false; });
+    add("the adjacent quad's plane at the exact position is not compared with the expected depth", true, [](Rule& r) { r.ownExtrapolation = false; });
+    add("an adjacent quad partly outside the image is asked, its edge texels repeated", false, [](Rule& r) { r.ownWhole = false; });
+    add("a zero or non-finite texel does not bar the adjacent quad", false, [](Rule& r) { r.ownSolid = false; });
+    add("the adjacent quads are asked up, down, left, right", false, [](Rule& r) { r.reversedOrder = true; });
+    add("a footprint texel is another surface only 8 tolerances off the plane", true, [](Rule& r) { r.offPlaneScale = 8.0f; });
     return m;
 }
 
@@ -559,12 +614,18 @@ inline int flatHistoryDepthTests() {
         textPins(t);
         failures += t.failures;
     }
+    failures += flat_history_junction::runText(true);
     failures += run(Rule(), true);
+    failures += flat_history_junction::run(Rule(), true);
     // Mutation controls: the tests fail every mutant of the rule.
     int caught = 0;
     const std::vector<Mutant> list = mutants();
-    for (const Mutant& m : list) {
-        const int failed = run(m.rule, false);
+    std::vector<Rule> mutantRules;
+    for (const Mutant& m : list) mutantRules.push_back(m.rule);
+    const std::vector<int> junctionFailures = flat_history_junction::runAll(mutantRules, false);   // one pass of the 960x600 scenes serves every mutant
+    for (size_t index = 0; index < list.size(); ++index) {
+        const Mutant& m = list[index];
+        const int failed = run(m.rule, false) + junctionFailures[index];
         if (failed > 0) ++caught;
         else { std::printf("FAIL: history depth mutation \"%s\" is not caught by the CPU cases\n", m.name); ++failures; }
         if (m.rigRun) {

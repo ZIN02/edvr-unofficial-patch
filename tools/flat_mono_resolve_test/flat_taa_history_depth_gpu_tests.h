@@ -36,6 +36,15 @@
 //     object or the sky), a surface that is a checker's interpolation (not planar: refused), and a horizon on a texel row (the zero texel is not asked).
 //     The kernel is compared pixel for pixel with the CPU model of the rule, which tools\flat_temporal_test holds to the HLSL's text and to those scenes
 //     (a pixel within 0.2% of a threshold is left out). The new rule's own mutants are run against this test alone.
+//  4. A junction that is still there keeps its history, one that left does not (design doc section 104, 2026-10-22, "Junctions: the residual band, and the
+//     persistence test"). When the point test and the footprint test both refuse, historyDepthMatches asks junctionPersists: one of the four quads of texels
+//     edge-adjacent to the footprint (right, left, down, up) is planar and its plane at the exact position has the expected depth (the pixel's own surface),
+//     and every footprint texel off that plane is carried into this frame (cameraAfter) onto a current depth texel within 1% (floor 1e-6) of its depth. taa()
+//     reads the current depth at t1 (the prep's output) and the camera rows from the same constants as the prep. The same rig's scenes add a floor meeting a
+//     wall and a floor under a parked hull (kept where the footprint test refuses), a hull that moved 2 pixels (the floor it uncovered is refused, and the
+//     refusal is the persistence half's: the ghost guard is reached), and a two-texel tilted patch (kept by the footprint test, which no quad beside it
+//     replaces). The rig's camera is still and its rows carry no jitter, so the camera-origin and NDC-shift mutants are the CPU cases' alone
+//     (tools\flat_temporal_test\flat_history_junction_tests.h).
 #pragma once
 #include <d3dcompiler.h>
 #include <string>
@@ -283,10 +292,26 @@ inline void mutationChecks(Rig& r) {
         {"the tolerance is the smaller of the floor and the relative term", "max(kStaleDepthFloor,expected*kStaleDepthRel)",
          "min(kStaleDepthFloor,expected*kStaleDepthRel)", nullptr},
     };
-    // The footprint test's own mutants (the second half of historyDepthMatches): each must fail the slope test, which is the only test that asks it.
+    // The footprint test's and the junction test's own mutants (the second half of historyDepthMatches and junctionPersists): each must fail the slope test, which is
+    // the only test that asks them.
+    static const char* const kFootprintKeep = "if(abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol)return true;";
+    static const char* const kJunctionCall = "return junctionPersists(base,raster,footprint,expected,tol);";
+    static const char* const kOwnTests =
+        "if(!(abs(quad.x+quad.w-quad.y-quad.z)<=tol) || !(abs(quadDepthAt(quad,raster-float2(at))-expected)<=tol))continue;";
     static const Mutant footprintMutants[] = {
-        {"the footprint test is gone: the point test alone, the rule as it was", "return abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol;", "return false;", nullptr},
-        {"the footprint's cross difference is not asked", " && abs(d00+d11-d10-d01)<=tol;", ";", nullptr},
+        {"the footprint and junction tests are gone: the point test alone, the rule as it was",
+         "if(abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol)return true;\n    return junctionPersists(base,raster,footprint,expected,tol);", "return false;", nullptr},
+        {"the footprint test is gone (the junction test stays)", kFootprintKeep, "", nullptr},
+        {"the junction test is gone (the rule as it was before it)", kJunctionCall, "return false;", nullptr},
+        {"the junction test has no persistence half: the pixel's own surface beside the footprint is enough", "[loop]for(int k=0;k<4;++k) {", "[loop]for(int k=0;k<0;++k) {", nullptr},
+        {"a footprint texel that lands outside the image reads the current depth's edge texels",
+         "if(!isfinite(e) || !all(cur>=0) || !all(cur<float2(hi)))return false;\n        const int2 curBase=int2(floor(cur));",
+         "if(!isfinite(e))return false;\n        const int2 curBase=clamp(int2(floor(clamp(cur,-1.0,float2(hi)+1.0))),0,hi-1);", nullptr},
+        {"the adjacent quad's cross difference is not asked", kOwnTests, "if(!(abs(quadDepthAt(quad,raster-float2(at))-expected)<=tol))continue;", nullptr},
+        {"the adjacent quad's plane at the exact position is not compared with the expected depth", kOwnTests, "if(!(abs(quad.x+quad.w-quad.y-quad.z)<=tol))continue;", nullptr},
+        {"a footprint texel is another surface only 8 tolerances off the plane", "if(abs(depthThen-quadDepthAt(own,float2(texel-ownBase)))<=tol)continue;",
+         "if(abs(depthThen-quadDepthAt(own,float2(texel-ownBase)))<=8.0*tol)continue;", nullptr},
+        {"the footprint's cross difference is not asked", "&& abs(d00+d11-d10-d01)<=tol)return true;", ")return true;", nullptr},
         {"the footprint's cross difference may be 8 tolerances", "abs(d00+d11-d10-d01)<=tol", "abs(d00+d11-d10-d01)<=8.0*tol", nullptr},
         {"the mean of the four texels stands for the value at the exact position", "lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y)", "(d00+d10+d01+d11)*.25", nullptr},
         {"the horizontal fraction weights the rows and the vertical one the columns", "lerp(lerp(d00,d10,at.x),lerp(d01,d11,at.x),at.y)",
@@ -391,8 +416,10 @@ inline void sourceTests() {
           "taa history depth: taa() asks the shared history depth check (the best of four texels, 1% with a 1e-6 floor) before it trusts history");
     check(!taa.empty() && taa.find("HistoryDepth.Load") == std::string::npos && taa.find("oldQ") == std::string::npos,
           "taa history depth: taa() no longer reads one history depth texel itself");
-    check(source.find("return abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol;") != std::string::npos,
-          "taa history depth: the shared check also passes a planar footprint whose bilinear value is within the tolerance (tools\\flat_temporal_test holds the whole text)");
+    check(source.find("if(abs(planeDepth-expected)<=tol && abs(d00+d11-d10-d01)<=tol)return true;\n    return junctionPersists(base,raster,footprint,expected,tol);") != std::string::npos,
+          "taa history depth: the shared check also passes a planar footprint whose bilinear value is within the tolerance, and then a junction that persists (tools\\flat_temporal_test holds the whole text)");
+    check(!taa.empty() && taa.find("SceneDepth") == std::string::npos,
+          "taa history depth: taa() itself reads no depth; the shared check reads the current depth (t1, which the resolver binds for it) and the rows from the constants every kernel shares");
 }
 }  // namespace taadepth
 

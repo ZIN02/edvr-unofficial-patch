@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`, v0.20.2-20-g0419a682): the menu's stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth. The user turned DoF off and the menu was treated. Fix (alias the composite like the menu copy) NOT built. See "2026-10-22: the 3D main menu at render below output".
+- **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`): the stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth; DoF off fixed it (user). BUILT, NOT FLOWN: the composite taken as the scene HDR's alias (`dofCompositeVerified`, `flat dof composite:` line). See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed. (The 2026-10-17 RC4 state moved to Status detail below, 2026-10-21, unchanged.)
 - Established or qualified: camera ownership/jitter (26-28); F8 and menu
@@ -18370,6 +18370,42 @@ a treated menu ghosts. Candidate fix: accept the composite as an alias of its
 t0 scene H in flatRuntimeObserveContract, as the menu copy (DEF19B03/DED87960)
 is, with a context check like verifyMenuHdrCopy; log every conflict on the chain
 in the same flight.
+
+Built, not flown (branch claude/dof-composite-alias, from the cause logger):
+the depth-of-field composite is accepted as the scene HDR's alias.
+
+- **Model** (flat_runtime_model.h): a format 26 draw with VS `20F383BB` and PS
+  `BF2302BC` is checked like the menu copy (a verified draw; a source HDR with
+  draws, depth, a current same camera and no earlier conflict; a fresh depthless
+  destination; a full viewport). Accepted, the destination inherits the source's
+  depth and camera (`flatRuntimeInheritSceneHdr`, now shared with the menu
+  copy) and is marked `dofInherited`, so a compute write into it invalidates
+  it as for the menu copy. It is NOT `menuInherited`: the menu's static-scene
+  stale-slot policy keys on the plain menu copy, so this frame reaches the
+  resolver as an ordinary scene frame. A refusal keeps the source's own first
+  conflict where it has one, and records the failed conditions as `kDof*` bits.
+- **Context check** (flat_runtime.cpp `verifyDofComposite`): the actual shaders,
+  the scene HDR at t0 and the R16G16B16A16 typeless blur at t1 as one-mip 2D
+  views of the scene's size, a depthless R11G11B10 output of that size, a full
+  viewport. Trace flag bit 18 carries it to replay.
+- **Log:** `flat dof composite: accepted=N refused=M last-refusal-frame=F
+  last-refusal-mask=XXXX source-first-bad=<cause>` every 5 s. The mask bits are
+  the `kDof*` constants in order (0 not verified, 1 no input, 2 no source, 3
+  source has no draws, 4 source already bad, 5 layout changed, 6 no camera, 7
+  format, 8 size, 9 depth, 10 order, 11 stale camera, 12 camera differs, 13
+  destination written, 14 output has depth, 15 viewport).
+- **Rig:** the menu copy's replay test now runs for both pairs (flat_temporal_test
+  `flatRuntimeInheritedCopyTests`): valid, unverified, source depth, viewport,
+  layout, stale, camera change, explicit write, missing, alias, prior destination
+  write, compute overwrite, wrong pair. The `kCopyVerify` scope count pin is 5.
+
+Flight signature, the same user at the menu with Depth of Field on: `flat dof
+composite: accepted>0` and the stand-down ends at the menu (a treated menu:
+`flat runtime: ... last=treated-jittered`). With `refused>0 accepted=0` the mask
+and `source-first-bad` name what else stands on the chain: the late write
+`94D5C556/912477AE` into the scene HDR is the candidate (`hdr-camera-changed`).
+Watch the menu hologram and the ship for ghosting and shimmer: it is treated as an
+ordinary scene frame, not with the menu's static-scene policy.
 
 - Risk if the menu is later treated: a rotating hologram can ghost (the loading
   screen's ghost, flat-loading-hologram-ghost-2026-10-09.md).

@@ -543,6 +543,10 @@ struct State {
     uint32_t unknownProjectionBytesSaved=0,unknownProjectionBytesFailed=0,unknownProjectionStagesAbsent=0;
     uint64_t hdrCopiesAccepted=0,hdrCopiesRefused=0;
     uint64_t menuCopiesAccepted=0,menuCopiesRefused=0;
+    uint64_t dofCompositesAccepted=0,dofCompositesRefused=0;   // the depth-of-field composite's (flat_runtime_model.h), over the session
+    uint32_t dofLastMask=0;                                   // the last refusal's failed conditions (kDof* bits)
+    FlatRuntimeConflict dofLastSourceBad=FlatRuntimeConflict::None;   // ...and the conflict its source HDR already carried
+    uint64_t dofLastFrame=0;
     uint64_t staticSceneFrames=0;
     FlatMonoResolvePreflight plannedResolve{};
     FlatMonoResolvePreflightResult resolvePreflight{};
@@ -1677,6 +1681,51 @@ bool verifyMenuHdrCopy(ID3D11DeviceContext* ctx,FlatRuntimeDraw& draw) {
        count!=1 || k.viewportCount!=1 || std::memcmp(&viewport,k.viewport,sizeof(viewport))!=0 ||
        !flat_mono_detail::fullViewport(k,k.width,k.height))return false;
     k.srvView[0]=input.Get();k.srvResource[0]=source.Get();
+    return true;
+}
+// The depth-of-field composite (flat_runtime_model.h kDofCompositeVs/Ps), read from the context: the actual shaders, the scene HDR at t0 and the
+// blurred image at t1 as plain one-mip 2D views of the scene's size (the HDR and an R16G16B16A16 typeless intermediate), a depthless HDR output
+// of that size, a full viewport. Names the scene HDR's resource at t0 for the model, as the menu copy's verification does.
+constexpr uint64_t kDofCompositeVs=0x20F383BBAC05C031ull;
+constexpr uint64_t kDofCompositePs=0xBF2302BCC7B434DBull;
+bool verifyDofComposite(ID3D11DeviceContext* ctx,FlatRuntimeDraw& draw) {
+    auto& k=draw.key;
+    if(k.vs!=kDofCompositeVs || k.ps!=kDofCompositePs || k.format!=26)return false;
+    flatcpu::Scope verifyCost(flatcpu::kCopyVerify);
+    FlatComputeInternalScope guard;
+    Ptr<ID3D11VertexShader> vs;Ptr<ID3D11PixelShader> ps;
+    Ptr<ID3D11RenderTargetView> rt;Ptr<ID3D11DepthStencilView> ds;
+    ID3D11ShaderResourceView* views[2]={};
+    ctx->VSGetShader(&vs,nullptr,nullptr);ctx->PSGetShader(&ps,nullptr,nullptr);
+    ctx->OMGetRenderTargets(1,&rt,&ds);ctx->PSGetShaderResources(0,2,views);
+    Ptr<ID3D11ShaderResourceView> scene,blurred;scene.Attach(views[0]);blurred.Attach(views[1]);
+    if(lookupShaderHash(vs.Get())!=kDofCompositeVs || lookupShaderHash(ps.Get())!=kDofCompositePs ||
+       !rt || rt.Get()!=k.rtv || ds || !scene || !blurred)return false;
+    Ptr<ID3D11Resource> source,aux,destination;scene->GetResource(&source);blurred->GetResource(&aux);rt->GetResource(&destination);
+    if(!source || !aux || source.Get()==destination.Get() || aux.Get()==destination.Get() || aux.Get()==source.Get() ||
+       destination.Get()!=k.color)return false;
+    Ptr<ID3D11Texture2D> sourceTexture,auxTexture,destinationTexture;
+    source.As(&sourceTexture);aux.As(&auxTexture);destination.As(&destinationTexture);
+    if(!sourceTexture || !auxTexture || !destinationTexture)return false;
+    D3D11_TEXTURE2D_DESC in{},mid{},out{};
+    sourceTexture->GetDesc(&in);auxTexture->GetDesc(&mid);destinationTexture->GetDesc(&out);
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv{},srvAux{};scene->GetDesc(&srv);blurred->GetDesc(&srvAux);
+    D3D11_RENDER_TARGET_VIEW_DESC rtv{};rt->GetDesc(&rtv);
+    UINT count=1;D3D11_VIEWPORT viewport{};ctx->RSGetViewports(&count,&viewport);
+    if(in.Format!=DXGI_FORMAT_R11G11B10_FLOAT || out.Format!=DXGI_FORMAT_R11G11B10_FLOAT ||
+       srv.Format!=DXGI_FORMAT_R11G11B10_FLOAT || rtv.Format!=DXGI_FORMAT_R11G11B10_FLOAT ||
+       srv.ViewDimension!=D3D11_SRV_DIMENSION_TEXTURE2D || srv.Texture2D.MostDetailedMip!=0 ||
+       srv.Texture2D.MipLevels!=1 || srvAux.ViewDimension!=D3D11_SRV_DIMENSION_TEXTURE2D ||
+       srvAux.Texture2D.MostDetailedMip!=0 || rtv.ViewDimension!=D3D11_RTV_DIMENSION_TEXTURE2D ||
+       rtv.Texture2D.MipSlice!=0 || in.MipLevels!=1 || out.MipLevels!=1 || mid.MipLevels!=1 ||
+       in.ArraySize!=1 || out.ArraySize!=1 || mid.ArraySize!=1 ||
+       in.SampleDesc.Count!=1 || out.SampleDesc.Count!=1 || mid.SampleDesc.Count!=1 ||
+       mid.Format!=DXGI_FORMAT_R16G16B16A16_TYPELESS ||
+       in.Width!=k.width || in.Height!=k.height || out.Width!=k.width || out.Height!=k.height ||
+       mid.Width!=k.width || mid.Height!=k.height ||
+       count!=1 || k.viewportCount!=1 || std::memcmp(&viewport,k.viewport,sizeof(viewport))!=0 ||
+       !flat_mono_detail::fullViewport(k,k.width,k.height))return false;
+    k.srvView[0]=scene.Get();k.srvResource[0]=source.Get();
     return true;
 }
 bool verifyCameraIndependentImageSource(ID3D11DeviceContext* ctx,const FlatRuntimeDraw& draw) {
@@ -4552,6 +4601,12 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
         // flat runtime line's last= and accepted counts say why.
         Log::get().note("flat menu HDR copy: accepted=%llu refused=%llu static-scene-frames=%llu; source requires current scene/depth/camera provenance",
             (unsigned long long)s.menuCopiesAccepted,(unsigned long long)s.menuCopiesRefused,(unsigned long long)s.staticSceneFrames);
+        // The depth-of-field composite (flat_runtime_model.h): accepted is a frame whose tone input is the composite's output taken as the
+        // scene HDR's alias. A refusal names its failed conditions (the kDof* bits) and the conflict the source HDR already carried: with
+        // refused above zero and accepted at zero, those two say what else stands on the chain (a late write into the scene HDR, say).
+        Log::get().note("flat dof composite: accepted=%llu refused=%llu last-refusal-frame=%llu last-refusal-mask=%04X source-first-bad=%s",
+            (unsigned long long)s.dofCompositesAccepted,(unsigned long long)s.dofCompositesRefused,(unsigned long long)s.dofLastFrame,
+            s.dofLastMask,flatRuntimeConflictName(s.dofLastSourceBad));
         // The steady-detail rule (always on: the resolver is handed steadyDetail = true at both treatment call sites), every window while a
         // temporal mode runs, zeros included: the resolves whose prep ran the depth check against last frame's depth (ran) and the ones
         // that could not (skipped: a reset frame is neither). "depth-check=0/0" is no frame reaching the resolver in the window; ran=0 with
@@ -5943,6 +5998,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         if(lightIssue.kind!=forward_light::Issue::None)forwardIssue=lightIssue;
         d.hdrCopyVerified=verifyHdrCopy(ctx,d);
         d.menuHdrCopyVerified=verifyMenuHdrCopy(ctx,d);
+        d.dofCompositeVerified=verifyDofComposite(ctx,d);
         d.imageSourceCameraIndependentVerified=verifyCameraIndependentImageSource(ctx,d);
         deferredPlan=verifyDeferredHdrCamera(s,d);
         {
@@ -5956,6 +6012,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     const uint32_t oldImageAccepted=s.prefix.imageCopiesAccepted,oldImageRefused=s.prefix.imageCopiesRefused;
     const uint32_t oldImageFirstWrite=s.prefix.imageCopiesFirstWrite;
     const uint32_t oldMenuAccepted=s.prefix.menuCopiesAccepted,oldMenuRefused=s.prefix.menuCopiesRefused;
+    const uint32_t oldDofAccepted=s.prefix.dofCompositesAccepted,oldDofRefused=s.prefix.dofCompositesRefused;
     const uint32_t cameraProbeAttempt=[&] {
         flatcpu::Scope checks(flatcpu::kCopyChecks);   // F10-only unless it is the camera-conflict draw
         flatcpu::Scope captureCost(flatcpu::kCopyCapture,s.projectionFrames!=0);
@@ -6229,6 +6286,9 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     s.noSceneWindow.firstWriteCopies+=s.prefix.imageCopiesFirstWrite-oldImageFirstWrite;
     s.menuCopiesAccepted+=s.prefix.menuCopiesAccepted-oldMenuAccepted;
     s.menuCopiesRefused+=s.prefix.menuCopiesRefused-oldMenuRefused;
+    s.dofCompositesAccepted+=s.prefix.dofCompositesAccepted-oldDofAccepted;
+    s.dofCompositesRefused+=s.prefix.dofCompositesRefused-oldDofRefused;
+    if(s.prefix.dofCompositesRefused>oldDofRefused){s.dofLastMask=s.prefix.dofRefusalMask;s.dofLastSourceBad=s.prefix.dofSourceBad;s.dofLastFrame=s.prefix.frame;}
     if (s.prefix.targetsUsed > oldTargets) {
         s.colors[oldTargets] = static_cast<ID3D11Resource*>(rt.resource);
         s.depths[oldTargets] = static_cast<ID3D11Resource*>(ds.resource);

@@ -756,16 +756,19 @@ void foregroundProjectionLookupReceipt(State& s, uint64_t vs, uint64_t ps,
         (unsigned long long)c.generation,(unsigned long long)c.mutationSerial,(unsigned long long)c.writeFrame,c.writeSequence,
         c.trackedWidth,c.mapped?1u:0u,c.pending?1u:0u,budget.emitted,FlatFailureReceiptWindow::kDetailLimit);
 }
-// THE MAP FOCUS (2026-10-10). Status.json's GuiFocus 6 is the Galaxy Map, 7 the System Map, 8 the Orrery. The flat runtime reads the
-// journal watcher's flat reader (journalFlatGuiFocus) ONCE per frame, at the frame boundary (flatRuntimeMapFocusFrame), and every answer
-// the frame gives comes from that read: temporal AA off while a map is open (flatUiMapTemporalOff) and the map families' gate
-// (flatRuntimeMapOpenFrame). A frame's answer does not change mid-frame. Each change of the temporal AA answer is logged once.
+// THE MAP FOCUS (2026-10-10). Status.json's GuiFocus 6 is the Galaxy Map, 7 the System Map, 8 the Orrery, and since 2026-10-22 9 is the
+// Full System Scanner, which is handled as a map. The flat runtime reads the journal watcher's flat reader (journalFlatGuiFocus) ONCE per
+// frame, at the frame boundary (flatRuntimeMapFocusFrame), and every answer the frame gives comes from that read: temporal AA off while
+// a map or the scanner is open (flatUiMapTemporalOff) and the map families' gate (flatRuntimeMapOpenFrame, the three maps only). A frame's
+// answer does not change mid-frame. Each change of the temporal AA answer, and each switch from one such screen straight to another, is
+// logged once.
 struct MapFocusWatch {
     bool focusKnown = false;    // the watcher has reported GuiFocus at least once this session
     uint32_t focus = 0;         // the last GuiFocus it reported, while known
     bool frameKnown = false;    // this frame's read: the watcher reported a GuiFocus
     uint32_t frameFocus = 0;    // ...and its value, while known
-    bool temporalOff = false;   // temporal AA is off this frame (GuiFocus 6, 7 or 8: flat_ui_layer_math.h flatUiMapTemporalOff)
+    bool temporalOff = false;   // temporal AA is off this frame (GuiFocus 6, 7, 8 or 9: flat_ui_layer_math.h flatUiMapTemporalOff)
+    uint32_t offFocus = 0;      // the GuiFocus the off answer was given for, while temporalOff (named when the screen is left)
     uint32_t aaNoted = 0;       // the temporal AA transition lines written
 };
 MapFocusWatch& mapFocusWatch() { static MapFocusWatch* p = new MapFocusWatch; return *p; }
@@ -778,26 +781,30 @@ void flatRuntimeMapFocusFrame() {
     w.frameKnown = known;
     w.frameFocus = known ? focus : 0;
     const bool off = flatUiMapTemporalOff(known, focus);
-    if (off != w.temporalOff) {
+    const bool switched = off && w.temporalOff && focus != w.offFocus;   // straight from one such screen to another
+    if (off != w.temporalOff || switched) {
+        const uint32_t left = w.offFocus;
         w.temporalOff = off;
+        w.offFocus = off ? focus : 0;
         if (w.aaNoted < kMapFocusNoteCap) {
             ++w.aaNoted;
             if (off)
-                Log::get().note("flat map aa: temporal AA off on %s (GuiFocus %u): no accumulation, no jitter; the UI layer keeps the map's "
-                                "text and markers", flatUiMapTemporalName(focus), focus);
+                Log::get().note("flat map aa: temporal AA off on %s (GuiFocus %u): no accumulation, no jitter; the UI layer keeps the "
+                                "screen's text and markers", flatUiMapTemporalName(focus), focus);
             else if (known)
-                Log::get().note("flat map aa: temporal AA on again (GuiFocus %u)", focus);
+                Log::get().note("flat map aa: temporal AA on again after %s (GuiFocus %u)", flatUiMapTemporalName(left), focus);
             else
-                Log::get().note("flat map aa: temporal AA on again (GuiFocus unknown)");
+                Log::get().note("flat map aa: temporal AA on again after %s (GuiFocus unknown)", flatUiMapTemporalName(left));
         }
     }
 }
-// Temporal AA is off this frame: a map is open (the frame's read).
+// Temporal AA is off this frame: a map or the Full System Scanner is open (the frame's read).
 bool flatRuntimeMapTemporalOff() { return mapFocusWatch().temporalOff; }
-// The Galaxy Map (6), the System Map (7) or the Orrery (8) is open, this frame (the frame's read): the map families' gate.
+// The Galaxy Map (6), the System Map (7) or the Orrery (8) is open, this frame (the frame's read): the map families' gate. Not the
+// Full System Scanner (flat_ui_layer_math.h flatUiMapFamiliesOpen).
 bool flatRuntimeMapOpenFrame() {
     const MapFocusWatch& w = mapFocusWatch();
-    return w.frameKnown && (w.frameFocus == 6 || w.frameFocus == 7 || w.frameFocus == 8);
+    return flatUiMapFamiliesOpen(w.frameKnown, w.frameFocus);
 }
 // Row 275's size and its frame-to-frame step (design doc section 104). The float32 spacing at that size is the finest step the camera
 // term can see: a walking step near it reaches the upscaler quantised.
@@ -4442,7 +4449,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
     flatCameraInjectFrame(frame + 1,enabled);
     if(flatCameraInjectTakeHistoryReset()) {s.phase.resetHistory();reset();}
     const FlatCameraRoute phaseRoute=flatCameraInjectRoute();
-    // The frame's one GuiFocus read (flatRuntimeMapFocusFrame) comes first: on the Galaxy Map and the Orrery temporal AA is off, and
+    // The frame's one GuiFocus read (flatRuntimeMapFocusFrame) comes first: on a map and on the Full System Scanner temporal AA is off, and
     // this frame's phase is zero (no jitter, the history restarts). A frame that would have jittered is counted jitter-zeroed.
     flatRuntimeMapFocusFrame();
     const bool phaseWanted = s.work==FlatWork::Full && flatCameraPhaseEnabled(phaseRoute,true,s.observing,s.projection!=nullptr);
@@ -4596,7 +4603,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
                     o.maxStep,o.minStep);
             }
             s.origin={};
-            // The map focus, every window, zeros included: the GuiFocus the watcher last reported, whether temporal AA is off on a map this
+            // The map focus, every window, zeros included: the GuiFocus the watcher last reported, whether temporal AA is off on a map or the scanner this
             // frame, and the watcher's own state (ungated by profile, journalRawStatus). statusSamples=0 with watcher=active is the file never
             // being read; gui-known=0 is the field absent.
             {
@@ -6616,7 +6623,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     if(projection && projection->active() && flatCameraInjectUpstreamOwns())++s.rows.legacyAppliedUnderUpstream;
     // The HDR route treats at its trigger (key auto, the selection selected): the game's pass that reads H next sees the
     // anti-aliased image with its own bindings untouched, and the copy stage below leaves the frame to the route.
-    // Temporal AA off on the Galaxy Map and the Orrery (flat_ui_layer_math.h): the HDR route's temporal resolve does not run, so
+    // Temporal AA off on a map and on the Full System Scanner (flat_ui_layer_math.h): the HDR route's temporal resolve does not run, so
     // the frame goes to the copy route, which runs the spatial recovery in place of it (flatRuntimeMapTemporalOff).
     if (hdrTrigger && s.hdrKey == FlatHdrKey::Auto && s.hdrSelected.selected() && !flatRuntimeMapTemporalOff())
         treatHdr(s.hdrSelected, s.hdr.trigger.srvSlot);
@@ -7000,7 +7007,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
             }
         }
     }
-    // Temporal AA off on the Galaxy Map and the Orrery (flat_ui_layer_math.h flatUiMapTemporalOff): no temporal resolve. The
+    // Temporal AA off on a map and on the Full System Scanner (flat_ui_layer_math.h flatUiMapTemporalOff): no temporal resolve. The
     // frame is the spatial recovery's, at the route's own grid (the same size the resolve would have made, so the UI layer's
     // door arms from it as from a treated frame), with no history and the zero phase the boundary gave it. Treated, so the
     // door arms; the history is not kept, so the first frame after the map restarts it (one reset, the resolver's own).
@@ -7022,8 +7029,8 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
             refuse(s);
             flatUiLayerMapAaCopy(false);
             static uint32_t mapAaRefusedLogged=0;
-            if(mapAaRefusedLogged++<8)Log::get().note("flat map aa: the spatial recovery refused on the map (%s); the frame stays the game's (frame %llu)",
-                spatialReason?spatialReason:"unknown",(unsigned long long)s.prefix.frame);
+            if(mapAaRefusedLogged++<8)Log::get().note("flat map aa: the spatial recovery refused on %s (%s); the frame stays the game's (frame %llu)",
+                flatUiMapTemporalName(mapFocusWatch().offFocus),spatialReason?spatialReason:"unknown",(unsigned long long)s.prefix.frame);
         }
         return;
     }

@@ -23,7 +23,7 @@
   cheap; separate scheduling/capture when it saves copies/sync/per-draw work.
   Defer broad core extraction until flat capture establishes the boundary.
 - **Recommendation:** two installers, one graphics implementation, one temporal pipeline, separate VR/mono adapters; flat enables only temporal AA + support.
-- **10-10 map arcs (section below):** temporal AA OFF, no jitter, while any map is open (GuiFocus 6, 7, 8; built, not flown). The
+- **10-10 map arcs (section below):** temporal AA OFF, no jitter, while any map is open (GuiFocus 6, 7, 8, and 9, the Full System Scanner, from 10-22; built, not flown). The
   plane-motion and per-pixel star-choice work is REMOVED (the stars' parallax, section below). Kept: the map UI families and their zero cancel.
   Map frames below native run SMAA 1x, then AMD's FSR1 EASU, in place of the bilinear tap (shipped for an A/B flight 2026-10-10; section below).
 - **Open:** station/on-foot projection coverage and mixed-camera HDR ownership,
@@ -17180,6 +17180,46 @@ Cost (not timed; WARP timing is not representative): three compute passes at ren
 RG8 about 0.5 MB, weights RGBA8 about 2 MB, blended RGBA16F about 4 MB), plus AreaTex and SearchTex (about 0.2 MB).
 
 Open: the circle's outer-edge max (1.44 px, from 0.99 px). Check on a flight before deciding whether it matters on the planet discs.
+
+### 2026-10-22: the Full System Scanner joins the maps (built, not flown)
+
+Request (maintainer): handle the Full System Scanner (Status.json GuiFocus 9) the same way as the other maps. In flat the scanner view
+showed motion blur as it turned, and some of its UI was crisp while other parts were not.
+
+Evidence, `edvr_gfx_20261022_101031` (flat, XeSS, 960x600 to 1920x1200). From 10:22:18 the log has `journal: Status.json GuiFocus
+present=1 value=9` and `flat map focus 5s: focus=9 temporal-aa-off=0`, so temporal AA ran on the scanner. Between 10:22:24 and 10:22:29
+the runtime treated 150 frames and refused 150 (treated 35999 to 36149, refused 211 to 361; the refusal is `engine-source-not-ready`),
+and of the 150 treated frames 75 were accepted as resets (`accepted-reset-5s=75`) and 75 with history (`accepted-history-5s=75`): the
+history restarted every second frame. The UI layer's holo-panel and target-sprite families were already taking the scanner's panels (30 s
+windows from 10:22:31: holo-panels taken 10615 of 13926 asked, 6325 of 11542, then 19778 of 19778 twice; tone-unproven 7175 and 11330 in the first two,
+none after), so those panels are the crisp part and the scene behind them the blurred one. No map-family pair (canvas 12382D2E / 855C4691,
+sprites BD0FEB32 / 539A4858) is named anywhere in the scanner windows.
+
+Audit of what a map gets, and what the scanner gets (src\d3d11\flat_ui_layer_math.h, flat_runtime.cpp):
+- Temporal AA off, zero phase, history restarted on the exit, the HDR route skipped, the copy route's spatial recovery (SMAA 1x then EASU
+  below native, no RCAS): YES, all behind `flatUiMapTemporalOff`, which now includes 9. The frame is treated, so the UI layer's door arms
+  on every scanner frame, not on the treated half.
+- The UI layer keeps taking the panels (holo, target sprite, flight HUD) at the UI scale: YES, unchanged; with no jitter their cancel is zero.
+- Log lines: YES. `flat map aa: temporal AA off on the Full System Scanner (GuiFocus 9): ...`, and on the way out
+  `flat map aa: temporal AA on again after the Full System Scanner (GuiFocus N)` (the exit now names the screen left, and a switch straight
+  from one such screen to another logs once). `flat map focus 5s` reads `focus=9 temporal-aa-off=1`. The 30 s `flat ui layer map:` line's
+  temporal-off, jitter-zeroed, spatial, spatial-easu and spatial-smaa count scanner frames too; its open-frames stays 0 on the scanner.
+- The map families' gate (kMapCanvas, kMapSprite) and the map tonemap candidate: NO. They are keyed to the map shaders' own pairs, and no
+  scanner draw is identified as one of them; taking an unidentified pair would put a guess into the UI layer. `flatUiMapFamiliesOpen`
+  stays 6, 7, 8 and is pinned so. The tonemap candidate is keyed to its pair, not to the focus, so it is as it was.
+- A config key: none, as for the maps.
+
+Ruled out: GuiFocus 10 (the Detailed Surface Scanner) in the temporal-off set, because it is mostly a 3D planet view that should keep
+temporal AA (the maintainer, 2026-10-22). Its comms and info panel flicker is tracked separately in the UI layer. Pinned as a negative.
+
+Rig: ui_quality_test pins 9 on and 10, 11, 0, 1, 5, 12 and an unknown focus off, the scanner's name, the families' gate (9 and 10 not in
+it), and by source scan the focus code's entry, exit and refusal lines. Not covered: the runtime on a scanner frame, which needs the draw
+scope and a flight.
+
+Flight: open the Full System Scanner and turn it. Expect `flat map aa: temporal AA off on the Full System Scanner (GuiFocus 9)` once on
+entry, `flat map focus 5s: focus=9 temporal-aa-off=1` while it is open, the 30 s map line with temporal-off, jitter-zeroed and spatial
+equal (no-copy and spatial-refused 0), the scanner view no longer smearing as it moves, and `temporal AA on again after the Full System
+Scanner (GuiFocus N)` on leaving. Open the Detailed Surface Scanner too: it should keep temporal AA (`temporal-aa-off=0`).
 
 
 ## 2026-10-14: the AA comparison key, hotkey.compare_aa (BUILT, NOT FLOWN)

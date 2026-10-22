@@ -72,7 +72,7 @@ UiLayerFamily g_decidedFamily = UiLayerFamily::kNone;  // the family of the last
 bool g_mapCanvasNoted = false, g_mapSpriteNoted = false;  // the once-only first take of each map family
 bool g_mapToneNoted = false;                              // the once-only first proof from a map frame's tonemap
 bool g_mapFirstToneNoted = false;                         // the once-only first map-tone candidate line (proved or not)
-FlatUiMapAaTally g_mapAa;                                 // temporal AA off on the Galaxy Map and the Orrery: the map line's counts
+FlatUiMapAaTally g_mapAa;                                 // temporal AA off on the maps and the Full System Scanner: the map line's counts
 uint64_t g_mapAskFrame = 0, g_mapAsksFrame = 0;           // the frame of the last map ask, and how many map asks it has had
 FlatUiToneProof g_proof;
 bool g_sourceToneFirstNoted = false;
@@ -833,6 +833,8 @@ void flatUiLayerReport(uint64_t windowSeconds) {
         static_cast<unsigned long long>(w.taken[fs]), static_cast<unsigned long long>(w.atIssue[fs]));
     // The System Map's line (2026-10-10): the frames a map was open in, and each map family's asked/taken/refused, with the
     // refusals by reason (the adapter's and the shared decision's; "at-issue" is a refusal at the game's issue). Zeros print.
+    // open-frames and the families are the three maps'; temporal-off and the counts after it also count the Full System Scanner's
+    // frames (2026-10-22), so a scanner window reads open-frames=0 with temporal-off above zero.
     Log::get().note(
         "flat ui layer map: open-frames=%llu; canvas asked=%llu taken=%llu refused=%llu (%s); sprite asked=%llu taken=%llu "
         "refused=%llu (%s); tone-candidates-map=%llu tone-matched-map=%llu; temporal-off=%llu jitter-zeroed=%llu spatial=%llu "

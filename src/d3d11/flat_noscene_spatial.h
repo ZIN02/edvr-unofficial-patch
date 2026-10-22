@@ -3,9 +3,9 @@
 // WHY. Below the output the game stretches its render-size image to the display with a bilinear tap, and a frame with no scene
 // (a loading screen's hologram, startup, a 2D menu, a loading panel) is left to it: there is no scene to resolve temporally, and the
 // hologram has no motion source, so a temporal resolve of it ghosts (the 2026-10-09 fix excludes it, and it stays excluded). The
-// Galaxy Map, the System Map and the Orrery already get a spatial recovery in the same position: SMAA 1x on the render-size image,
-// then AMD's EASU up to the display (flatMonoResolveSpatialFallback with easu set). This admits the same recovery, and nothing
-// else, at the output copy of a no-scene frame.
+// Galaxy Map, the System Map, the Orrery and the Full System Scanner already get a spatial recovery in the same position: SMAA 1x
+// on the render-size image, then AMD's EASU up to the display (flatMonoResolveSpatialFallback with easu set). This admits the same
+// recovery, and nothing else, at the output copy of a no-scene frame.
 //
 // WHAT IT IS. The copy's source is the only thing it reads and the copy's source is the only thing it replaces. No jitter was
 // asked for the frame and none is resampled away, no history is read, written or kept (the resolver is told its history is invalid,

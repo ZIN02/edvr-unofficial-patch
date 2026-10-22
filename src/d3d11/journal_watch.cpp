@@ -948,7 +948,7 @@ void journalWatchConfigure() {
         // The flat profile's readers are the System Map's GuiFocus (journalFlatGuiFocus) and the supercruise bit for the planet
         // patch motion (journalFlatSupercruise). The accessors above answer flat with the no-journal values, so this line is the
         // only place the watcher says it runs there.
-        Log::get().note("journal: flat profile -- Status.json is read for the map's GuiFocus (temporal AA off on the maps) and for "
+        Log::get().note("journal: flat profile -- Status.json is read for the map's GuiFocus (temporal AA off on the maps and the Full System Scanner) and for "
                         "supercruise (planet patch motion). The journal's events are tailed but not used in flat.");
         return;
     }

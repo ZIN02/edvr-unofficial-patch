@@ -2200,7 +2200,7 @@ State& ensureState() {
         menuAdoptGameBindings(Config::get().getBool("hotkey.read_game_bindings", true), nullptr);
         journalWatchConfigure();
         g_state->fssModeLatchWanted = true;
-        // Flat reads the GuiFocus of the open map (temporal AA off on the Galaxy Map, the System Map and the Orrery) from Status.json, at the same 100 ms the FSS latch wants.
+        // Flat reads the GuiFocus of the open map (temporal AA off on the Galaxy Map, the System Map, the Orrery and the Full System Scanner) from Status.json, at the same 100 ms the FSS latch wants.
         journalWatchSetEagerStatus(g_state->fssModeLatchWanted || runtimeFlatProfile());
     }
     return *g_state;

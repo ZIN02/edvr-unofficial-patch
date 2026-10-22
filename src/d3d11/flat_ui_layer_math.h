@@ -180,13 +180,23 @@ inline bool flatUiSourceToneDirectHud(const void* cachedHud, const void* physica
 // TEMPORAL AA OFF WHILE A MAP IS OPEN (maintainer's decisions, 2026-10-10: the Galaxy Map and the Orrery first, then the System
 // Map). The map scenes' grid, line and star draws are not taken by the UI layer, and their temporal history smears (the
 // System Map's stars pan with the plane in one capture and sit near still in another, so no motion rule fits both: the
-// plane-motion and star-choice work is removed). While GuiFocus is 6, 7 or 8 the frame runs no temporal resolve and no jitter
-// (the copy route's spatial recovery stands in, flat_runtime.cpp); the UI layer keeps the map's text and markers. GuiFocus
+// plane-motion and star-choice work is removed). While GuiFocus is 6, 7, 8 or 9 the frame runs no temporal resolve and no jitter
+// (the copy route's spatial recovery stands in, flat_runtime.cpp); the UI layer keeps the screen's text and markers. GuiFocus
 // unknown, and every other screen, keep temporal AA as before.
-inline bool flatUiMapTemporalOff(bool known, uint32_t focus) { return known && (focus == 6 || focus == 7 || focus == 8); }
-inline const char* flatUiMapTemporalName(uint32_t focus) {
-    return focus == 8 ? "the Orrery" : focus == 7 ? "the System Map" : "the Galaxy Map";
+// The Full System Scanner (GuiFocus 9) joined the maps on 2026-10-22 (the maintainer: handle it as the other maps are): its view
+// turns with the scanner and the history smeared it (edvr_gfx_20261022_101031: temporal AA ran on it, about half the frames refused
+// engine-source-not-ready). The Detailed Surface Scanner (10) is NOT in it: it is mostly a 3D planet view that keeps temporal AA (the
+// maintainer, 2026-10-22), as do the codex (11) and every other screen.
+inline bool flatUiMapTemporalOff(bool known, uint32_t focus) {
+    return known && (focus == 6 || focus == 7 || focus == 8 || focus == 9);
 }
+inline const char* flatUiMapTemporalName(uint32_t focus) {
+    return focus == 9 ? "the Full System Scanner" : focus == 8 ? "the Orrery" : focus == 7 ? "the System Map" : "the Galaxy Map";
+}
+// The screens whose draws are the map families' (flatUiMapFamilyOf, flat_runtime.cpp flatRuntimeMapOpenFrame): the three maps only.
+// The Full System Scanner turns temporal AA off with them but is not here: the map families are keyed to the map shaders' own
+// pairs, and no scanner draw has been identified as one of them (its log windows name no such pair).
+inline bool flatUiMapFamiliesOpen(bool known, uint32_t focus) { return known && (focus == 6 || focus == 7 || focus == 8); }
 
 // The map line's temporal-AA counts (2026-10-10), as pure state so the rig pins them. A frame is `temporalOff` when the
 // mechanism is armed at the frame boundary; `jitterZeroed` when that frame would otherwise have jittered. A frame whose copy

@@ -1674,14 +1674,28 @@ void testFlatLayerRules() {
               "map tone reason: a proof state from another frame names no recorded target");
     }
     // Temporal AA off while a map is open (2026-10-10, maintainer's decisions): the Galaxy Map (6), the System Map (7) and the
-    // Orrery (8). Another screen and an unknown GuiFocus keep temporal AA on.
-    check(flatUiMapTemporalOff(true, 6) && flatUiMapTemporalOff(true, 7) && flatUiMapTemporalOff(true, 8) &&
-              !flatUiMapTemporalOff(true, 1) && !flatUiMapTemporalOff(false, 6) && !flatUiMapTemporalOff(false, 7) &&
-              !flatUiMapTemporalOff(false, 8),
-          "temporal AA off: exactly GuiFocus 6, 7 and 8 while the focus is known (not another screen, not unknown)");
+    // Orrery (8); and, since 2026-10-22, the Full System Scanner (9). Another screen and an unknown GuiFocus keep temporal AA on: the
+    // Detailed Surface Scanner (10) is a 3D planet view and stays out on purpose (the maintainer, 2026-10-22), and so does the codex (11).
+    check(flatUiMapTemporalOff(true, 6) && flatUiMapTemporalOff(true, 7) && flatUiMapTemporalOff(true, 8) && flatUiMapTemporalOff(true, 9) &&
+              !flatUiMapTemporalOff(true, 0) && !flatUiMapTemporalOff(true, 1) && !flatUiMapTemporalOff(true, 5) &&
+              !flatUiMapTemporalOff(true, 10) && !flatUiMapTemporalOff(true, 11) && !flatUiMapTemporalOff(true, 12) &&
+              !flatUiMapTemporalOff(false, 6) && !flatUiMapTemporalOff(false, 7) && !flatUiMapTemporalOff(false, 8) &&
+              !flatUiMapTemporalOff(false, 9) && !flatUiMapTemporalOff(false, 10),
+          "temporal AA off: exactly GuiFocus 6, 7, 8 and 9 while the focus is known (not another screen, the Detailed Surface Scanner (10) "
+          "and the codex (11) included, not unknown)");
     check(std::strcmp(flatUiMapTemporalName(6), "the Galaxy Map") == 0 && std::strcmp(flatUiMapTemporalName(7), "the System Map") == 0 &&
-              std::strcmp(flatUiMapTemporalName(8), "the Orrery") == 0,
-          "temporal AA off: the log names the Galaxy Map (6), the System Map (7) and the Orrery (8)");
+              std::strcmp(flatUiMapTemporalName(8), "the Orrery") == 0 &&
+              std::strcmp(flatUiMapTemporalName(9), "the Full System Scanner") == 0,
+          "temporal AA off: the log names the Galaxy Map (6), the System Map (7), the Orrery (8) and the Full System Scanner (9)");
+    // The map families' gate is the three maps only: the Full System Scanner turns temporal AA off with them, but no scanner draw is
+    // identified as a map pair, so it does not open the families (flatUiMapFamiliesOpen, which flatRuntimeMapOpenFrame answers from).
+    check(flatUiMapFamiliesOpen(true, 6) && flatUiMapFamiliesOpen(true, 7) && flatUiMapFamiliesOpen(true, 8) &&
+              !flatUiMapFamiliesOpen(true, 9) && !flatUiMapFamiliesOpen(true, 10) && !flatUiMapFamiliesOpen(true, 0) &&
+              !flatUiMapFamiliesOpen(true, 1) && !flatUiMapFamiliesOpen(true, 5) && !flatUiMapFamiliesOpen(true, 11) &&
+              !flatUiMapFamiliesOpen(false, 6) && !flatUiMapFamiliesOpen(false, 7) && !flatUiMapFamiliesOpen(false, 8) &&
+              !flatUiMapFamiliesOpen(false, 9) && !flatUiMapFamiliesOpen(false, 10),
+          "map families gate: exactly GuiFocus 6, 7 and 8 while the focus is known (neither the Full System Scanner (9) nor the Detailed "
+          "Surface Scanner (10) is one)");
     // The map line's temporal counts: a frame that armed the mechanism and never reached its copy is counted, not silent.
     {
         FlatUiMapAaTally t;
@@ -1877,6 +1891,21 @@ void testFlatLayerRules() {
                   adapter.find("flatUiToneProofCopy(g_proof, frame, source, output)") != std::string::npos &&
                   runtime.find("flatUiLayerNoteCopy(s.prefix.frame, copySource.Get(), k.color)") != std::string::npos,
               "wiring: the original plain-copy tone proof remains after diagnostic cleanup");
+        // The map focus (flat_runtime.cpp flatRuntimeMapFocusFrame): temporal AA's answer is flatUiMapTemporalOff's (the maps and the Full System
+        // Scanner), the map families' gate is flatUiMapFamiliesOpen's (the maps only), and the transition lines name the screen
+        // entered and the screen left.
+        check(!runtime.empty() && runtime.find("const bool off = flatUiMapTemporalOff(known, focus);") != std::string::npos &&
+                  runtime.find("return flatUiMapFamiliesOpen(w.frameKnown, w.frameFocus);") != std::string::npos &&
+                  runtime.find("\"flat map aa: temporal AA off on %s (GuiFocus %u): ") != std::string::npos &&
+                  runtime.find("flatUiMapTemporalName(focus), focus);") != std::string::npos &&
+                  runtime.find("\"flat map aa: temporal AA on again after %s (GuiFocus %u)\", flatUiMapTemporalName(left), focus);") !=
+                      std::string::npos &&
+                  runtime.find("\"flat map aa: temporal AA on again after %s (GuiFocus unknown)\", flatUiMapTemporalName(left));") !=
+                      std::string::npos &&
+                  runtime.find("refused on %s (%s); the frame stays the game's (frame %llu)\",\n"
+                               "                flatUiMapTemporalName(mapFocusWatch().offFocus),") != std::string::npos,
+              "wiring: the map focus answers temporal AA from flatUiMapTemporalOff and the map families from flatUiMapFamiliesOpen, and "
+              "its transition and refusal lines name the screen entered, left or refused on");
         const size_t physicalShape = adapter.find("bool sourceTonePhysicalShape(");
         const size_t afterPhysicalShape = adapter.find("uint32_t g_candidateLines", physicalShape);
         const size_t sourceTone = adapter.find("bool flatUiLayerSourceToneCandidate(");

@@ -92,6 +92,7 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 #include "blend_probe.h"       // TEMPORARY hotkey.blend_probe: the blend probe's install and request
 #include "stall_watch.h"     // stallWatchBeat: the stall sampler's heartbeat, once per owned Present
 #include "vram_tick.h"       // vramWatchTick: the graphics memory watch, once per owned Present
+#include "mem_tick.h"        // memWatchTick: the process memory watch, once per owned Present (one atomic read; its thread does the sampling)
 #include "vertex_resync_hook.h"   // vertexResyncInstall at startup, vertexResyncPoll once a second: the f3d vertex-buffer cache repair (both profiles)
 #include "light_grid_cache_hook.h"   // lightGridCacheInstall at startup, lightGridCachePoll once a second, lightGridCacheNoteFrame per Present: the fragment-culling grid cache (both profiles)
 #include "terrain_cull_cover_hook.h"   // terrainCullCoverInstall at startup, terrainCullCoverPoll once a second: the terrain cull frustum cover (VR)
@@ -1818,6 +1819,7 @@ HRESULT STDMETHODCALLTYPE hookedPresent(IDXGISwapChain* self, UINT syncInterval,
     // on a clock, under pressure and at each crossing. One compare of two integers per frame; the OS is asked once
     // a second. Here because this is the one hook the VR and the flat profile share.
     vramWatchTick(presentT1, dev);
+    memWatchTick(dev);   // the process memory watch (mem_watch.h): one atomic read a frame; its own thread does the sampling
     if (routeCrumbs)
         hdrCrumbWrite("present", "end", "hr=0x%08X removed=0x%08X", static_cast<unsigned>(hr),
                       static_cast<unsigned>(dev ? dev->GetDeviceRemovedReason() : S_OK));

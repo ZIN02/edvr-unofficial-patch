@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
@@ -2355,7 +2356,7 @@ int main(int argc, char** argv) {
             }
             return n;
         };
-        const char* const kCapLine = "log size cap reached; nothing further will be written";
+        const char* const kCapLine = "log size cap reached; only lines noted as reserved";
         const uint64_t kMiB = 1024ull * 1024ull;
 
         const CapRun byDefault = session("", L"capdefault", true);
@@ -2382,6 +2383,121 @@ int main(int argc, char** argv) {
         check(four.opened && four.maxBytes == 4 * kMiB, "an ini that says max_mb = 4 keeps 4 MB", std::to_string(four.maxBytes) + " bytes");
         const CapRun none = session("max_mb = 0\r\n", L"capnone", false);
         check(none.opened && none.maxBytes == 0, "max_mb = 0 is no cap", std::to_string(none.maxBytes) + " bytes");
+        Log::get().close();
+
+        // --- Log::noteReserved: a line that outlives the cap, from a reserve of 1 MiB (2026-10-22, the memory watch's mem: lines) ----------
+        //
+        // Before the cap it is an ordinary line. After it, the lines go on from the reserve, in order, until the reserve cannot take the
+        // next one; the log says so once and writes no more of them. The reserve's arithmetic is held by tools\mem_watch_test; this is
+        // the file: that the lines are on disk, in order, that an ordinary line after the cap still is not, that the notice is the end.
+        const auto readLog = [&](const wchar_t* tag) {
+            std::string body;
+            WIN32_FIND_DATAW fd{};
+            HANDLE h = FindFirstFileW((scratch + L"\\edvr_" + tag + L"_*.log").c_str(), &fd);
+            if (h == INVALID_HANDLE_VALUE) return body;
+            const std::wstring name = fd.cFileName;
+            FindClose(h);
+            HANDLE f = CreateFileW((scratch + L"\\" + name).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f == INVALID_HANDLE_VALUE) return body;
+            char chunk[65536];
+            DWORD got = 0;
+            while (ReadFile(f, chunk, sizeof(chunk), &got, nullptr) && got) body.append(chunk, got);
+            CloseHandle(f);
+            return body;
+        };
+        const auto openLog = [&](const char* maxMbLine, const wchar_t* tag) {
+            std::string ini = "[log]\r\nenabled = 1\r\nbuffer_mb = 16\r\n";
+            ini += maxMbLine;
+            if (!writeIni(scratch, ini.c_str())) return false;
+            Config::get().init(scratch);
+            Log::get().close();
+            WIN32_FIND_DATAW old{};
+            HANDLE oh = FindFirstFileW((scratch + L"\\edvr_" + tag + L"_*.log").c_str(), &old);
+            if (oh != INVALID_HANDLE_VALUE) {
+                do {
+                    DeleteFileW((scratch + L"\\" + old.cFileName).c_str());
+                } while (FindNextFileW(oh, &old));
+                FindClose(oh);
+            }
+            return Log::get().open(scratch, tag);
+        };
+
+        // Under the default cap a reserved line is an ordinary line: written, timestamped, in order with the notes around it, no cap notice.
+        if (!openLog("", L"resdefault")) {
+            fail("log reserve default", "the log would not open in the scratch dir");
+        } else {
+            Log::get().note("resdefault plain before");
+            Log::get().noteReserved("resdefault reserved %d", 7);
+            Log::get().note("resdefault plain after");
+            Log::get().close();
+            const std::string body = readLog(L"resdefault");
+            const size_t a = body.find("resdefault plain before"), b = body.find("resdefault reserved 7"), c = body.find("resdefault plain after");
+            check(a != std::string::npos && b != std::string::npos && c != std::string::npos && a < b && b < c && count(body, kCapLine) == 0,
+                  "noteReserved under the cap is note(): the line is written in order with the ordinary ones, and no cap is mentioned");
+            const size_t lineStart = b == std::string::npos ? 0 : body.rfind('\n', b) + 1;
+            check(b != std::string::npos && body.size() > lineStart + 14 && body[lineStart] == '[' && body[lineStart + 3] == ':' && body[lineStart + 13] == ']',
+                  "...and it is stamped like the others ([hh:mm:ss.mmm])");
+        }
+
+        // Past a 1 MB cap: the burst crosses it; once the cap notice is on disk, a reserved line, then 1.3 MB of them.
+        if (!openLog("max_mb = 1\r\n", L"respast")) {
+            fail("log reserve past the cap", "the log would not open in the scratch dir");
+        } else {
+            const std::string filler(1000, 'y');
+            for (int i = 0; i < 1300; ++i) Log::get().note("capfill %d %s", i, filler.c_str());
+            const auto waitForBody = [&](const char* needle, const char* why) {
+                const ULONGLONG started = GetTickCount64();
+                while (readLog(L"respast").find(needle) == std::string::npos) {
+                    if (GetTickCount64() - started > 120000ull) {
+                        fail("log reserve wait", std::string("never reached disk in 120 s: ") + why);
+                        return false;
+                    }
+                    Sleep(20);
+                }
+                return true;
+            };
+            // The burst is on disk, then one ordinary line gives the next pass something to write, and that pass finds the cap.
+            const bool burstWritten = waitForBody("capfill 1299 ", "the burst");
+            Log::get().note("resmarker the pass that finds the cap");
+            const bool capSeen = burstWritten && waitForBody(kCapLine, "the cap notice");
+            Log::get().noteReserved("resfirst reserved line after the cap");
+            Log::get().note("resplain ordinary line after the cap");
+            for (int i = 0; i < 1300; ++i) Log::get().noteReserved("resflood %05d %s", i, filler.c_str());
+            Log::get().noteReserved("resnever a line after the flood");
+            Log::get().close();   // joins the flusher and runs the last passes: everything noted is decided before the file is read
+            const std::string body = readLog(L"respast");
+            if (capSeen) {
+                const size_t capAt = body.find(kCapLine), firstAt = body.find("resfirst reserved line after the cap"), floodAt = body.find("resflood 00000 ");
+                check(count(body, kCapLine) == 1 && firstAt != std::string::npos && floodAt != std::string::npos && capAt < firstAt && firstAt < floodAt,
+                      "a reserved line noted after the cap is still written, once, after the cap notice and before the lines that follow it");
+                check(count(body, "resplain ordinary line after the cap") == 0 && count(body, "resmarker") == 0 && count(body, "resnever") == 0,
+                      "...while an ordinary line after the cap is not (the cap is still the cap)");
+                // The reserved lines on disk: whole, consecutive from 0, in order, adding up to no more than 1 MiB.
+                size_t floodLines = 0, reservedBytes = 0;
+                bool consecutive = true;
+                for (size_t at = body.find("resflood "); at != std::string::npos; at = body.find("resflood ", at + 1)) {
+                    const size_t lineStart = body.rfind('\n', at) + 1;
+                    const size_t lineEnd = body.find('\n', at);
+                    if (lineEnd == std::string::npos || body.find(filler, at) == std::string::npos || body.find(filler, at) > lineEnd) consecutive = false;
+                    if (std::atoi(body.c_str() + at + 9) != static_cast<int>(floodLines)) consecutive = false;
+                    reservedBytes += lineEnd - lineStart + 1;
+                    ++floodLines;
+                }
+                const size_t firstBytes = body.find('\n', firstAt) + 1 - (body.rfind('\n', firstAt) + 1);
+                reservedBytes += firstBytes;
+                check(floodLines > 900 && floodLines < 1300 && consecutive,
+                      "the flood is cut off partway (a whole number of lines, consecutive from 0, none missing), not written to its end",
+                      std::to_string(floodLines) + " lines");
+                check(reservedBytes <= kMiB && reservedBytes + 1100 > kMiB,
+                      "...at the reserve: no more than 1 MiB of reserved lines, and not a line's width short of it",
+                      std::to_string(reservedBytes) + " bytes");
+                const char* const spent = "[edvr] the post-cap reserve of 1 MiB for reserved lines is spent; nothing further will be written.";
+                const size_t spentAt = body.find(spent);
+                check(count(body, spent) == 1 && spentAt != std::string::npos && body.size() == spentAt + std::strlen(spent) + 2,
+                      "the reserve says it is spent exactly once, and that notice is the end of the file");
+            }
+        }
         Log::get().close();
     }
 

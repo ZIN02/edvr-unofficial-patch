@@ -15,12 +15,14 @@
   - H3: Elite's CPU heaps grow regardless of VR.
   - H4: EDVR's bounded retention (engine-motion pools and shaders) is larger
     in practice than the source suggests.
-- **Evidence gap:** EDVR does not log process RAM at all. The `vram:` line
-  stops when the gfx log reaches its 16 MB cap. No log in hand covers a
-  multi-hour session.
-- **Next:** the memory line proposed below (not built), then one VR flight of
-  two hours or more that includes map screens, jumps, and taking the headset
-  off and on.
+- **Evidence gap:** no log in hand covers a multi-hour session. Since
+  2026-10-22 the code writes a `mem:` line (below, "The `mem:` line") that
+  covers process memory and survives the gfx log's 16 MB cap; it has not
+  flown. The `vram:` line still stops at the cap.
+- **Next:** one VR flight of two hours or more with the `mem:` line, that
+  includes map screens, jumps, and taking the headset off and on. Check first
+  that the armed `mem:` line is in the log and says no group is unreadable;
+  the `eheap` group is a first reading, to be compared with `commit_mb`.
 - Ruled out: see "Ruled out" at the end.
 
 Evidence files (scripts, query logs, decompiles) are under
@@ -139,7 +141,46 @@ more:
 - ruled out (source): a per-frame, per-draw or per-event COM reference leak in
   EDVR, from an audit of about 1300 getter, AddRef and Attach sites.
 
-## Proposed instrument (not built)
+## The `mem:` line (built 2026-10-22, not flown)
+
+Code: `src/common/mem_watch.h` (cadence, text, plausibility),
+`src/d3d11/mem_tick.cpp` (one thread of its own, started at the first Present;
+the OS and Elite reads), `src/common/log_reserve.h` and `Log::noteReserved`
+(the line survives the size cap, from a fixed 1 MiB reserve a session; after it
+the log says so once). Rig: `tools/mem_watch_test`. A line every 60 s, every
+5 s while machine commit is at or over 90% of its limit, and one `armed` line
+at the first sample that says what each group is and why any is missing.
+Whole MB, rounded.
+
+- `commit_mb` (private bytes), `commit_peak_mb`, `ws_mb`, `handles`, `threads`.
+- `sys_commit_mb`, `sys_commit_limit_mb`, `sys_avail_mb`: the machine.
+- `local_used_mb`, `local_budget_mb`: the `vram:` local group again.
+- `egpu_*`: Elite's twelve GPU counters by kind (`rt ds texuav imm tex vb ib
+  buf shader desc cmd unk`), their sum and its high water, and the GPU heaps.
+  Read only on build 334473 (PE identity plus eighteen byte pins). A heap
+  whose type (`+0x510`) is 3 counts descriptors, not bytes (the game's report
+  prints it so), so those are counted in `egpu_desc_heaps` and left out of
+  `egpu_heap_used_mb` and `egpu_heap_cap_mb`.
+- `eheap_*`: the CPU heap manager. `eheap_os_mb` sums heap `+0x60` over the
+  table; `eheap_main_mb` and `eheap_main_peak_mb` are the default heap's
+  allocator statistics (current and peak bytes, `stats+0x10` and `+0x18`).
+  `eheap_main_allocs` is `stats+0x20`: it is incremented by every allocation
+  path and decremented by none that was found, so it counts allocations made,
+  not allocations live. `+0x60` is added to only on the C-runtime path of the
+  segment allocator (`0x553480`); a heap that takes its segments with
+  `VirtualAlloc` (flag `0x40000`) keeps it at 0.
+- `ovrserver_*`, `vrserver_*`, `vrcompositor_*`, `vdstreamer_*`: commit and
+  handles, summed over instances, when running. No other process is named.
+
+Reading it: a climb in `commit_mb` with flat `egpu_mb` and `eheap_main_mb`
+points at memory neither accounts for (`eheap_os_mb` against `commit_mb` says
+how much of commit the heap manager covers); a climb in one `egpu_`
+kind is H2 and names the kind; flat Elite figures with `sys_commit_mb` climbing
+and a runtime's `_commit_mb` climbing is H1. `egpu=implausible` or
+`eheap=implausible` means the values failed their checks and are not written;
+`egpu=unread` means the game had no device yet at that sample.
+
+## Proposed instrument (what the line was specified from)
 
 A `mem:` line on the same clock as `vram:`, in a budget that survives the gfx
 log cap, carrying:

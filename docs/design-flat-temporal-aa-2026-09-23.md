@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State (2026-10-22 3D main menu, render below output):** `edvr_gfx_20261022_115444` (v0.20.2, RTX 3080, 2580x1080 to 3440x1440, Bloom off, DoF 2, Anaconda MkII on the menu) stands down 87 s at the menu: probes say `conflicting-hdr-target-or-camera` and name no cause (the report sat after the observing return). Test build logs the cause at the verdict; NOT FLOWN. See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
 - **State (2026-10-19 rc.5 flight):** `edvr_gfx_20261019_062037` (build 6AD4E0C0, RTX 3070 Ti Laptop, DLSS 1920×810 to 2560×1080) has 2,117 spatial fallbacks, 2,124 history resets and zero DLSS backend failures. All 35 complete deferred-camera captures are inverse-mismatch, and the strict matcher accepts them after the existing inverse-ray correction. The repair rejected them because its float reverse proof bounded the cancelled value. That proof now carries the reversed madd's pre-cancellation magnitude. Mouse timing and the delayed shipyard preview are not in this log. Confirmation flight of the Wine compile `v0.20.0-rc.5-10-gcb642cd0-dirty` passed.
 - **State (2026-10-17 RC4):** moved to Status detail below (2026-10-21), unchanged.
@@ -18289,3 +18290,64 @@ star Scan fields), which put system and body names in logs; the
 `flat star dump: truth` lines carry that ground truth into each dump.
 Purpose: find the constants that carry a star's temperature, radius and
 intensity for the star-glow design. Remove both once that is read.
+
+## 2026-10-22: the 3D main menu at render below output
+
+Report (a user, v0.20.2, with clips): at the main menu with the Anaconda MkII
+hologram EDVR seems not to work; after loading, a carrier menu shows strobing
+and blur behind the UI; in ship outfitting it works and stops again at the main
+menu. The log `edvr_gfx_20261022_115444` (flat, RTX 3080, game SS 0.75: render
+2580x1080 on a 3440x1440 display, DLSS, UI quality 125, Bloom off, DoF 2, game
+AA off) was flown with a NumLock census on the menu. The carrier menu is not
+covered here.
+
+Evidence.
+
+- The menu is stood down for 87 s (`no-3d-scene`, GPU census 0.000 ms/frame).
+  The scenes it passes through, by the discovery selector and the probes:
+  11:54:56-11:55:03 `no-known-tone-pass` (the first menu scene, tone
+  `F9CFC798/6E83D02E`); 11:55:08 `conflicting-hdr-target-or-camera` (the ship
+  loading, 63 world records, none dropped); 11:55:15 and 11:55:21
+  `relevant-observations-truncated`.
+- That truncation is the passive discovery's own buffer (`kContracts` 224 in
+  flat_temporal.cpp: `world-retained=224 world-dropped-draw-observations=11`,
+  about 610-630 eligible pool draws). It is a diagnostic and does not decide
+  treatment. The stand-down's own probe at 11:55:21 says `conflicting-hdr-
+  target-or-camera`, from the runtime's copy-stage selector, and the runtime's
+  `selector-receipts` stay 0 (no `Truncated` verdict there).
+- The census frame (11:55:26, frame 2336), as render-target passes: the scene H
+  (2580x1080 fmt 26, depth fmt 19) takes 4, 2, 11 and 1 draws; a separate
+  1024x1024 fmt 26 target with its own depth (fmt 53) takes 11 (the ship
+  hologram), then 11 draws into H (`EB787F98/3B0B38CD`); about 1,100 depth-only
+  draws go to a 512x512 shadow target; the DoF/exposure chain (645x270, 430x180,
+  322x134) and the tone `F9CFC798/FEE777E9` (known) follow, then the output copy
+  `20F383BB/DED87960` to 3440x1440. The tone and the copy are recognisable; the
+  H record is what the selector refuses.
+- Why no cause was named: `reportConflict` (flat_runtime.cpp) runs after the
+  `if (s.observing) return`, and a stood-down probe frame is an observing frame.
+  The runtime model had the cause (`FlatRuntimeConflict`: viewport, depth,
+  camera change, camera provenance, image-copy-source, menu-copy-source,
+  selector layout/camera) and never logged it.
+
+Built, not flown (branch from main 7ea35f54). The conflict is now reported at the
+copy's verdict (`verdictConflicting`), once a frame (`conflictReportedFrame`), so
+the next menu log names the cause with the first writer's and the offending
+writer's VS/PS, viewport, depth and camera words. No behaviour changes: the
+selector, the route and the stand-down are untouched.
+
+Flight signature: `flat runtime conflict: frame=... cause=<name> ...` and
+`flat runtime conflict camera: ...` in the stood-down menu (up to four a cause),
+and the 5 s runtime line's conflicts. The cause decides the fix: `camera-change`
+or `selector-hdr-camera-conflict` is the hologram draws' own camera;
+`image-copy-source` or `menu-copy-source` is H written by a copy rather than
+scene draws (the SS 0.5 loading hologram's refusal); `depth-or-dsv-changed` or
+`viewport` is the 1024x1024 target being taken for a second H.
+
+- ruled out: raising the discovery's 224-record capacity as the fix. It is the
+  diagnostic's buffer (flat_temporal.cpp), not the runtime selector's, and the
+  runtime's verdict was a conflict, not a truncation.
+- ruled out (corrects the 10-22 first reading): "the main menu's tone pass is
+  unknown". `6E83D02E` is the first menu scene's tone only; the ship scene's is
+  the known `FEE777E9`.
+- Risk if the menu is later treated: a rotating hologram can ghost (the loading
+  screen's ghost, flat-loading-hologram-ghost-2026-10-09.md).

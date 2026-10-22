@@ -468,6 +468,7 @@ struct State {
     std::map<std::string, uint64_t> refusedWindow;
     std::map<std::string, uint64_t> conflictWindow;
     uint32_t conflictDetails[static_cast<uint32_t>(FlatRuntimeConflict::Count)]{};
+    uint64_t conflictReportedFrame = 0;   // the frame reportConflict last counted: one report a frame, from whichever site asks first
     uint64_t lastConflictDetailMs[static_cast<uint32_t>(FlatRuntimeConflict::Count)]{};
     const char* reason = "warming-current-frame";
     std::unique_ptr<FlatProjectionRuntime> projection;
@@ -2726,6 +2727,8 @@ void reportConflict(State& s) {
     const auto& w = s.prefix.selectedConflict;
     const auto index = static_cast<uint32_t>(w.cause);
     if (!index || index >= static_cast<uint32_t>(FlatRuntimeConflict::Count)) return;
+    if (s.conflictReportedFrame == s.prefix.frame) return;
+    s.conflictReportedFrame = s.prefix.frame;
     ++s.conflictWindow[flatRuntimeConflictName(w.cause)];
     const uint64_t now = GetTickCount64();
     if (s.conflictDetails[index] >= 4 ||
@@ -6241,6 +6244,11 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     if (copy) {
         const FlatFrameSeen seen = flatFrameSeenFor(selected.selected(), selected.reason);
         if (seen >= s.frameSeen) { s.frameSeen = seen; s.frameReason = selected.reason; }
+        // The cause behind a conflicting-hdr verdict (2026-10-22, the 3D main menu at render below output: the stand-down's probes said
+        // conflicting-hdr-target-or-camera and no "flat runtime conflict" line followed, because the report below sits after the
+        // observing return). Reported here, at the verdict, so a stood-down probe frame names it as a treated frame's refusal does.
+        const bool verdictConflicting = selected.reason == FlatMonoReason::ConflictingHdr;
+        if (verdictConflicting) reportConflict(s);
         // What the view held when it had no motion source (section 104); the line names it.
         if (selected.reason == FlatMonoReason::NoSupportedSource) { s.sourcelessLast = selected.sourceless; s.sourcelessLastFrame = s.prefix.frame; }
         noteSourceFreeContent(s, selected);

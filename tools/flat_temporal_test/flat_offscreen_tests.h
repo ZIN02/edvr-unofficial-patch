@@ -519,6 +519,8 @@ inline int flatOffscreenTests() {
                     {&runtime, "else if (count == 3 && instances == 1 && (kind == 'D' || kind == 'N')) {", "the UI layer's tone probes need a fullscreen triangle"},
                     {&runtime, "const bool trailDraw = (count == 3 && instances == 1 && (kind == 'D' || kind == 'N')) || tone ||", "the back-off trail notes a fullscreen triangle or a tone"},
                     {&runtime, "if (!uiTake && !copy) flatUiLayerNoteSceneDraw(ctx, count, instances, kind);", "the UI layer's scene-draw note is made for every draw it leaves"},
+                    {&runtime, "if (verdictConflicting) reportConflict(s);", "a copy's conflicting-hdr verdict names its cause at the verdict, before any observing return (the 3D main menu's stand-down probes)"},
+                    {&runtime, "if (s.conflictReportedFrame == s.prefix.frame) return;", "the conflict report is once a frame, whichever site asks first"},
                     {&model, "if (!k.color) return out;", "the reducer ends a colourless draw after the suffix rule"},
                     {&model, "if (k.format == 26 && k.vs == kMenuCopyVs && k.ps == kMenuCopyPs) {", "the menu copy is format 26"},
                     {&model, "const bool imageCopy = k.format == 26 && k.vs == kHdrImageCopyVs && k.ps == kHdrImageCopyPs;", "the image copy is format 26"},

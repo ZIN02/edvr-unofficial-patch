@@ -2,15 +2,11 @@
 
 ## Status
 
-- 2026-10-22, FLAT GATE FIXED, NOT FLOWN: the 10-15 port never ran in flat. Its
-  supercruise gate read journalSupercruise*(), which answer flat with "unknown",
-  so every `celestial motion 5s` line said gated-off (edvr_gfx_20261022_044106,
-  Sean: the planet still smears in supercruise). Flat now reads Flags bit 4
-  through journalFlatSupercruise. Flight: `gate ON`, then `flat celestial:`.
-- 2026-10-15, FLAT PORT BUILT, NOT FLOWN: an RC1 flat user's planet smeared on
-  an orbital descent. Flat rows carry no supercruise translation either (journal
-  top entry) and this path was VR-only; flat now binds eye 0's records at t18
-  (`celestialBefore`). Flight: flat, supercruise to a planet, `flat celestial:`.
+- FLAT PORT (10-15) and its GATE (10-22) BUILT, NOT FLOWN: flat rows carry no
+  supercruise translation, so flat binds eye 0's records at t18 (`celestialBefore`).
+  The port never ran: its gate read journalSupercruise*(), which answer flat with
+  "unknown" (edvr_gfx_20261022_044106, planet still smears); flat now reads Flags
+  bit 4 via journalFlatSupercruise. Flight: `gate ON`, then `flat celestial:`.
 - State: planet patch motion FLOWN OK 2026-10-07 (v0.18.2-62-gc136ba80 on
   Frontier, ON MAIN c947620c). Sean: "Planet looks great now". Each body's
   rigid motion, read from its patch constants on the CPU, replaces the camera

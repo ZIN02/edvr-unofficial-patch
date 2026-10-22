@@ -18121,3 +18121,56 @@ bilinear stretch on dark frames, then no-scene frames and the spatial pass.
 The rule keeps an overlay out of temporal history. Left as is (Sean,
 2026-10-21); widening the spatial pass to declined copy frames was offered
 and not taken.
+
+## 2026-10-22: hangar floor shimmer, a pink band in the Motion source view
+
+Sean, flat on the Panther Lake handheld (Arc B390, XeSS, 960x600 to
+1920x1200), build `cd48ef3b`: on foot in an outpost hangar, a shimmering
+strip of the far floor shows pink in the Motion source view, meaning "stale
+slot refused (shown raw)". Log `edvr_gfx_20261022_044106`, census 2 at
+04:51:50 (frame 38268); screenshot 04:51:48; the view was on 04:51:43-57.
+
+What pink is (`flat_mono_shader_source.h`). The slot is present, but the
+scene depth no longer equals the depth the keyed draw wrote, because a later
+draw overwrote depth. Such a stale pixel takes the camera term, then
+`historyDepthMatches` checks the best of the four history-depth texels
+around the reprojected position against 1% of the expected depth (section
+82). On a fail the pixel is shown raw. Pixels with no slot take the camera
+term without this check.
+
+Evidence: in the window from the Home press to +2 s, the camera did not
+translate (`flat camera origin` moved=0, step max 0) and `range` was 0.
+Stale-refused was still 9.5k px a frame (1.64%), against 38.7% stale-kept.
+The screenshot's band spans render rows of about 270-300 with a straight
+horizontal lower edge that crosses mesh seams, about 6k px.
+
+Leading hypothesis (H1, circumstantial, not measured). On a plane,
+reversed-Z depth is affine in screen space, so the history-depth error of
+the nearest texel is about delta/y. Here delta is at most 0.5 px of jitter
+offset between frames, and y is the render rows below the horizon. With
+the 32-phase Halton cycle, the check refuses about 33 rows below the
+horizon in most frames (44-46, 14 or 4 in the rest), about z 27 m at
+960x600 with a 1.7 m eye. That boundary scales with render height, which
+fits a band at 960x600 that the 4K and VR measurements of section 82
+never showed.
+
+- ruled out: stale stamps or masked records as the hangar band, because
+  stale-stamp, masked and corrupt read 0 in every hangar window and the
+  stale class is decided before any record is read.
+- ruled out: optimized stations as the hangar band, because it never sealed
+  (0 of about 1290 frames) and vetoed or culled 0 records.
+- ruled out: real motion as the hangar band, because the camera did not
+  translate (moved=0) and range=0 in that window.
+
+Next:
+- **No-build discriminators, same pose:** at render 1920x1200 the band should
+  halve in screen fraction (H1) rather than keep it (a fixed-distance cause);
+  crouching should keep its edge about 33 render rows below the horizon.
+- **If H1 holds, the fix:** `historyDepthMatches` also passes when the
+  bilinear history depth and the four-texel twist are both within tolerance.
+  A slope is exactly bilinear; a silhouette is not.
+- **Rig tests:** a still 5%-per-pixel plane kept, a roof edge against sky and
+  a disocclusion unchanged, a receding mover still refused.
+- **Side findings, not folded in:** the `flat refusal census 5s` line
+  hard-codes `view=off`; `flat engine motion unkeyed 5s` reads binds=0 while
+  the census shows unkeyed family draws every frame.

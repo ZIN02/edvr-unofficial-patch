@@ -801,7 +801,7 @@ REM whose window is a child of a message-only one.
 set "RUN_JOBS_ARGS="
 if defined EDVR_JOBS set "RUN_JOBS_ARGS=--jobs %EDVR_JOBS%"
 python tools\run_jobs.py --script "%ROOT%\build.bat" --times "%BUILD%\rig_times.json" ^
-    --exe-dir "%BUILD%" --quiet native_timing_test,gpu_timing_test,gpu_census_test,gpu_pass_profile_test,vtable_test,stall_sampler_test ^
+    --exe-dir "%BUILD%" --quiet native_timing_test,gpu_timing_test,gpu_census_test,gpu_pass_profile_test,vtable_test,stall_sampler_test,config_test ^
     --after openxr_module_test=openxr_exports_test ^
     --after flat_mono_resolve_shard1=flat_mono_resolve_test ^
     --after flat_mono_resolve_shard2=flat_mono_resolve_test ^
@@ -1771,6 +1771,7 @@ python "tools\flat_camera_vr_test\mutants.py" --self-test || exit /b 1
 exit /b 0
 
 :rig_config_test
+if "%EDVR_RIG_STEP%"=="run" goto config_test_run
 echo [edvr] === config_test.exe ===
 REM The real parser over the real shipped edvr.ini. The file's own layout
 REM depends on two parser properties -- repeated section headers, last value
@@ -1779,6 +1780,10 @@ REM and every symptom of either being false shows up in the game rather than
 REM in a build. It also registers the generated config_contract_gen.h tables
 REM (the moved-from map parsed from the real edvr.ini), so a moved key's read-
 REM through is proven against what actually shipped, not a fixture.
+REM Its share-delete probe has to land a thread inside a reload that holds the file for
+REM tens of microseconds, so it needs cores the rest of the pool is not using (run
+REM 39799347142: 78 landings in 20000 reloads on a loaded 4-core runner, under its floor of
+REM 100). It is a --quiet rig: the compile runs in the pool and the run alone, after the others.
 if not exist "%OBJ%\cfgtest" mkdir "%OBJ%\cfgtest"
 %CC% /nologo /O2 /MT /std:c++17 /EHsc /W4 /DWIN32_LEAN_AND_MEAN /DNOMINMAX ^
     /D_CRT_SECURE_NO_WARNINGS /I"%GEN%" /Fo"%OBJ%\cfgtest"\ ^
@@ -1786,6 +1791,8 @@ if not exist "%OBJ%\cfgtest" mkdir "%OBJ%\cfgtest"
     "src\common\config.cpp" "src\common\log.cpp" ^
     /link /INCREMENTAL:NO kernel32.lib
 if errorlevel 1 ( echo [edvr] ERROR: config_test build failed & exit /b 1 )
+if "%EDVR_RIG_STEP%"=="build" exit /b 0
+:config_test_run
 "%BUILD%\config_test.exe" "%ROOT%" "%BUILD%\cfgscratch" || (
     echo [edvr] ERROR: the shipped edvr.ini does not parse as documented
     exit /b 1

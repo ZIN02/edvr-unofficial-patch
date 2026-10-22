@@ -601,9 +601,11 @@ static void shareDeleteCase(const std::wstring& scratch) {
     std::thread probe(probeMain, &path, &st);
 
     // At least 300 reloads, and on until the probe has landed 300 times inside
-    // them: a probe thread that is starved by a busy machine (the rigs run in a
-    // pool) gets the time it needs rather than failing the run for want of it.
-    // The cap is what ends a probe that never runs.
+    // them: a probe thread that is starved by a busy machine gets the time it
+    // needs rather than failing the run for want of it. The cap is what ends a
+    // probe that never runs. build.bat runs this rig alone, after the pool (it is
+    // --quiet): a reload holds the file for tens of microseconds, and a pool of
+    // four busy rigs on four cores let one run make 78 landings in 20000 reloads.
     int  reloads = 0;
     int  unparsed = 0;
     bool writeFailed = false;

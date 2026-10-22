@@ -1398,7 +1398,15 @@ void tickEliteBinds() {
 // The supercruise word for planet patch motion (tkCelestialStatus): Status.json's Flags, once a frame. Unknown counts as not
 // supercruise (celestial_motion.h). It rode the head-offset gate's journal tick until that tick went with the old Explorer Cam
 // route (2026-10-07); the call and its once-a-frame cadence are unchanged.
+// Flat reads the word through its own accessor: the VR accessors answer flat with the no-journal values, so the gate stayed
+// unknown there and planet patch motion never ran in flat (edvr_gfx_20261022_044106: every 5 s line gated off).
 void tickCelestialStatus() {
+    if (runtimeFlatProfile()) {
+        bool supercruise = false;
+        const bool known = journalFlatSupercruise(&supercruise);
+        celestialMotionNoteStatus(known, known && supercruise);
+        return;
+    }
     celestialMotionNoteStatus(journalSupercruiseKnown(), journalSupercruise());
 }
 

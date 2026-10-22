@@ -18171,6 +18171,12 @@ Next:
   A slope is exactly bilinear; a silhouette is not.
 - **Rig tests:** a still 5%-per-pixel plane kept, a roof edge against sky and
   a disocclusion unchanged, a receding mover still refused.
+- **Render-size test, 05:16 (same log, same hangar spot, still):** Home at
+  05:16:55 (census 3) at render 1920x1200 with `moved=0`. Stale-refused was
+  0.89-0.90% of pixels (all class stale), against 1.64% at 960x600 (04:51).
+  The ratio is 0.54. H1 predicts about half; a fixed-distance cause predicts
+  the same share. The refusal census samples only after a capture request
+  (Home), not while the view is on. H1 supported; the fix proceeds.
 - **Side findings, not folded in:** the `flat refusal census 5s` line
   hard-codes `view=off`; `flat engine motion unkeyed 5s` reads binds=0 while
   the census shows unkeyed family draws every frame.

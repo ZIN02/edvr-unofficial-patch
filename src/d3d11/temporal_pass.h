@@ -191,6 +191,13 @@ bool temporalPassDlaaTotals(uint32_t* frames, double* avgMs, double* maxMs,
 // (ui_resolve.h). False until one has run.
 bool temporalPassUiResolveTotals(uint64_t* dispatches, uint64_t lacked[3]);
 
+// The motion prep's mv dispatches this session by which scene-depth layers
+// were bound: byLayers[0] the smoke's depth (t6) and the private UI depth (t7)
+// both, [1] the smoke's only, [2] the UI's only, [3] neither. An absent layer
+// is skipped, not read as zeros from a null view (zSceneAt,
+// temporal_shader_source.h). False until one has run.
+bool temporalPassMvDepthLayerTotals(uint64_t byLayers[4]);
+
 // The trained totals of whichever engine fix.temporal_aa names RIGHT NOW,
 // with the word a display should print for it ("NVIDIA", or "fsr 3.1.2"),
 // and whether that engine is AMD's -- the per-role figures below are

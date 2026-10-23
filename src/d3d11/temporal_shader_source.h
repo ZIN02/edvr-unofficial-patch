@@ -29,8 +29,8 @@ RWTexture2D<float2> MV : register(u3);   // for a trained pass: motion vectors, 
 RWTexture2D<float>  ZC : register(u4);   // and the depth, copied as it is (the mv entry)
 Texture2D<float> ZP : register(t3);      // last frame's ZC; holoJitter.w validates it
 Texture2D<float> UM : register(t4);      // the interface's reactive mask (ui_depth.h), folded into MK when probe.z says it is bound
-Texture2D<float> ZS : register(t6);      // the drives' smoke's own depth (ui_depth.h, uiDepthSmokeDepth), the scene depth's size; unbound = none this frame, and reads as the far value
-Texture2D<float> ZUI : register(t7);     // private UI depth; never used by game draws
+Texture2D<float> ZS : register(t6);      // the drives' smoke's own depth (ui_depth.h, uiDepthSmokeDepth), the scene depth's size; unbound = none this frame, and reads as the far value; probe.w bit 64 = not bound, not fetched (zSceneAt)
+Texture2D<float> ZUI : register(t7);     // private UI depth; never used by game draws; probe.w bit 256 = not bound, not fetched (zSceneAt)
 Texture2D<float4> UP : register(t8);     // previous raw-raster UI colour; alpha is coverage, not opacity
 // t9..t11 were the terrain patch index, its depth and its transform records (retired 2026-10-01: terrain takes the camera's motion).
 Texture2D<float2> HC : register(t12);
@@ -305,7 +305,7 @@ cbuffer P : register(b0) {
     float4 tvCand;      // xyz the same for the instrument's swapped-eyes candidate
     float4 tvCam;       // xyz the translation term for the camera rows (the world path); w 1 = the world path is on
     float4 split;       // x the ship's radius in metres (nearer: the head's delta; farther and the far plane: the camera's); yzw unused
-    float4 probe;       // x history scale, y registration probes, z coverage bound; w bits: 1 fixed bias, 2 prior UI valid, 4 adaptive UI, 8 (retired 2026-10-01: terrain), 16 holo, 32 screen, 128 the scanner's screen is up (its interface takes the head's path), 8192 the celestial records are bound (t15)
+    float4 probe;       // x history scale, y registration probes, z coverage bound; w bits: 1 fixed bias, 2 prior UI valid, 4 adaptive UI, 8 (retired 2026-10-01: terrain), 16 holo, 32 screen, 64 t6 (the smoke's depth) not bound, 128 the scanner's screen is up (its interface takes the head's path), 256 t7 (the private UI depth) not bound, 8192 the celestial records are bound (t15)
     float4 holoJitter; // current minus previous raster jitter; z = consecutive treated frames; w = valid DLSS depth history
 };
 float3 rgbToYcocg(float3 c) {
@@ -380,9 +380,21 @@ R"HLSL(
 // copy is seeded once per eye/frame; reading the latest scene here also
 // lets later nearer geometry win. The game's live depth is never modified
 // by these coverage passes. Reversed-Z; unbound layer SRVs read far (zero).
+// An absent layer is not fetched: probe.w bit 64 says t6 (the smoke's depth)
+// is not bound, bit 256 that t7 (the private UI depth) is not, read off the
+// very views the dispatch binds (temporal_pass.cpp). A fetch from a null view
+// returns +0.0 and costs the pass on an RTX 5090 (ui_resolve.h: 0.04 ms an eye
+// per null 9-tap input), and the trail's smoke is absent on most frames. The
+// absent operand is that same +0.0, so the max chain and its result are the
+// fetch's to the bit (NaN, -0, denormals and negatives included); a clear bit
+// -- a rig, or a caller that does not say -- fetches as it always did.
 float zSceneAt(int2 q) {
     if((uint(probe.w+.5)&32u)!=0u) { float4 s=Screen.Load(int3(q,0));if(s.w>0)return s.z; }
-    return max(max(Z.Load(int3(q, 0)), ZS.Load(int3(q, 0))), ZUI.Load(int3(q, 0)));
+    float z = Z.Load(int3(q, 0)), zs = 0.0, zu = 0.0;   // what a null view returns: +0.0
+    [branch] if ((uint(probe.w + 0.5) & 64u) == 0u) zs = ZS.Load(int3(q, 0));
+    z = max(z, zs);
+    [branch] if ((uint(probe.w + 0.5) & 256u) == 0u) zu = ZUI.Load(int3(q, 0));
+    return max(z, zu);
 }
 float zAt(int2 q) { return zSceneAt(q); }
 // The interface's pixel, by ui_depth's coverage mask when it is bound

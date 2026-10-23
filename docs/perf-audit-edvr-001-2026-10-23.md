@@ -1,0 +1,135 @@
+# Contributor performance audit EDVR-001: review and changes (2026-10-23)
+
+All of the investigation behind this arc is RocketsProjects' work: the EDVR-001 source audit (42
+findings, each with its side effects and invariants), the no-smoke A/B bench, and the smoke-presence
+census design. This doc records what EDVR's review made of it and what was built from it.
+
+## Status
+
+- **State:** RocketsProjects' read-only audit (EDVR-001, 42 findings, source pinned at 74081399,
+  received 2026-10-22) was checked against HEAD c16a46b3. The 23 active findings plus the smoke-depth
+  reads (G09) each got a source review. Seven became changes on branch
+  `claude/edvr-performance-optimizations-8aff5f`. All of them keep output identical, and none is
+  flown.
+- **Built (CPU):** CPU-02, CPU-04, CPU-05 and CPU-06 in 92904483; CPU-12 and CPU-17 in 24a0c1b0.
+- **Built (GPU):** G09 (ZS/ZUI absent bits in `zSceneAt`), see the G09 entry below.
+- **No config keys.** Every change is exactly equivalent, so none gets a toggle.
+- **Next flight:** VR cockpit in space, a station and on foot, on the Frontier install. Check:
+  - **Build identity:** `edvr_log.py --expect-build HEAD`.
+  - **CPU-06:** the 30 s "ui quality: depth view memo" line, in VR and in flat. Expect hits to
+    dominate.
+  - **G09 counts:** the ZS/ZUI presence totals line, which gives how many dispatches skip each load.
+  - **G09 timing:** the GPU census door "motion prep", against 0.374 ms a frame in the 2026-10-14
+    hangar on the 5090.
+  - **CPU-02 and CPU-04:** `tools\cpu_profile.py` samples under `uiLayerDecide` (CRT vsnprintf and
+    malloc) and under `srv0IsPanelSizedSlow` by parent.
+  - **Regressions:** the UI layer, holograms, ship trails and DLSS output must look unchanged. A
+    regression here means a premise below is wrong; it does not call for tuning.
+- **Open (not built):** see "Measure first" below. Each item has its own gate.
+
+## What was built
+
+| ID | Change | Why it is exact | Proof |
+|---|---|---|---|
+| CPU-02 | `uiLayerDecide` builds the family-line detail text (`describeBlend`, `describeDs`, `_snprintf_s`, a temporary `std::string`) only when `noteFamily` will print it (`UiFamilySeenTable::wanted`). About 70-110 redirected draws per frame in VR used to pay for this text. | Nothing between the guard and `noteFamily` writes the seen table or rebinds a shader. First-occurrence text and decisions are unchanged. | ui_quality_test: the table checked against a frozen copy of the old rule; source scans on the guard |
+| CPU-04 | The after-UI site asks `srv0IsPanelSized` only behind `!afterExcluded && uiLayerWorldScreenHeld()`. | `uiLayerAfterWritePreserved` reads `panelSized` only in that case, and `g_screenHeld` is written only at the frame boundary. | source scan. The probe's first-size note no longer fires for non-eye targets from this site; accepted |
+| CPU-05 | `uiLayerNoteOther`'s four-slot PS SRV scan runs after the preserved-exclusion return. | An excluded write never reads the scan's outputs. | source scan |
+| CPU-06 | `seedWritersCheck` remembers a successful depth-view resolve against (view, `bindingGeneration(Dsv0)`). The resolve is up to 4 guarded COM round trips a call, on every owner draw after the first take. | The generation moves on every OM rebind, ClearState, command list and frame boundary (the engine_velocity and temporal_pass idiom). Failures are not remembered, so the fault budget is unchanged. | a behavioural rig (ui_layer_world_test `testDsvMemo`, against the real `resolveBoundDsv`), plus hit/miss counts on their own line |
+| CPU-12 | Setter-class `flatIssueEpochBump*` skipped while `runtimeVrProfile()` (flat_issue_epoch.h). | Only the flat Issue certificate reads the epoch. It is stamped only in flat draw scopes and reused only at the same epoch and frame. Leaving Flat clears it and revokes the epoch before `runtimeProfileSet` (mode_watch.cpp `commitPosted`), all on the render thread. Revoke and NoteResource stay ungated. | flat_temporal_test `flat_issue_epoch_gate_tests.h`: per profile, plus a Flat→VR→Flat walk |
+| CPU-17 | The five Map-bounce note calls in vscreen.cpp are skipped while `runtimeVrProfile()`. That is about 3 locked increments × 1,100-3,000 Maps per frame. | `reportMapBounce` (flat Present only) is the only reader. Leases, install and `bankSamples` are untouched. | source scans |
+| G09 | See below. | | |
+
+**Side effect accepted for CPU-12 and CPU-17:** the setter-class and Map-bounce counters now count
+non-VR time only. Before this, the first flat window after a VR stretch carried VR counts.
+
+In the issue-epoch report's first window after a switch, the ungated `revokes` and `cbWrites` still
+include VR time while the four setter counters do not. Ratios between them in that one window are
+skewed; later windows are not affected.
+
+## G09: optional smoke and UI-depth loads in `zSceneAt`
+
+`zSceneAt` merged `max(max(Z, ZS), ZUI)` with three Loads on every call:
+- **mv** (the trained path): 2.25 calls a pixel in the tile fill.
+- **main** (native TAA): 9 calls a pixel in `fetchHistoryT`'s 3×3.
+
+ZS (smoke depth, t6) is bound only while a ship trail drew this frame. ZUI (private UI depth, t7) is
+bound only once some UI coverage prepared it. A null SRV still costs a fetch on NVIDIA: the UI
+resolve's own null taps were measured at about 0.04 ms an eye per null input on the 5090 (the comment
+in ui_resolve.h). This was P2 in edvr-gpu-trims-2026-10-14.md, "proposed, not built".
+
+The new design uses two probe.w bits with *absent* polarity: 64 means t6 is unbound, 256 means t7 is
+unbound.
+- Each bit is computed from the very SRV placed in the bound array, so a bit can never disagree with
+  the binding.
+- A skipped load is replaced by the literal +0.0 that a null view returns.
+- The `max` chain and its order are kept. A plain skip would not be exact: `max(NaN, 0)` is 0 today,
+  and negative or -0 depth would also behave differently.
+
+**RocketsProjects' independent bench** (2026-10-23, an RTX 5060, 2016² for one eye, 48-dispatch block
+averages, 12 interleaved paired rounds × 3 runs):
+- They used a compiled variant that drops only the ZS load: `max(max(Z, 0), ZUI)`.
+- With private UI depth off, it took the mv fast pass from 0.310 to 0.245 ms an eye (−0.065, 21%).
+- With UI depth on, it went from 0.258 to 0.230 ms an eye (−0.028, 11%).
+- 72 of 72 rounds improved. The output was byte-exact on null smoke, with a bound-smoke negative
+  control.
+- This is a per-dispatch microbench. It is not a frame-rate claim, and it says nothing about how
+  often smoke is absent in live VR. The new presence counter answers that.
+
+(Implementation results, rig and bench numbers: filled in when the branch lands.)
+
+## Measure first (real, not built)
+
+- **G08, in-place UI resolve** (P1 in gpu-trims).
+  - `applyUiResolve` could write `dlOut` in place and skip the store where a pixel is unchanged.
+  - Saving: about 0.013-0.027 ms an eye on a 5090, and about 0.05-0.09 on a 512 GB/s card.
+  - Blocker: handing out the typed UNORM `dlOut` breaks the D1 typeless rule (temporal_pass.cpp, the
+    `dlSubmit` creation comment). The alternative, a typeless `dlOut`, needs NGX, FSR3 and XeSS each
+    to accept a typeless output.
+  - Gate: an in-place variant benched in `ui_holo_pass_test --bench` on the 5090 and an AMD card
+    (≥0.03 ms an eye), plus a byte-compare proving D1 no longer applies on the native runtime.
+- **CPU-01, the profiler bracket.**
+  - The X hook's `DrawClock` interval includes `weaponMotionDraw` and the census scope, so the "draw
+    hook CPU" line under-reports EDVR's cost on foot.
+  - Fix: take r0 and `realCall` around `realDrawIndexedInstanced` only.
+  - It is a measurement fix, not a speedup. It was held out of this batch so the line stays
+    comparable across it.
+- **G03, bit-aware stencil freshness.** Sound for a stencil-only writer whose writeMask is disjoint
+  from seededMask, but the measured hangar is already 2 seeds a frame (mask 00). Record
+  `l->seededMask` in `g_seedCensus.event` and fly the late target-sprite storm
+  (dlss-performance-review-2026-09-28.md) with diagnostics on; close if the residual reseeds are not
+  disjoint-writer cases.
+- **`dsReproducible` per-frame memo.**
+  - About 8 COM calls on each of 62-93 tested takes per frame, all a function of the bound DSV.
+  - The memo must handle a device reset.
+  - Gate: a cpu_profile.py parent split first.
+- **XeSS bridge copies** (xess_engine.cpp: output copy-back and three input copies per eye). The
+  existing `kBridgeCopyIn` / `kBridgeCopyOut` timers in an XeSS log price them.
+- **G13, near-light occupancy.** There is no exact change: an all-zero fallback map would read as
+  "empty". If the census door "hologram resolve draw" shows ≥0.05 ms an eye, bound the draw and
+  dispatch to the elements' screen extent instead.
+
+## Ruled out (with reasons)
+
+- ruled out: CPU-03 (skip DS/blend inspection on a known MRT refusal), because no MRT/UAV refusal
+  appears in four current VR logs. The seeder is already warmed at the frame boundary, so the
+  "first-use" side effect is moot.
+- ruled out: CPU-09 (memo of blend descriptors), because it saves at most tens of µs a frame. A
+  pointer key risks ABA, and a held reference or private-data lookup costs about what GetDesc does.
+- ruled out: CPU-10 (FSS chrome metadata), because it is already behind the kind, count and VS-hash
+  gates. That is about 6 draws a frame.
+- ruled out: CPU-13 as a separate item, because it is the proof CPU-12 needed and saves nothing
+  itself. The proof is above.
+- ruled out: CPU-15 (negative cache for zero shader hashes), because the create hooks register before
+  the game sees the pointer, so a healthy run has about zero such lookups. A negative cache would need
+  a publication protocol.
+- ruled out: CPU-19 (atlas watch after the instruments are disabled), because gating would break the
+  since-created and 30 s totals. The saving is about 5-10 µs a frame.
+- ruled out: CPU-20 (duplicate RTV query on a flat clear), because the two observers have different
+  fault and type semantics, deliberately (design-flat-temporal-aa-2026-09-23.md). About 2-4 µs a
+  frame.
+- ruled out: G17 (fuse UI resolve with RCAS), because sharpening is off by default, it crosses two
+  modules, and quantization exactness is per adapter.
+- ruled out: G01 (OpenXR transfer), because it is already measured and closed in
+  openxr-performance-review-2026-09-14.md, and frame_end_overlap defaults on.
+- The 19 findings the audit itself marked NO-GO (CPU-07/08/11/14/16/18/21, G02/04/05/06/07/10/11/12/
+  14/15/16/18) were not reopened. G01, G19, G20 and G21 are measurement prerequisites, not changes.

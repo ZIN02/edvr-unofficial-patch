@@ -3233,6 +3233,17 @@ void logSharpWeapons() {
         static_cast<unsigned long long>(g_win.weaponsContentFrames), static_cast<unsigned long long>(g_win.weaponsLost), pairs.c_str());
 }
 
+// The bound depth view's resolve memo (resolveBoundDsv): how often seedWritersCheck's question was answered from it and how often it
+// was resolved (a miss, a failed resolve included). Its own 30 s line so the flat profile, which skips logTotals but runs
+// seedWritersCheck on every scene draw (flatUiLayerNoteSceneDraw), reports the counts too, before the window reset discards them.
+// All zeros means no draw reached the resolve in the window, which is not the same as this line missing.
+void logDsvMemo() {
+    Log::get().note(
+        "ui quality: depth view memo: the bound depth view's resource was answered from the Dsv0-generation memo %llu times "
+        "and resolved on a miss (a failed resolve included) %llu times in this window.",
+        static_cast<unsigned long long>(g_win.dsvMemoHits), static_cast<unsigned long long>(g_win.dsvMemoMisses));
+}
+
 void logTotals(double seconds) {
     // The frosted base's own count: the flight's answer to "did the station menu's base go through the
     // remapped program" -- admitted must climb with the panels, refused stay 0.
@@ -3305,13 +3316,10 @@ void logTotals(double seconds) {
         "ui quality: layer seed preservation: %llu stencil-only game writers kept an unmodified "
         "depth-only seed; matched layer/eye events, not avoided-seed count; %llu first-issue attempts "
         "with raw depth-enabled/write-ALL state activated a conservative whole-frame guard "
-        "across both eyes/layers (potential writes, including no private DSV or original read-only view); "
-        "the bound depth view's resource was answered from the Dsv0-generation memo %llu times and "
-        "resolved on a miss (a failed resolve included) %llu times.",
+        "across both eyes/layers (potential writes, including no private DSV or original read-only view).",
         static_cast<unsigned long long>(g_win.depthOnlySeedPreservedWriters),
-        static_cast<unsigned long long>(g_win.privateDepthPotentialBegins),
-        static_cast<unsigned long long>(g_win.dsvMemoHits),
-        static_cast<unsigned long long>(g_win.dsvMemoMisses));
+        static_cast<unsigned long long>(g_win.privateDepthPotentialBegins));
+    logDsvMemo();
     Log::get().note(
         "ui quality: layer: %.0f s, %llu frames, %ux%u per eye + composite output %ux%u; %.2f draws "
         "a frame redirected (%s), %.2f multiplies, %.2f depth/stencil write-backs, %.2f tested "
@@ -6047,6 +6055,13 @@ void uiLayerNoteSceneDraw(ID3D11DeviceContext* ctx, uint32_t count, uint32_t ins
     if (ctx) seedWritersCheck(ctx, count, instances, 0, drawKind);
 }
 
+bool uiLayerResolveBoundDsvForTest(void* view, ResourceInfo* info, uint64_t* hits, uint64_t* misses) {
+    const bool ok = resolveBoundDsv(view, info);
+    if (hits) *hits = g_win.dsvMemoHits;
+    if (misses) *misses = g_win.dsvMemoMisses;
+    return ok;
+}
+
 bool uiLayerNoteOther(ID3D11DeviceContext* ctx, uint32_t count, bool verdictForwards, bool substituted,
                       bool excluded, bool panelSized, uint32_t instances, uint32_t verdict, char drawKind) {
     if (!ctx) return false;
@@ -6457,8 +6472,10 @@ void uiLayerFrameBoundary(ID3D11DeviceContext* ctx) {
     const bool anything = g_win.redirected || g_win.composites || g_win.compositeRefused;
     if (runtimeFlatProfile()) {
         // The flat profile: this file's per-eye layer is never live there (fix.temporal_aa reads off through the flat
-        // gate), so its totals would only say so. The panel half's line is the key's 30 s account in flat.
+        // gate), so its totals would only say so. The panel half's line is the key's 30 s account in flat. The scene draws still run
+        // seedWritersCheck there, so the depth-view memo's counts are reported here, before g_win is cleared below.
         uiPanelScaleLog();
+        logDsvMemo();
     } else if (g_target > 0.0f || anything) {
         uint64_t samples = 0;  // what logTotals is about to sort
         for (const RouteStats& r : g_routeStats) samples += r.n;

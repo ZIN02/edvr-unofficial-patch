@@ -14,6 +14,7 @@
 #include "../../src/d3d11/flat_forward_light.h"
 #include "../../src/d3d11/flat_issue_epoch.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,7 @@
 #include <iterator>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace issue_epoch_gate_test {
 inline std::string slurp(const std::filesystem::path& path) {
@@ -52,6 +54,88 @@ inline std::string lineOf(const std::string& text, const std::string& open) {
     if (at == std::string::npos) return {};
     const auto end = text.find('\n', at);
     return text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+}
+
+// The blocks open at byte `at` of C++ text, outermost first, each as its header with the whitespace removed: the code between the
+// previous `;`, `{` or `}` and the `{` ("if(runtimeFlatProfile())", "else", "voidhookedDraw(...)"). Comments, string and character
+// literals and preprocessor lines are skipped, so a brace inside one neither opens nor closes a block. `code` is false when `at`
+// itself lies inside a comment, a literal or a preprocessor line.
+struct OpenBlocks {
+    std::vector<std::string> headers;
+    bool code = true;
+};
+inline OpenBlocks openBlocksAt(const std::string& text, size_t at) {
+    OpenBlocks out;
+    std::string pending;
+    bool lineStart = true;
+    const size_t limit = at < text.size() ? at : text.size();
+    for (size_t i = 0; i < limit; ++i) {
+        const char c = text[i];
+        const char next = i + 1 < text.size() ? text[i + 1] : '\0';
+        if (c == '\n') { lineStart = true; continue; }
+        if (c == ' ' || c == '\t') continue;
+        const bool atLineStart = lineStart;
+        lineStart = false;
+        if (c == '#' && atLineStart) {   // a preprocessor line, with its backslash continuations
+            size_t end = i;
+            while (end < text.size() && (text[end] != '\n' || (end > 0 && text[end - 1] == '\\'))) ++end;
+            if (end >= limit) { out.code = false; return out; }
+            i = end - 1;
+            continue;
+        }
+        if (c == '/' && next == '/') {
+            const size_t end = text.find('\n', i);
+            if (end == std::string::npos || end >= limit) { out.code = false; return out; }
+            i = end - 1;
+            continue;
+        }
+        if (c == '/' && next == '*') {
+            const size_t end = text.find("*/", i + 2);
+            if (end == std::string::npos || end + 2 > limit) { out.code = false; return out; }
+            i = end + 1;
+            continue;
+        }
+        // A quote after a letter or digit is a digit separator (1'000), not the start of a character literal.
+        const bool charLiteral = c == '\'' && !(i > 0 && std::isalnum(static_cast<unsigned char>(text[i - 1])));
+        if (c == '"' || charLiteral) {
+            size_t j = i + 1;
+            while (j < text.size() && text[j] != c && text[j] != '\n') j += text[j] == '\\' ? 2 : 1;
+            if (j >= limit) { out.code = false; return out; }
+            i = j;
+            continue;
+        }
+        if (c == '{') { out.headers.push_back(pending); pending.clear(); continue; }
+        if (c == '}') { if (!out.headers.empty()) out.headers.pop_back(); pending.clear(); continue; }
+        if (c == ';') { pending.clear(); continue; }
+        pending.push_back(c);
+    }
+    return out;
+}
+// Whether a block chain (openBlocksAt's headers) puts its innermost position in the true branch of `if (runtimeFlatProfile())`:
+// walking outward from the innermost block, the first block whose header is exactly that test, with no `else` branch and no other
+// profile test on the way. A position in `} else {` of that if, after its block closed, or under `if (!runtimeFlatProfile())` is not.
+inline bool inFlatProfileBranch(const std::vector<std::string>& headers) {
+    for (size_t i = headers.size(); i-- > 0;) {
+        const std::string& h = headers[i];
+        if (h == "if(runtimeFlatProfile())") return true;
+        if (h.compare(0, 4, "else") == 0) return false;
+        if (h.find("runtimeFlatProfile") != std::string::npos || h.find("runtimeVrProfile") != std::string::npos) return false;
+    }
+    return false;
+}
+// The FlatRuntimeDrawScope constructions in vscreen.cpp text (comments and literals excluded), and how many sit in the true branch of
+// an `if (runtimeFlatProfile())`.
+inline unsigned flatDrawScopes(const std::string& text, unsigned* guarded) {
+    unsigned total = 0;
+    *guarded = 0;
+    const std::string scope = "FlatRuntimeDrawScope flatDraw(";
+    for (auto at = text.find(scope); at != std::string::npos; at = text.find(scope, at + 1)) {
+        const OpenBlocks open = openBlocksAt(text, at);
+        if (!open.code) continue;
+        ++total;
+        if (inFlatProfileBranch(open.headers)) ++*guarded;
+    }
+    return total;
 }
 
 inline int run() {
@@ -246,15 +330,50 @@ inline int run() {
     const std::string valid = bodyOf(forwardInl, "bool forwardIssueValid(State& s,");
     expect(count(forwardInl, "geometryCertStamp(") == 1 && valid.find("geometryCertStamp(") != std::string::npos,
            "the Geometry certificate is stamped once, inside forwardIssueValid");
-    unsigned scopes = 0, scopesGuarded = 0;
-    const std::string scope = "FlatRuntimeDrawScope flatDraw(";
-    for (auto at = vscreenRaw.find(scope); at != std::string::npos; at = vscreenRaw.find(scope, at + 1)) {
-        ++scopes;
-        const auto guard = vscreenRaw.rfind("    if (runtimeFlatProfile()) {\n", at);
-        if (guard != std::string::npos && at - guard < 3000 && vscreenRaw.find("\n    }\n", guard) > at) ++scopesGuarded;
-    }
+    unsigned scopesGuarded = 0;
+    const unsigned scopes = flatDrawScopes(vscreenRaw, &scopesGuarded);
     expect(scopes >= 6 && scopes == scopesGuarded,
-           "every flat draw scope in vscreen.cpp is constructed inside its own `if (runtimeFlatProfile())` block, so VR never stamps");
+           "every flat draw scope in vscreen.cpp is constructed inside the true branch of an `if (runtimeFlatProfile())` block (brace-matched, no else on the way), so VR never stamps");
+    // The scan must bite. Mutated copies of vscreen.cpp, in memory only (the source is never written), put the hookedDrawAuto scope where a
+    // search for the first closing brace after the nearest `if (runtimeFlatProfile())` would still pass it, and where it must not pass.
+    {
+        const std::string anchor = "FlatRuntimeDrawScope flatDraw(self, 0, 'A');";
+        const std::string opener = "    if (runtimeFlatProfile()) {\n";
+        const size_t anchorAt = vscreenRaw.find(anchor);
+        const size_t openerAt = anchorAt == std::string::npos ? std::string::npos : vscreenRaw.rfind(opener, anchorAt);
+        const bool anchored = anchorAt != std::string::npos && count(vscreenRaw, anchor) == 1 && openerAt != std::string::npos &&
+                              anchorAt - openerAt < 400 && openBlocksAt(vscreenRaw, anchorAt).headers.size() >= 1 &&
+                              openBlocksAt(vscreenRaw, anchorAt).headers.back() == "if(runtimeFlatProfile())";
+        expect(anchored, "the scan's controls find hookedDrawAuto's scope directly inside its flat block (an anchor of the controls moved)");
+        if (anchored) {
+            const auto mutated = [&](size_t at, size_t len, const std::string& with) {
+                std::string text = vscreenRaw;
+                text.replace(at, len, with);
+                return text;
+            };
+            const auto guardedIn = [&](const std::string& text, unsigned* total) {
+                unsigned g = 0;
+                *total = flatDrawScopes(text, &g);
+                return g;
+            };
+            unsigned total = 0, g = 0;
+            g = guardedIn(mutated(anchorAt, anchor.size(), "{ " + anchor + " }"), &total);
+            expect(total == scopes && g == total, "scan control: a scope in a bare block inside the flat block is still guarded");
+            g = guardedIn(mutated(anchorAt, anchor.size(), "if (self == nullptr) {} else { " + anchor + " }"), &total);
+            expect(total == scopes && g + 1 == total, "scan control: a scope in an else branch nested inside the flat block is not guarded");
+            g = guardedIn(mutated(openerAt, opener.size(), opener + "    } else {\n"), &total);
+            expect(total == scopes && g + 1 == total,
+                   "scan control: a scope in the else branch of the flat test itself is not guarded (a search for the first `\\n    }\\n` after the opener passes it)");
+            g = guardedIn(mutated(openerAt, opener.size(), opener + "    }\n    {\n"), &total);
+            expect(total == scopes && g + 1 == total, "scan control: a scope after the flat block closed, in a bare block of its own, is not guarded");
+            g = guardedIn(mutated(openerAt, opener.size(), "    if (!runtimeFlatProfile()) {\n"), &total);
+            expect(total == scopes && g + 1 == total, "scan control: a scope under the negated test is not guarded");
+            g = guardedIn(mutated(openerAt, opener.size(), "    // if (runtimeFlatProfile()) {\n    {\n"), &total);
+            expect(total == scopes && g + 1 == total, "scan control: a flat test that is only a comment guards nothing");
+            g = guardedIn(mutated(anchorAt, anchor.size(), "// " + anchor), &total);
+            expect(total + 1 == scopes && g == total, "scan control: a scope inside a comment is not a construction");
+        }
+    }
     const std::string forgetCert = bodyOf(forwardInl, "void geometryCertClear() {");
     const std::string reset = bodyOf(forwardInl, "void forwardReset(State& s,");
     const std::string resize = bodyOf(runtimeCpp, "void flatRuntimeResize() {");

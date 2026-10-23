@@ -885,6 +885,21 @@ void testCpuPathWiring(const std::string& layerText, const std::string& layerSqu
           "CPU-06: the memo is keyed by the view and the generation, and a result is stored only after a successful resolve");
     check(memo.find("constuint32_tgen=bindingGeneration(BindSlot::Dsv0);") != std::string::npos,
           "CPU-06: the key's generation is the Dsv0 slot's");
+    // The memo's counts reach a log line in both profiles: logTotals (not live in the flat profile) through logDsvMemo, and the flat
+    // branch of the frame boundary through the same function, before the window reset discards them. The behaviour of the memo itself
+    // is held by tools\ui_layer_world_test (testDsvMemo), which links ui_layer.cpp.
+    std::string reportRaw, totalsRaw;
+    check(functionBody(layerText, "void logDsvMemo(", &reportRaw) && functionBody(layerText, "void logTotals(", &totalsRaw),
+          "CPU-06: logDsvMemo and logTotals are found");
+    const std::string rep = squeeze(reportRaw), totals = squeeze(totalsRaw);
+    check(rep.find("g_win.dsvMemoHits") != std::string::npos && rep.find("g_win.dsvMemoMisses") != std::string::npos,
+          "CPU-06: logDsvMemo reports both counts");
+    check(occurrences(totals, "logDsvMemo();") == 1 && totals.find("dsvMemo") == std::string::npos,
+          "CPU-06: logTotals reports the counts through logDsvMemo, once, with no copy of the line of its own");
+    const size_t flatReport = layerSqueezed.find("uiPanelScaleLog();logDsvMemo();}elseif(g_target>0.0f||anything){");
+    const size_t windowReset = flatReport == std::string::npos ? std::string::npos : layerSqueezed.find("g_win=Window{};", flatReport);
+    check(flatReport != std::string::npos && windowReset != std::string::npos && occurrences(layerSqueezed, "logDsvMemo();") == 2,
+          "CPU-06: the flat profile's window report calls logDsvMemo (beside the panel half's line), before g_win is reset; no other caller");
 }
 
 void testWiring() {

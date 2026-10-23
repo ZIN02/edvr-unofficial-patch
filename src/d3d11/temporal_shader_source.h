@@ -30,7 +30,7 @@ RWTexture2D<float>  ZC : register(u4);   // and the depth, copied as it is (the 
 Texture2D<float> ZP : register(t3);      // last frame's ZC; holoJitter.w validates it
 Texture2D<float> UM : register(t4);      // the interface's reactive mask (ui_depth.h), folded into MK when probe.z says it is bound
 Texture2D<float> ZS : register(t6);      // the drives' smoke's own depth (ui_depth.h, uiDepthSmokeDepth), the scene depth's size; unbound = none this frame, and reads as the far value; probe.w bit 64 = not bound, not fetched (zSceneAt)
-Texture2D<float> ZUI : register(t7);     // private UI depth; never used by game draws; probe.w bit 256 = not bound, not fetched (zSceneAt)
+Texture2D<float> ZUI : register(t7);     // private UI depth; never used by game draws; probe.w bit 256 = not bound, not fetched (zSceneAt; before 319c1c5a the bit was per-object motion's)
 Texture2D<float4> UP : register(t8);     // previous raw-raster UI colour; alpha is coverage, not opacity
 // t9..t11 were the terrain patch index, its depth and its transform records (retired 2026-10-01: terrain takes the camera's motion).
 Texture2D<float2> HC : register(t12);
@@ -310,7 +310,7 @@ cbuffer P : register(b0) {
     float4 tvCand;      // xyz the same for the instrument's swapped-eyes candidate
     float4 tvCam;       // xyz the translation term for the camera rows (the world path); w 1 = the world path is on
     float4 split;       // x the ship's radius in metres (nearer: the head's delta; farther and the far plane: the camera's); yzw unused
-    float4 probe;       // x history scale, y registration probes, z coverage bound; w bits: 1 fixed bias, 2 prior UI valid, 4 adaptive UI, 8 (retired 2026-10-01: terrain), 16 holo, 32 screen, 64 t6 (the smoke's depth) not bound, 128 the scanner's screen is up (its interface takes the head's path), 256 t7 (the private UI depth) not bound, 8192 the celestial records are bound (t15)
+    float4 probe;       // x history scale, y registration probes, z coverage bound; w bits: 1 fixed bias, 2 prior UI valid, 4 adaptive UI, 8 (retired 2026-10-01: terrain), 16 holo, 32 screen, 64 t6 (the smoke's depth) not bound, 128 the scanner's screen is up (its interface takes the head's path), 256 t7 (the private UI depth) not bound (until 319c1c5a, 2026-09-23, 256 was the retired per-object motion's bit: an eye dump older than that means that by it), 8192 the celestial records are bound (t15)
     float4 holoJitter; // current minus previous raster jitter; z = consecutive treated frames; w = valid DLSS depth history
 };
 float3 rgbToYcocg(float3 c) {
@@ -698,7 +698,7 @@ R"HLSL(
 // main's tile of this frame's scene depth: the group's 8x8 with a one-texel
 // apron, entry (x, y) = zSceneAt at the group's origin + (x - 1, y - 1),
 // clamped to the image as the 3x3 below clamps, filled at the top of main()
-// for every group. fetchHistoryT's 3x3 reads it where main set
+// whenever the 3x3 can run. fetchHistoryT's 3x3 reads it where main set
 // gMainDepthTile; any other entry (a rig's) never sets it and fetches as before.
 groupshared float mainDepthTile[100];
 static bool gMainDepthTile = false;
@@ -1146,13 +1146,24 @@ void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 #if EDVR_MAIN_DEPTH_TILE
     // The history fetch's 3x3 of the scene depth, once a group: 100 fetches
     // where the pixels' own 3x3s were 576 (and twice that again for the
-    // instrument's depth candidates). Every group fills it, whatever its
-    // pixels then do, so the 3x3 never reads an entry it did not write;
-    // threads past the image fill clamped entries and meet the barrier.
+    // instrument's depth candidates). Filled whenever fetchHistoryT can run
+    // its 3x3, by the constants alone (the same for every group): a history
+    // to blend, depth bound, and the head's depth term or the world split
+    // (its useDepth || worldOn from main's call), or, in the instrument, a
+    // depth candidate (1 or 3). Then whatever the group's pixels do, the 3x3
+    // never reads an entry it did not write; threads past the image fill
+    // clamped entries. On a history reset or with no depth nothing is
+    // fetched. The barrier stays outside the branch, met by every thread.
     gMainDepthTile = true;
     gMainDepthTileOrigin = int2(id.xy) - int2(gi & 7u, gi >> 3u);
-    for (uint tk = gi; tk < 100u; tk += 64u)
-        mainDepthTile[tk] = zSceneAt(region.xy + clamp(gMainDepthTileOrigin + int2(tk % 10u, tk / 10u) - 1, int2(0, 0), size - 1));
+    bool depthTileRead = tvUsed.w != 0.0 || (tvCam.w != 0.0 && split.x > 0.0);
+#if EDVR_TEMPORAL_DIAGNOSTICS
+    depthTileRead = depthTileRead || (candMask & 10) != 0;
+#endif
+    [branch] if (haveHistory != 0 && knobs.y != 0.0 && depthTileRead) {
+        for (uint tk = gi; tk < 100u; tk += 64u)
+            mainDepthTile[tk] = zSceneAt(region.xy + clamp(gMainDepthTileOrigin + int2(tk % 10u, tk / 10u) - 1, int2(0, 0), size - 1));
+    }
 #endif
 #if EDVR_TEMPORAL_DIAGNOSTICS
     if (gi < 48) gCount[gi] = 0;

@@ -1100,11 +1100,8 @@ static uint64_t            g_uiResolveDispatches = 0, g_uiResolveLacked[3] = {};
 // The motion prep's scene-depth layers (zSceneAt, temporal_shader_source.h): mv dispatches by which of t6 (the smoke's depth) and t7
 // (the private UI depth) were bound -- [0] both, [1] the smoke's only, [2] the UI's only, [3] neither.
 static uint64_t            g_mvDepthLayers[4] = {};
-// probe.w bits 64 and 256: t6 / t7 NOT bound, so zSceneAt skips the fetch and uses the +0.0 a null view returns. Read off the very
-// SRV array the dispatch binds from slot 0, so a bit can never disagree with its binding; a clear bit fetches as it always did.
-uint32_t depthLayersAbsentBits(ID3D11ShaderResourceView* const* srvs) {
-    return (srvs[6] ? 0u : 64u) | (srvs[7] ? 0u : 256u);
-}
+// probe.w bits 64 and 256 (t6 / t7 not bound): depthLayersAbsentBits, temporal_pass.h. The rig's zscene_gate_test.h (cpuHalf)
+// holds it to the slots, and holds both dispatches below to reading it off the array they bind, before setParams.
 bool                       g_dlaaNoted = false;
 bool                       g_dlssNoted = false;
 // The refusal line, ONE PER ENGINE. It was a single session-lifetime flag,

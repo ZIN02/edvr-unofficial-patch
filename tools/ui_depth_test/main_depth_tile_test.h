@@ -1,20 +1,27 @@
 // main's depth tile (src/d3d11/temporal_shader_source.h, EDVR_MAIN_DEPTH_TILE): the native-TAA pass's history fetch
 // read the 3x3 of zSceneAt around every pixel (and again for the instrument's two depth candidates); it now reads a
-// 10x10 group tile filled once at the top of main. The claim, on WARP, bit for bit:
+// 10x10 group tile filled once at the top of main, and only when the constants say the 3x3 can run. The claim, on
+// WARP, bit for bit:
 //
 //   the production main (both embedded blobs, temporal_aa_cs and temporal_aa_fast_cs) and the same text compiled
 //   with EDVR_MAIN_DEPTH_TILE 0 write the same bytes to every output (O, N, UN, Stats) for the same inputs.
 //
-// The reference is the shader before the tile: fxc gives EDVR_MAIN_DEPTH_TILE 0 the bytecode of origin/main's main
-// byte for byte, both variants (checked by hand 2026-10-23, docs/edvr-gpu-trims-2026-10-14.md). The inputs: a region
+// The reference is the untiled main as of the gate's first phase (ab78bbf4, the absent-layer zSceneAt), not
+// origin/main's, which predates that zSceneAt: the tile was added wholly behind the macro, and fxc gives
+// EDVR_MAIN_DEPTH_TILE 0 the bytecode of ab78bbf4's main byte for byte, both variants (compared by hand on
+// 2026-10-23 with the fill's gate in; docs/edvr-gpu-trims-2026-10-14.md). The inputs: a region
 // offset into its texture and not a multiple of 8 either way (partial groups, the clamped edges), a depth map of
 // sky, far and near surfaces with a few signed zeros, denormals and NaNs, the smoke's and the UI depth bound or
 // not, the screen map, the coverage mask and the previous UI colour; the configurations: depth bound or not, the
 // head's depth term and the world path each on or off, six probe.w words, and no history.
 // Non-vacuity: the world path ran where asked (Stats[15]), the depth changes the outputs, WARP agrees with
-// itself, and a mutant tile index (every tap the pixel's own entry) is caught, and only where the 3x3 runs.
+// itself, a mutant tile index (every tap the pixel's own entry) is caught, and only where the 3x3 runs. The fill's
+// gate, over a tile poisoned first (withPoison, so an unfilled entry reads the same on every device): the production
+// gate matches the reference in every configuration, both variants, and a mutant gate (the world split left out) is
+// caught exactly where the world split alone runs the 3x3.
+// The fill's control flow in both shipping blobs' DXBC: the barrier at depth 0, the tile's stores inside a branch.
 // By hand: ui_depth_test --main-tile [--adapter nvidia] [--bench] (the bench: temporal_aa_fast_cs at 2016x2016 against the
-// untiled main, zscene_gate_test.h's harness).
+// untiled main, and on a history reset and with no depth against the ungated fill; zscene_gate_test.h's harness).
 #pragma once
 #include <thread>
 
@@ -180,11 +187,64 @@ Outputs run(ID3D11Device* dev, ID3D11DeviceContext* ctx, Rig& r, ID3D11ComputeSh
     return out;
 }
 
+// The production text with the tile fill's gate condition replaced (the mutant, and the bench's ungated fill).
+std::string withGate(const std::string& hlsl, const char* condition) {
+    const char* kGate = "[branch] if (haveHistory != 0 && knobs.y != 0.0 && depthTileRead) {";
+    const size_t at = hlsl.find(kGate);
+    check(at != std::string::npos && hlsl.find(kGate, at + 1) == std::string::npos, "main depth tile: the fill's gate found exactly once");
+    return hlsl.substr(0, at) + "[branch] if (" + condition + ") {" + hlsl.substr(at + std::strlen(kGate));
+}
+// The tile poisoned before the gate (rig-only text): every entry FLT_MAX, the nearest depth there is, written by the
+// thread that would fill it, so an entry the gate leaves unfilled reads as that on any device. Without it an unfilled
+// entry reads whatever the last group on that memory left, and on the RTX that was the same tile from the dispatch
+// before (identical inputs): the wrong gate passed there (2026-10-23).
+std::string withPoison(const std::string& hlsl) {
+    const char* kAt = "gMainDepthTileOrigin = int2(id.xy) - int2(gi & 7u, gi >> 3u);";
+    const size_t at = hlsl.find(kAt);
+    check(at != std::string::npos && hlsl.find(kAt, at + 1) == std::string::npos, "main depth tile: main's tile origin found exactly once");
+    const size_t after = at + std::strlen(kAt);
+    return hlsl.substr(0, after) + "\n    for (uint pk = gi; pk < 100u; pk += 64u) mainDepthTile[pk] = asfloat(0x7F7FFFFFu);" + hlsl.substr(after);
+}
+// The fill's control flow in a shipping blob's DXBC, main's top up to its first barrier: every store to the tile
+// (the groupshared array of 100) inside a branch, and the barrier (sync_g_t) outside every branch and loop, where
+// every thread meets it whatever the constants say.
+void tileFlow(const void* code, size_t size, const char* name) {
+    ComPtr<ID3DBlob> text;
+    check(SUCCEEDED(D3DDisassemble(code, size, 0, nullptr, &text)), "main depth tile: the shipping blob disassembles");
+    const std::string asmText(static_cast<const char*>(text->GetBufferPointer()), text->GetBufferSize());
+    std::string tile;
+    int ifDepth = 0, loopDepth = 0, stores = 0, storesInBranch = 0;
+    bool barrier = false, barrierOutside = false;
+    size_t line = 0;
+    while (line < asmText.size()) {
+        size_t end = asmText.find('\n', line);
+        if (end == std::string::npos) end = asmText.size();
+        std::string s = asmText.substr(line, end - line);
+        line = end + 1;
+        const size_t first = s.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        s.erase(0, first);
+        if (s.rfind("dcl_tgsm_structured g", 0) == 0 && s.find(", 4, 100") != std::string::npos) {
+            tile = s.substr(20, s.find(',') - 20);   // "gN"
+        } else if (s.rfind("if_", 0) == 0) ++ifDepth;
+        else if (s.rfind("endif", 0) == 0) --ifDepth;
+        else if (s.rfind("loop", 0) == 0) ++loopDepth;
+        else if (s.rfind("endloop", 0) == 0) --loopDepth;
+        else if (s.rfind("sync_g", 0) == 0) { barrier = true; barrierOutside = ifDepth == 0 && loopDepth == 0; break; }
+        else if (!tile.empty() && s.rfind("store_structured " + tile + ".", 0) == 0) { ++stores; if (ifDepth > 0) ++storesInBranch; }
+    }
+    char label[240];
+    std::snprintf(label, sizeof(label), "main depth tile: %s's DXBC fills the tile (%d stores) only inside a branch (%d) and meets its barrier outside every branch and loop",
+                  name, stores, storesInBranch);
+    check(!tile.empty() && stores > 0 && storesInBranch == stores && barrier && barrierOutside, label);
+}
+
 // The A/B on the given device (WARP in the build). Returns the configurations compared.
 int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     static const D3D_SHADER_MACRO refFast[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "0"}, {"EDVR_MAIN_DEPTH_TILE", "0"}, {nullptr, nullptr}};
     static const D3D_SHADER_MACRO refDiag[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "1"}, {"EDVR_MAIN_DEPTH_TILE", "0"}, {nullptr, nullptr}};
     static const D3D_SHADER_MACRO fast[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "0"}, {nullptr, nullptr}};
+    static const D3D_SHADER_MACRO diag[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "1"}, {nullptr, nullptr}};
     const std::string hlsl = temporalHlsl(temporalSource());
     // The mutant: every tap of the tile read is the pixel's own entry (the 3x3 collapsed; it stays inside the tile).
     const char* kAnchor = "const int2 t = int2(p) - gMainDepthTileOrigin + int2(ox, oy) + 1;";
@@ -192,17 +252,31 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     check(at != std::string::npos && hlsl.find(kAnchor, at + 1) == std::string::npos, "main depth tile: the tile index found exactly once");
     std::string mutant = hlsl;
     mutant.replace(at, std::strlen(kAnchor), "const int2 t = int2(p) - gMainDepthTileOrigin + int2(0, 0) + 1;");
-    // The three compiles together: main alone is ~20 s in fxc (production flags: cs_5_0, flags 0).
-    ComPtr<ID3DBlob> refDiagCode, refFastCode, mutantCode;
+    // The fill's gate, with the tile poisoned first (withPoison): the production gate must still match the reference in
+    // every configuration, both variants (every entry the 3x3 reads was filled: the head's term, the world split, and
+    // the instrument's depth candidates), and the second mutant, the gate without the world split, must not where the
+    // world split alone runs the 3x3.
+    const std::string poisoned = withPoison(hlsl);
+    const std::string gateMutant = withPoison(withGate(hlsl, "haveHistory != 0 && knobs.y != 0.0 && tvUsed.w != 0.0"));
+    // The six compiles together: main alone is ~20 s in fxc (production flags: cs_5_0, flags 0).
+    ComPtr<ID3DBlob> refDiagCode, refFastCode, mutantCode, gateMutantCode, poisonDiagCode, poisonFastCode;
     {
         std::thread a([&] { refDiagCode = compileEntry(hlsl, "main", refDiag, 0); });
         std::thread b([&] { refFastCode = compileEntry(hlsl, "main", refFast, 0); });
         std::thread c([&] { mutantCode = compileEntry(mutant, "main", fast, 0); });
-        a.join(); b.join(); c.join();
+        std::thread g([&] { gateMutantCode = compileEntry(gateMutant, "main", fast, 0); });
+        std::thread e([&] { poisonDiagCode = compileEntry(poisoned, "main", diag, 0); });
+        std::thread f([&] { poisonFastCode = compileEntry(poisoned, "main", fast, 0); });
+        a.join(); b.join(); c.join(); g.join(); e.join(); f.join();
     }
+    tileFlow(edvr::kTemporalAaBytecode, sizeof(edvr::kTemporalAaBytecode), "temporal_aa_cs");
+    tileFlow(edvr::kTemporalAaFastBytecode, sizeof(edvr::kTemporalAaFastBytecode), "temporal_aa_fast_cs");
     auto refDiagCs = makeCs(dev, refDiagCode->GetBufferPointer(), refDiagCode->GetBufferSize());
     auto refFastCs = makeCs(dev, refFastCode->GetBufferPointer(), refFastCode->GetBufferSize());
     auto mutantCs = makeCs(dev, mutantCode->GetBufferPointer(), mutantCode->GetBufferSize());
+    auto gateMutantCs = makeCs(dev, gateMutantCode->GetBufferPointer(), gateMutantCode->GetBufferSize());
+    auto poisonDiagCs = makeCs(dev, poisonDiagCode->GetBufferPointer(), poisonDiagCode->GetBufferSize());
+    auto poisonFastCs = makeCs(dev, poisonFastCode->GetBufferPointer(), poisonFastCode->GetBufferSize());
     auto newDiagCs = makeCs(dev, edvr::kTemporalAaBytecode, sizeof(edvr::kTemporalAaBytecode));
     auto newFastCs = makeCs(dev, edvr::kTemporalAaFastBytecode, sizeof(edvr::kTemporalAaFastBytecode));
     check(refDiagCode->GetBufferSize() != sizeof(edvr::kTemporalAaBytecode) ||
@@ -221,7 +295,7 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         for (uint32_t pw : {0u, 1u, 32u, 128u, 6u, 64u | 256u}) cfgs.push_back({ky, tu, tc, 1, pw});
     cfgs.push_back({1, 1, 1, 0, 0u});
     cfgs.push_back({1, 1, 1, 0, 32u});
-    int compared = 0, mutantCaught = 0, depthMatters = 0;
+    int compared = 0, mutantCaught = 0, depthMatters = 0, gateMutantCaught = 0, unfilled = 0;
     char label[320];
     std::vector<Outputs> byDepth[2];
     for (const Cfg& c : cfgs) {
@@ -232,6 +306,8 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         const Outputs od = run(dev, ctx, r, refDiagCs.Get(), params, layers);
         const Outputs nf = run(dev, ctx, r, newFastCs.Get(), params, layers), of = run(dev, ctx, r, refFastCs.Get(), params, layers);
         const Outputs mf = run(dev, ctx, r, mutantCs.Get(), params, layers);
+        const Outputs gf = run(dev, ctx, r, gateMutantCs.Get(), params, layers);
+        const Outputs poisonD = run(dev, ctx, r, poisonDiagCs.Get(), params, layers), poisonF = run(dev, ctx, r, poisonFastCs.Get(), params, layers);
         std::snprintf(label, sizeof(label), "main depth tile [%s]: WARP is deterministic (one shader, one input, one result)", where.c_str());
         check(same(nd, nd2), label);
         if (!same(od, nd)) std::printf("main depth tile [%s] diagnostic: first difference %s\n", where.c_str(), firstDiff(od, nd).c_str());
@@ -251,16 +327,32 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         if (!same(of, mf)) ++mutantCaught;
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the mutant tile index is caught exactly where the 3x3 runs", where.c_str());
         check(runs3x3 == !same(of, mf), label);
+        // The production gate fills nothing here (a reset, or no depth term to read): the parity above held without a fill.
+        if (!runs3x3) ++unfilled;
+        // The production gate over a poisoned tile: every entry the 3x3 reads was filled, both variants.
+        std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate over a poisoned tile matches the untiled reference (fast)", where.c_str());
+        check(same(of, poisonF), label);
+        std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate over a poisoned tile matches the untiled reference (diagnostic)", where.c_str());
+        check(same(od, poisonD), label);
+        // The wrong gate (poisoned) leaves the tile unfilled where the world split alone runs the 3x3, and only there.
+        const bool gateMissed = runs3x3 && !(c.knobsY && c.tvUsedW && c.haveHistory);
+        if (!same(of, gf)) ++gateMutantCaught;
+        std::snprintf(label, sizeof(label), "main depth tile [%s]: the mutant fill gate (world split left out) is caught exactly where it leaves the 3x3 unfilled", where.c_str());
+        check(gateMissed == !same(of, gf), label);
         if (c.haveHistory && c.tvUsedW && c.tvCamW && c.probeW == 0) byDepth[c.knobsY].push_back(nf);
-        compared += 4;
+        compared += 7;
     }
     if (!byDepth[0].empty() && !byDepth[1].empty() && !same(byDepth[0][0], byDepth[1][0])) ++depthMatters;
     check(depthMatters > 0, "main depth tile: the scene depth changes the outputs (the A/B sees the 3x3)");
     std::snprintf(label, sizeof(label), "main depth tile: the mutant tile index (the 3x3 collapsed) is caught (%d configurations)", mutantCaught);
     check(mutantCaught > 0, label);
+    std::snprintf(label, sizeof(label), "main depth tile: the mutant fill gate is caught (%d configurations) and the unfilled configurations are compared (%d)",
+                  gateMutantCaught, unfilled);
+    check(gateMutantCaught > 0 && unfilled > 0, label);
     std::printf("PASS: main depth tile: temporal_aa_cs and temporal_aa_fast_cs byte-identical to the untiled main over %zu configurations "
-                "(%d dispatch pairs; %ux%u at (%u,%u) in %ux%u); the mutant tile index caught in %d\n",
-                cfgs.size(), compared, kW, kH, kRegX, kRegY, kTexW, kTexH, mutantCaught);
+                "(%d dispatch pairs; %ux%u at (%u,%u) in %ux%u; %d with the fill gated off); the production gate over a poisoned "
+                "tile matched in all, both variants; the mutant tile index caught in %d, the mutant fill gate in %d\n",
+                cfgs.size(), compared, kW, kH, kRegX, kRegY, kTexW, kTexH, unfilled, mutantCaught, gateMutantCaught);
     return int(cfgs.size());
 }
 
@@ -271,7 +363,7 @@ struct BenchFrame {
     ComPtr<ID3D11ShaderResourceView> s, hist, z, zp, zs, zu;
     ComPtr<ID3D11UnorderedAccessView> o, n, statsU, mv, zc, mk;
     std::vector<char> params;
-    size_t probeW = 0;
+    size_t probeW = 0, haveHistoryAt = 0, knobsYAt = 0;   // byte offsets in params (the reset and no-depth bench cases)
 };
 BenchFrame makeFrame(ID3D11Device* dev, const void* code, size_t size) {
     BenchFrame f;
@@ -288,6 +380,8 @@ BenchFrame makeFrame(ID3D11Device* dev, const void* code, size_t size) {
               "zscene gate: cbuffer P field");
         std::memcpy(f.params.data() + vd.StartOffset, v, bytes);
         if (!std::strcmp(name, "probe")) f.probeW = vd.StartOffset + 12;
+        if (!std::strcmp(name, "haveHistory")) f.haveHistoryAt = vd.StartOffset;
+        if (!std::strcmp(name, "knobs")) f.knobsYAt = vd.StartOffset + 4;
     };
     auto f4 = [&](const char* name, float a, float b, float c, float d) { const float v[4] = {a, b, c, d}; put(name, v, 16); };
     const int region[4] = {0, 0, int(w), int(h)}, sz[2] = {int(w), int(h)}, one = 1, none = 0;
@@ -351,13 +445,22 @@ void bindCase(ID3D11DeviceContext* ctx, BenchFrame& f, const BenchCase& c) {
     ctx->CSSetConstantBuffers(0, 1, f.cb.GetAddressOf());
     ctx->CSSetShader(c.cs, nullptr, 0);
 }
-// --bench: the native-TAA pass at the eye size, the production fast main against the untiled one.
+// --bench: the native-TAA pass at the eye size, the production fast main against the untiled one; then, on a history
+// reset and with no depth bound (the 3x3 never runs), against the fill ungated (42bf0a99's main) and the untiled one.
 void bench(Device& d) {
     static const D3D_SHADER_MACRO refFast[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "0"}, {"EDVR_MAIN_DEPTH_TILE", "0"}, {nullptr, nullptr}};
+    static const D3D_SHADER_MACRO fast[] = {{"EDVR_TEMPORAL_DIAGNOSTICS", "0"}, {nullptr, nullptr}};
     const std::string hlsl = temporalHlsl(temporalSource());
-    auto refCode = compileEntry(hlsl, "main", refFast, 0);
+    const std::string ungated = withGate(hlsl, "true");
+    ComPtr<ID3DBlob> refCode, ungatedCode;
+    {
+        std::thread a([&] { refCode = compileEntry(hlsl, "main", refFast, 0); });
+        std::thread b([&] { ungatedCode = compileEntry(ungated, "main", fast, 0); });
+        a.join(); b.join();
+    }
     auto prodCs = makeCs(d.dev.Get(), edvr::kTemporalAaFastBytecode, sizeof(edvr::kTemporalAaFastBytecode));
     auto refCs = makeCs(d.dev.Get(), refCode->GetBufferPointer(), refCode->GetBufferSize());
+    auto ungatedCs = makeCs(d.dev.Get(), ungatedCode->GetBufferPointer(), ungatedCode->GetBufferSize());
     // The frame's constants come from the diagnostic blob's reflection, which keeps the whole of cbuffer P.
     BenchFrame f = makeFrame(d.dev.Get(), edvr::kTemporalAaBytecode, sizeof(edvr::kTemporalAaBytecode));
     ID3D11DeviceContext* ctx = d.ctx.Get();
@@ -369,6 +472,22 @@ void bench(Device& d) {
     printPaired("t6/t7 bound", pairedRounds(d, arm({"", refCs.Get(), false, true, true, 0u}), arm({"", prodCs.Get(), false, true, true, 0u}), gx, gy));
     printPaired("t6/t7 null, bits 64|256",
                 pairedRounds(d, arm({"", refCs.Get(), false, false, false, 320u}), arm({"", prodCs.Get(), false, false, false, 320u}), gx, gy));
+    // The cases where the 3x3 never runs (t6/t7 bound): the fill ungated -> gated, and untiled -> gated.
+    const int noHistory = 0, history = 1;
+    const float depthOff = 0.0f, depthOn = 1.0f;
+    std::puts("  the 3x3 not run (t6/t7 bound): ungated fill or untiled -> the gated production main");
+    std::memcpy(f.params.data() + f.haveHistoryAt, &noHistory, 4);
+    printPaired("history reset: ungated -> gated",
+                pairedRounds(d, arm({"", ungatedCs.Get(), false, true, true, 0u}), arm({"", prodCs.Get(), false, true, true, 0u}), gx, gy));
+    printPaired("history reset: untiled -> gated",
+                pairedRounds(d, arm({"", refCs.Get(), false, true, true, 0u}), arm({"", prodCs.Get(), false, true, true, 0u}), gx, gy));
+    std::memcpy(f.params.data() + f.haveHistoryAt, &history, 4);
+    std::memcpy(f.params.data() + f.knobsYAt, &depthOff, 4);
+    printPaired("no depth (knobs.y 0): ungated -> gated",
+                pairedRounds(d, arm({"", ungatedCs.Get(), false, true, true, 0u}), arm({"", prodCs.Get(), false, true, true, 0u}), gx, gy));
+    printPaired("no depth (knobs.y 0): untiled -> gated",
+                pairedRounds(d, arm({"", refCs.Get(), false, true, true, 0u}), arm({"", prodCs.Get(), false, true, true, 0u}), gx, gy));
+    std::memcpy(f.params.data() + f.knobsYAt, &depthOn, 4);
     if (d.warp) std::puts("note: --bench on WARP times a CPU; use --adapter nvidia.");
 }
 

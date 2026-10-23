@@ -9,7 +9,9 @@
 //     caller that does not say): asuint-equal on every texel, with and without the screen map's bit 32;
 //   * controls: an absent bit set while its layer IS bound must change exactly the texels where that
 //     layer wins and no other (the gate is live, and skips only that layer), and bit 32 with the screen
-//     map set returns the map's depth in both.
+//     map set returns the map's depth in both;
+//   * the CPU half (cpuHalf, no device): depthLayersAbsentBits over its slots, and both dispatches in
+//     temporal_pass.cpp reading it off the array they bind and writing it before setParams and the Dispatch.
 // The investigation behind the gate, and the no-smoke A/B bench whose method and fixture --bench adapts,
 // are RocketsProjects' (2026-10-23).
 // WARP, inside the build's run. By hand:
@@ -23,6 +25,8 @@
 #include <d3d11shader.h>
 #include <dxgi.h>
 #include <algorithm>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -32,6 +36,7 @@
 #include <utility>
 #include <vector>
 #pragma comment(lib, "dxgi.lib")
+#include "../../src/d3d11/temporal_pass.h"   // edvr::depthLayersAbsentBits, the CPU half (cpuHalf)
 
 namespace zgate {
 
@@ -243,6 +248,142 @@ uint64_t parity(ID3D11Device* dev, ID3D11DeviceContext* ctx, const char* where) 
                 "combinations, bits matched and clear, screen bit off and on), 4 live-gate controls\n",
                 where, static_cast<unsigned long long>(texels));
     return texels;
+}
+
+// ------------------------------------------------------------------ the CPU half (temporal_pass.cpp)
+// The bits are only as good as the slots they are read from, and every GPU check above computes its own: a slip to
+// srvs[5] (always null) would set bit 64 on every dispatch, skip a bound smoke depth, and leave them all green. So:
+//   (a) edvr::depthLayersAbsentBits (temporal_pass.h) itself, over the four presence combinations of t6/t7 with a
+//       distinct non-null pointer in every other of the 24 slots, and with each other slot nulled alone;
+//   (b) at each dispatch that calls it in temporal_pass.cpp, the bits are read off the very array that the last
+//       CSSetShaderResources(0, ...) before that Dispatch binds, declared after the previous Dispatch and untouched
+//       by index after; OR'd into p.probe[3] by the statement holding the call or the next one, that OR before a
+//       setParams(ctx, p), and that setParams before the Dispatch, with no other write to p.probe[3] after the OR.
+std::string passSource() {
+    std::ifstream f("src/d3d11/temporal_pass.cpp", std::ios::binary);
+    std::string s((std::istreambuf_iterator<char>(f)), {});
+    s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+    return s;
+}
+bool identChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; }
+// The next occurrence of `word` at or after `from` (and before `to`) that is a whole identifier, or npos.
+size_t findWord(const std::string& s, const std::string& word, size_t from, size_t to = std::string::npos) {
+    for (size_t at = s.find(word, from); at != std::string::npos && at < to; at = s.find(word, at + 1))
+        if ((at == 0 || !identChar(s[at - 1])) && (at + word.size() >= s.size() || !identChar(s[at + word.size()]))) return at;
+    return std::string::npos;
+}
+// The last occurrence of `needle` in [from, to), or npos.
+size_t findLast(const std::string& s, const std::string& needle, size_t from, size_t to) {
+    size_t last = std::string::npos;
+    for (size_t at = s.find(needle, from); at != std::string::npos && at < to; at = s.find(needle, at + 1)) last = at;
+    return last;
+}
+bool inLineComment(const std::string& s, size_t at) {
+    const size_t lineStart = s.rfind('\n', at) == std::string::npos ? 0 : s.rfind('\n', at) + 1;
+    return s.find("//", lineStart) < at;
+}
+// The CPU-half checks over one temporal_pass.cpp text; false (with the reason printed) on the first that fails.
+// `sites` returns the dispatches checked.
+bool passSiteChecks(const std::string& src, int& sites) {
+    sites = 0;
+    auto fail = [](const char* why, size_t at, const std::string& s) {
+        const size_t line = static_cast<size_t>(std::count(s.begin(), s.begin() + static_cast<std::ptrdiff_t>(std::min(at, s.size())), '\n')) + 1;
+        std::printf("zscene gate CPU half: temporal_pass.cpp:%zu: %s\n", line, why);
+        return false;
+    };
+    const std::string kCall = "depthLayersAbsentBits(";
+    size_t previousDispatch = 0;
+    for (size_t call = src.find(kCall); call != std::string::npos; call = src.find(kCall, call + 1)) {
+        if (inLineComment(src, call) || (call > 0 && identChar(src[call - 1]))) continue;
+        const size_t argBegin = call + kCall.size(), argEnd = src.find(')', argBegin);
+        const std::string arg = src.substr(argBegin, argEnd - argBegin);
+        if (arg.empty() || !std::all_of(arg.begin(), arg.end(), identChar)) return fail("the bits read off something other than a named array", call, src);
+        const size_t dispatch = src.find("->Dispatch(", call);
+        if (dispatch == std::string::npos) return fail("no Dispatch after the bits", call, src);
+        if (call < previousDispatch) return fail("two calls for one Dispatch", call, src);
+        // The array: declared after the previous Dispatch, before the call, and never indexed again before this one.
+        const size_t prior = findLast(src, "->Dispatch(", 0, call);
+        const size_t decl = findLast(src, "ID3D11ShaderResourceView* " + arg + "[", prior == std::string::npos ? 0 : prior, call);
+        if (decl == std::string::npos) return fail("the bits' array is not declared for this dispatch", call, src);
+        const size_t declEnd = src.find("};", decl);   // the initializer's end (its comments hold semicolons)
+        if (declEnd == std::string::npos || declEnd > call) return fail("the bits' array is not a braced initializer before the call", decl, src);
+        for (size_t use = findWord(src, arg, declEnd, dispatch); use != std::string::npos; use = findWord(src, arg, use + 1, dispatch))
+            if (src.compare(use + arg.size(), 1, "[") == 0) return fail("the bits' array is indexed after its declaration", use, src);
+        // The binding this Dispatch sees: the last CSSetShaderResources before it, from slot 0, of that same array.
+        const size_t bind = findLast(src, "CSSetShaderResources(", call, dispatch);
+        if (bind == std::string::npos) return fail("no CSSetShaderResources between the bits and the Dispatch", call, src);
+        const size_t bindArgs = bind + std::strlen("CSSetShaderResources("), bindEnd = src.find(')', bindArgs);
+        std::string args = src.substr(bindArgs, bindEnd - bindArgs);
+        args.erase(std::remove(args.begin(), args.end(), ' '), args.end());
+        const size_t c1 = args.find(','), c2 = args.find(',', c1 + 1);
+        if (args.substr(0, c1) != "0" || c2 == std::string::npos || args.substr(c2 + 1) != arg)
+            return fail("the Dispatch's CSSetShaderResources does not bind the bits' array from slot 0", bind, src);
+        // The OR into p.probe[3]: the statement holding the call, or the next one, through the variable the call set.
+        const size_t stmtBegin = src.find_last_of(";{}", call) + 1, stmtEnd = src.find(';', call);
+        const std::string stmt = src.substr(stmtBegin, stmtEnd - stmtBegin);
+        size_t orAt = std::string::npos, orEnd = std::string::npos;
+        if (stmt.find("p.probe[3] =") != std::string::npos) {
+            if (stmt.find("static_cast<uint32_t>(p.probe[3]) | " + kCall) == std::string::npos) return fail("the bits are not OR'd into p.probe[3]", call, src);
+            orAt = stmtBegin; orEnd = stmtEnd;
+        } else {
+            const size_t eq = stmt.rfind('=', call - stmtBegin);   // `const uint32_t name = depthLayersAbsentBits(...)`
+            std::string var;
+            if (eq != std::string::npos && eq > 0) {
+                const size_t nameEnd = stmt.find_last_not_of(" \t\n", eq - 1) + 1, nameBegin = stmt.find_last_of(" \t\n", nameEnd - 1) + 1;
+                var = stmt.substr(nameBegin, nameEnd - nameBegin);
+            }
+            const size_t next = stmtEnd + 1, nextEnd = src.find(';', next);
+            const std::string nextStmt = src.substr(next, nextEnd - next);
+            if (var.empty() || nextStmt.find("p.probe[3] =") == std::string::npos ||
+                nextStmt.find("static_cast<uint32_t>(p.probe[3]) | " + var + ")") == std::string::npos)
+                return fail("the statement after the bits does not OR them into p.probe[3]", next, src);
+            orAt = next; orEnd = nextEnd;
+        }
+        // setParams after the OR and before the Dispatch, and nothing writing p.probe[3] after the OR.
+        if (findLast(src, "setParams(ctx, p)", orEnd, dispatch) == std::string::npos)
+            return fail("no setParams(ctx, p) between the OR into p.probe[3] and the Dispatch", orAt, src);
+        if (src.find("probe[3] =", orEnd) < dispatch) return fail("p.probe[3] written again between the OR and the Dispatch", orEnd, src);
+        previousDispatch = dispatch;
+        ++sites;
+    }
+    if (sites != 2) { std::printf("zscene gate CPU half: %d dispatches compute the bits (want the mv prep's and main's: 2)\n", sites); return false; }
+    return true;
+}
+int cpuHalf() {
+    // (a) The function: cookies, never dereferenced, one distinct address a slot.
+    static unsigned char cookies[24][16];
+    ID3D11ShaderResourceView* all[24];
+    for (int i = 0; i < 24; ++i) all[i] = reinterpret_cast<ID3D11ShaderResourceView*>(cookies[i]);
+    char label[200];
+    int cases = 0;
+    for (int combo = 0; combo < 4; ++combo) {
+        ID3D11ShaderResourceView* srvs[24];
+        std::copy(all, all + 24, srvs);
+        const bool t6 = (combo & 1) != 0, t7 = (combo & 2) != 0;
+        if (!t6) srvs[6] = nullptr;
+        if (!t7) srvs[7] = nullptr;
+        const uint32_t want = (t6 ? 0u : 64u) | (t7 ? 0u : 256u), got = edvr::depthLayersAbsentBits(srvs);
+        std::snprintf(label, sizeof(label), "zscene gate CPU half: depthLayersAbsentBits = %u with t6 %s and t7 %s, every other slot bound (want %u)",
+                      got, t6 ? "bound" : "null", t7 ? "bound" : "null", want);
+        check(got == want, label);
+        ++cases;
+    }
+    for (int k = 0; k < 24; ++k) {
+        if (k == 6 || k == 7) continue;
+        ID3D11ShaderResourceView* srvs[24];
+        std::copy(all, all + 24, srvs);
+        srvs[k] = nullptr;
+        std::snprintf(label, sizeof(label), "zscene gate CPU half: depthLayersAbsentBits ignores slot %d (t6 and t7 bound, slot %d null)", k, k);
+        check(edvr::depthLayersAbsentBits(srvs) == 0u, label);
+        ++cases;
+    }
+    // (b) The two dispatches.
+    int sites = 0;
+    check(passSiteChecks(passSource(), sites),
+          "zscene gate CPU half: both dispatches read the bits off the array they bind and OR them into probe.w before setParams and the Dispatch");
+    std::printf("PASS: zscene gate CPU half: depthLayersAbsentBits over %d slot cases; %d dispatches read the bits off the array they bind, "
+                "before setParams and the Dispatch\n", cases, sites);
+    return cases;
 }
 
 // ------------------------------------------------------------------ the bench (--bench, by hand)
@@ -533,6 +674,7 @@ bool aloneFlags(int argc, char** argv, bool& nvidia, bool& wantBench) {
 int runAlone(int argc, char** argv) {
     bool nvidia = false, wantBench = false;
     if (!aloneFlags(argc, argv, nvidia, wantBench)) { std::puts("usage: ui_depth_test --zscene-gate [--adapter nvidia] [--bench]"); return 2; }
+    cpuHalf();
     Device d = makeDevice(nvidia);
     parity(d.dev.Get(), d.ctx.Get(), d.name.c_str());
     if (wantBench) bench(d);

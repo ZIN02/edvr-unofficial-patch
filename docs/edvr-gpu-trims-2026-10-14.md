@@ -41,8 +41,8 @@ only). Empty reissue scopes issue nothing (GPU 0; only the census scope opens). 
 Proposed, not built (ranked by saving; all change the data flow and want a flight, or are tiny):
 - P1 UI resolve passthrough (up to ~0.07 an eye, 0.15 a frame): let DLSS write dlSubmit directly and resolve in place only where it
   changes a pixel. Needs NGX to accept the typeless dlSubmit, and the eye-run captures/probeNv that read dlOut after the resolve.
-- P2 motion prep: the null ZS/ZUI skip is BUILT 2026-10-23, not flown (G09, RocketsProjects' finding; journal): mv -13% with both layers
-  absent, -6% with UI depth bound; native TAA's 3x3 depth now a group tile, -13% (journal). Flight: "motion prep depth layers" line.
+- P2 motion prep: null ZS/ZUI skip BUILT 2026-10-23, not flown (G09, RocketsProjects' finding): mv -13% both layers absent, -6% UI
+  depth bound; native TAA's 3x3 depth a group tile, -13%, filled only when read (journal). Flight: "motion prep depth layers" line.
 - P3 HUD tonemap re-issue + coverage (0.098 an eye, 0.2 a frame): two passes over the 130 MB HDR layer; merging needs the game's tonemap PS to
   write alpha. Skipping untouched tiles needs a content test the layer does not have (same as the composite's "open, not tried").
 - P4 pose table: six dependent dispatches, ~0.04 ms; fusing two or three saves ~0.02. Join: one group, latency-bound.
@@ -112,3 +112,26 @@ path, six probe.w words incl. screen, scanner, adaptive UI and absent layers; no
 runs. The terrain rig's anchors in fetchHistoryT are untouched. Bench (`--main-tile --adapter nvidia --bench`, the paired method above,
 temporal_aa_fast_cs 2016^2, depth on, world path on): bound 0.1440-0.1481 -> 0.1263-0.1299 ms an eye (paired -0.019..-0.021, -13 to
 -14%, 12/12 rounds in all three runs); layers absent with the bits set 0.1380 -> 0.1186 (-0.018..-0.021, 12/12).
+
+2026-10-23, review of G09 (adversarial). Five findings, fixed:
+1. The CPU half was unpinned. Both GPU rigs compute their own bits, so a slot slip (srvs[5], always null) would set bit 64 on every
+   dispatch and skip a bound smoke depth with every rig green. depthLayersAbsentBits is now inline in temporal_pass.h, and
+   ui_depth_test's cpuHalf (zscene_gate_test.h) checks it over the four t6/t7 combinations with a distinct non-null pointer in every
+   other slot, and each other slot nulled alone. It also scans both dispatches in temporal_pass.cpp: the bits come off the array that
+   the last CSSetShaderResources(0, ...) before that Dispatch binds, are OR'd into p.probe[3] before setParams, and setParams precedes
+   the Dispatch. Mutants caught: srvs[5]; setParams before the OR (main's site and mv's); bits off nullSrvM (mv).
+2. The tile fill ran in every group, also on history resets and with no depth, where the 3x3 never runs. It is now gated on
+   haveHistory && knobs.y && (tvUsed.w || (tvCam.w && split.x > 0)), plus candMask & 10 in the diagnostic shader: constants only,
+   with the barrier left unconditional. DXBC, both variants: the g0 store sits inside if_nz, and sync_g_t follows its endif at depth
+   0 (tileFlow in the rig pins this). EDVR_MAIN_DEPTH_TILE 0 still compiles to ab78bbf4's main byte for byte, both variants. The A/B
+   poisons the tile before its gate checks. Unpoisoned, a wrong gate passed on the 5090, because an unfilled entry read the identical
+   tile left by the dispatch before. With the poison, the production gate matches in all 50 configurations, both variants, on WARP
+   and the 5090, and a gate without the world split is caught in exactly its 6. Bench (`--main-tile --adapter nvidia --bench`,
+   2016^2, temporal_aa_fast_cs, three runs; ungated = 42bf0a99's fill): history reset 0.0585-0.0591 -> 0.0341-0.0384 ms an eye
+   (paired -0.021..-0.023, 12/12; fastest 0.052-0.053 -> 0.034); no depth 0.1277-0.1281 -> 0.0877-0.0942 (paired -0.033..-0.043,
+   12/12; fastest 0.111-0.117 -> 0.080-0.085). Gated against untiled in both: -0.002..+0.003, noise. With depth on, the tile still saves paired 0.013-0.025 against untiled.
+3. main_depth_tile_test.h claimed origin/main's bytecode as the reference; it is ab78bbf4's (origin/main predates that zSceneAt).
+4. screen_motion_test's production-blob parity had no -0, NaN, denormal or negative depths. It now also runs with -0, +0, both
+   quiet NaNs, denormals of both signs, -1 and -0.01 in Z and in the bound layer: byte-identical, WARP (the rig has no hardware path).
+5. probe.w bit 256 was per-object motion's until 319c1c5a; the cbuffer comment says so, for eye dumps older than that.
+on_foot_split_test's R5k pin now counts four `split.x > 0.0` (the fill's gate is the fourth).

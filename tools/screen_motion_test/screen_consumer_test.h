@@ -518,7 +518,31 @@ void testScreenConsumers(ID3D11Device* dev,ID3D11DeviceContext* ctx) {
             check(!same(honest,lie),"absent-layer gate control: a shipping blob honours bit 256 (a bound, nearer UI depth skipped changes the outputs)");
             check(same(lie,nothingBound),"absent-layer gate control: bit 256 over a bound UI depth reads exactly as no UI depth");
         }
-        std::printf("PASS: absent-layer gate: the five shipping temporal blobs are byte-identical with t6/t7 null and the bits clear or set, and honour bit 256\n");
+        // The same parity over the depth classes the max chain must carry bit for bit, since fxc writes the shipping
+        // blobs' max operands in the other order (max(zs, z)): -0, +0, both quiet NaNs, the smallest and largest
+        // denormals and a negative one, -1 and -0.01, with ordinary depths between, in Z and in whichever of ZS / ZUI
+        // is bound, the patterns staggered so the three layers' classes meet in many pairings. WARP (this rig's device).
+        {
+            const uint32_t kClasses[]={0x80000000u,0x7FC00000u,0xFFC00000u,0x00000001u,0x007FFFFFu,0x80000001u,
+                                       0xBF800000u,0xBC23D70Au,0x00000000u,0x3BA3D70Au,0x3D4CCCCDu};
+            constexpr int kN=int(sizeof(kClasses)/sizeof(kClasses[0]));
+            std::vector<uint32_t> sceneC(16*16),smokeC(16*16),uiC(16*16);
+            for(int i=0;i<16*16;++i){const int row=i/16;
+                sceneC[i]=kClasses[(i*7+row)%kN];smokeC[i]=kClasses[(i*5+3+row*2)%kN];uiC[i]=kClasses[(i*3+7+row*3)%kN];}
+            ctx->UpdateSubresource(scene.Get(),0,nullptr,sceneC.data(),16*4,0);
+            ctx->UpdateSubresource(smokeDepth.Get(),0,nullptr,smokeC.data(),16*4,0);
+            ctx->UpdateSubresource(privateUiDepth.Get(),0,nullptr,uiC.data(),16*4,0);
+            for(int variant=0;variant<5;++variant)
+                for(int combo=0;combo<3;++combo){   // t6 and t7 null, t6 null (t7 bound), t7 null (t6 bound)
+                    const bool t6=combo==2,t7=combo==1;
+                    const UINT absent=(t6?0u:64u)|(t7?0u:256u);
+                    const auto fetched=run(variant,t6,t7,0),skipped=run(variant,t6,t7,absent);
+                    if(!same(fetched,skipped))std::printf("absent-layer gate, special depths: %s, t6 %s, t7 %s: outputs differ\n",embedded[variant].name,t6?"bound":"null",t7?"bound":"null");
+                    check(same(fetched,skipped),"absent-layer gate: a shipping blob writes the same bytes with -0, NaN, denormal and negative depths in Z and the bound layer, bits clear or set");
+                }
+        }
+        std::printf("PASS: absent-layer gate: the five shipping temporal blobs are byte-identical with t6/t7 null and the bits clear or set "
+                    "(ordinary depths, and -0/NaN/denormal/negative in Z and the bound layer), and honour bit 256\n");
     }
     ctx->ClearState();
 }

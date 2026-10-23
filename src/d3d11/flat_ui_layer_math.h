@@ -683,5 +683,12 @@ inline bool flatUiGlowFeedWanted(bool layerOn, bool triggerSrvKnown, bool trigge
                                  uint32_t targetW, uint32_t targetH) {
     return layerOn && triggerSrvKnown && !triggerAmbiguous && srvSlot < 4 && flatUiGlowFeedShape(hdrW, hdrH, targetW, targetH);
 }
+// The same draw is asked for by visual.star_glow (flat_star_glow.h): the first level reads H' with the star layer added, the HUD layer live or not.
+// `starLive` is the setting above 100 with star light in S this frame. The trigger's own shape rules are the HUD's, whoever asks; the star glow does
+// not depend on fix.ui_quality.
+inline bool flatUiGlowFeedAsked(bool layerOn, bool starLive, bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvSlot, uint32_t hdrW,
+                                uint32_t hdrH, uint32_t targetW, uint32_t targetH) {
+    return flatUiGlowFeedWanted(layerOn || starLive, triggerSrvKnown, triggerAmbiguous, srvSlot, hdrW, hdrH, targetW, targetH);
+}
 
 }  // namespace edvr

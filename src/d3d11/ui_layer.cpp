@@ -16,6 +16,7 @@
 
 #include "ui_layer_math.h"
 #include "flat_ui_layer.h"  // the back-off trail's hooks (log only; the flat profile calls them)
+#include "flat_star_glow_math.h"  // visual.star_glow: the blend equation of the star pass
 #include "ui_scene_composites.h"  // the census of the interface composites left in the scene, and its line
 #include "ui_maps_math.h"   // the on-foot maps gate: the key, the step, the door's predicate, the lines
 #include "ui_holo_remap.h"
@@ -4317,6 +4318,11 @@ bool crispCoverageContextReady(ID3D11DeviceContext* ctx) {
 // recorded on the coverage pass's deferred context and executed with the immediate context's state restored. The caller binds H' for the
 // one draw that reads H as the bloom chain's first level and puts the game's view back after it. The HUD's light is added, not blended
 // over H: behind an opaque panel over a bright scene the halo reads slightly bright, where stock's panel would have replaced the scene.
+//
+// visual.star_glow (flat_star_glow.h) adds one input to the same texture: m * S, S being the star draws replayed into a layer of their own. The pass
+// that follows the HUD's (or follows a plain copy of H, when no HUD is in the layer this frame) draws a fullscreen triangle that reads S and blends it
+// in with the factor (m, m, m, 0): source BLEND_FACTOR, destination ONE, ADD. H' = H + HUD + m * S, each term once -- S holds no HUD and H holds no
+// star light of its own that S repeats beyond the k - 1 the setting asks for.
 struct GlowFeedTexture {
     Ptr<ID3D11Texture2D> tex;
     Ptr<ID3D11RenderTargetView> rtv;
@@ -4326,7 +4332,14 @@ struct GlowFeedTexture {
 GlowFeedTexture g_glow;
 ID3D11PixelShader* g_glowPs = nullptr;
 bool g_glowPsTried = false;
+ID3D11PixelShader* g_starAddPs = nullptr;   // kStarGlowAddPsHlsl: S read as it is
+bool g_starAddPsTried = false;
+Ptr<ID3D11BlendState> g_starAddBlend;       // Src = BLEND_FACTOR, Dst = ONE, ADD (flat_star_glow_math.h kFlatStarBlend*)
 FaultBudget g_glowBudget("uiLayer.glowFeed", 4);
+
+static_assert(kFlatStarBlendSrc == D3D11_BLEND_BLEND_FACTOR && kFlatStarBlendDst == D3D11_BLEND_ONE && kFlatStarBlendOp == D3D11_BLEND_OP_ADD &&
+                  kFlatStarBlendSrcAlpha == D3D11_BLEND_ZERO && kFlatStarBlendDstAlpha == D3D11_BLEND_ONE,
+              "the star pass's blend is the equation flat_star_glow_math.h documents");
 
 void compileGlowFeedOnce(ID3D11DeviceContext* ctx) {
     if (g_glowPs || g_glowPsTried || !ctx) return;
@@ -4334,10 +4347,38 @@ void compileGlowFeedOnce(ID3D11DeviceContext* ctx) {
     g_glowPs = shaderSwapCreatePs(ctx, kUiGlowFeedPsBytecode, sizeof(kUiGlowFeedPsBytecode), "ui_glow_feed_ps", "crisp hud");
 }
 
-static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Eye& e, uint32_t slot, const void* hdr, UiGlowFeed& verdict) {
+// The star pass's shader and its blend state, made at the first star feed. False: the star input is unavailable (the HUD's pass, if any, still runs).
+bool starAddReady(ID3D11DeviceContext* ctx) {
+    if (!g_starAddPs && !g_starAddPsTried && ctx) {
+        g_starAddPsTried = true;
+        g_starAddPs = shaderSwapCreatePs(ctx, kStarGlowAddPsBytecode, sizeof(kStarGlowAddPsBytecode), "star_glow_add_ps", "star glow");
+    }
+    if (!g_starAddPs) return false;
+    if (!g_starAddBlend) {
+        Ptr<ID3D11Device> dev;
+        ctx->GetDevice(&dev);
+        D3D11_BLEND_DESC bd{};
+        bd.RenderTarget[0].BlendEnable = TRUE;
+        bd.RenderTarget[0].SrcBlend = D3D11_BLEND_BLEND_FACTOR;
+        bd.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+        bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+        bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+        bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        if (!dev || FAILED(dev->CreateBlendState(&bd, &g_starAddBlend)) || !g_starAddBlend) {
+            g_starAddBlend.Reset();
+            return false;
+        }
+    }
+    return true;
+}
+
+static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Eye* hud, uint32_t slot, const void* hdr, UiGlowFeed& verdict,
+                                              UiGlowStar* star) {
     compileCoverageOnce(ctx);  // the shared fullscreen vertex shader
-    compileGlowFeedOnce(ctx);
-    if (!g_covVs || !g_glowPs || !crispCoverageContextReady(ctx) || !g_crispDeferred) {
+    if (hud) compileGlowFeedOnce(ctx);
+    if (!g_covVs || (hud && !g_glowPs) || !crispCoverageContextReady(ctx) || !g_crispDeferred) {
         verdict = UiGlowFeed::kNotReady;
         return nullptr;
     }
@@ -4360,6 +4401,28 @@ static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Ey
     hTex->GetDesc(&td);
     if (td.Format != DXGI_FORMAT_R11G11B10_FLOAT || td.SampleDesc.Count != 1 || td.ArraySize != 1) {
         verdict = UiGlowFeed::kFormat;
+        return nullptr;
+    }
+    // The star input: S at H's size, and the star pass's own shader and blend. An input that cannot be added leaves H' as the HUD alone makes it.
+    UiGlowStar* use = star;
+    if (use) {
+        if (!use->srv || !(use->m > 0.0f)) {
+            use = nullptr;
+        } else if (use->w != td.Width || use->h != td.Height) {
+            star->sizeMismatch = true;
+            use = nullptr;
+        } else if (!starAddReady(ctx)) {
+            star->unavailable = true;
+            use = nullptr;
+        }
+    }
+    if (!hud && !use) {
+        verdict = UiGlowFeed::kNoHud;
+        return nullptr;
+    }
+    if (!hud && td.MipLevels != 1) {   // the plain copy of H below needs a destination of H's own shape
+        star->unavailable = true;
+        verdict = UiGlowFeed::kTexture;
         return nullptr;
     }
     if (!g_glow.tex || g_glow.w != td.Width || g_glow.h != td.Height) {
@@ -4387,20 +4450,40 @@ static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Ey
         g_glow = made;
     }
     ID3D11DeviceContext* dc = g_crispDeferred.Get();
-    ID3D11ShaderResourceView* in[2] = {e.hdrSrv.Get(), gameH.Get()};
     ID3D11RenderTargetView* target = g_glow.rtv.Get();
+    const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(td.Width), static_cast<float>(td.Height), 0.0f, 1.0f};
     dc->IASetInputLayout(nullptr);
     dc->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     dc->VSSetShader(g_covVs, nullptr, 0);
-    dc->PSSetShader(g_glowPs, nullptr, 0);
-    dc->PSSetShaderResources(0, 2, in);
-    dc->OMSetRenderTargets(1, &target, nullptr);
-    dc->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
-    const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(td.Width), static_cast<float>(td.Height), 0.0f, 1.0f};
-    dc->RSSetViewports(1, &vp);
-    dc->Draw(3, 0);
-    ID3D11ShaderResourceView* none[2] = {};
-    dc->PSSetShaderResources(0, 2, none);
+    if (hud) {
+        // H + the HUD's light, in one pass.
+        ID3D11ShaderResourceView* in[2] = {hud->hdrSrv.Get(), gameH.Get()};
+        dc->PSSetShader(g_glowPs, nullptr, 0);
+        dc->PSSetShaderResources(0, 2, in);
+        dc->OMSetRenderTargets(1, &target, nullptr);
+        dc->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
+        dc->RSSetViewports(1, &vp);
+        dc->Draw(3, 0);
+        ID3D11ShaderResourceView* none[2] = {};
+        dc->PSSetShaderResources(0, 2, none);
+    } else {
+        // No HUD in the layer this frame: H' starts as H itself, and only the star light is added to it.
+        dc->CopyResource(g_glow.tex.Get(), hTex.Get());
+    }
+    if (use) {
+        // + m * S: the factor is the weight, so the pass binds one texture and no constants (kStarGlowAddPsHlsl).
+        const float factor[4] = {use->m, use->m, use->m, 0.0f};
+        ID3D11ShaderResourceView* in[1] = {use->srv};
+        dc->PSSetShader(g_starAddPs, nullptr, 0);
+        dc->PSSetShaderResources(0, 1, in);
+        dc->OMSetRenderTargets(1, &target, nullptr);
+        dc->OMSetBlendState(g_starAddBlend.Get(), factor, 0xFFFFFFFFu);
+        dc->RSSetViewports(1, &vp);
+        dc->Draw(3, 0);
+        ID3D11ShaderResourceView* none[1] = {};
+        dc->PSSetShaderResources(0, 1, none);
+        dc->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
+    }
     Ptr<ID3D11CommandList> list;
     if (FAILED(dc->FinishCommandList(FALSE, &list)) || !list) {
         verdict = UiGlowFeed::kFault;
@@ -4408,24 +4491,31 @@ static ID3D11ShaderResourceView* glowFeedPass(ID3D11DeviceContext* ctx, const Ey
     }
     vScreenExecuteCommandListRaw(ctx, list.Get(), 1);
     verdict = UiGlowFeed::kFed;
+    if (use) use->applied = true;
+    if (star) star->hudIncluded = hud != nullptr;
     return g_glow.srv.Get();
 }
 
-ID3D11ShaderResourceView* uiLayerGlowFeed(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, int* verdict) {
+ID3D11ShaderResourceView* uiLayerGlowFeed(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, int* verdict, UiGlowStar* star) {
     UiGlowFeed v = UiGlowFeed::kNotReady;
     ID3D11ShaderResourceView* out = nullptr;
     do {
         if (!ctx || !hdr || slot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || !runtimeFlatProfile()) break;
         const Eye& e = g_eye[0];
-        if (!(e.hdrSeq == frame && e.hdrDraws && e.hdrSrv)) {
+        const bool hudLive = e.hdrSeq == frame && e.hdrDraws && e.hdrSrv;
+        if (!hudLive && !(star && star->srv)) {
             v = UiGlowFeed::kNoHud;
             break;
         }
-        if (!guardedBudget(g_glowBudget, [&] { out = glowFeedPass(ctx, e, slot, hdr, v); })) {
+        if (!guardedBudget(g_glowBudget, [&] { out = glowFeedPass(ctx, hudLive ? &e : nullptr, slot, hdr, v, star); })) {
             v = UiGlowFeed::kFault;
             out = nullptr;
         }
     } while (false);
+    if (star) {
+        if (!out) star->applied = false;
+        star->verdict = static_cast<int>(v);
+    }
     if (verdict) *verdict = static_cast<int>(v);
     return out;
 }
@@ -6459,6 +6549,12 @@ void releaseDeviceObjects() {
         g_glowPs = nullptr;
     }
     g_glowPsTried = false;
+    if (g_starAddPs) {
+        g_starAddPs->Release();
+        g_starAddPs = nullptr;
+    }
+    g_starAddPsTried = false;
+    g_starAddBlend.Reset();
     if (g_cb) {
         g_cb->Release();
         g_cb = nullptr;

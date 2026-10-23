@@ -668,7 +668,7 @@ python tools\compile_cache.py --prune --keep thunks.obj cl.exe %CFLAGS% %NGXFLAG
     "src\d3d11\dlaa.cpp" ^
     "src\d3d11\fsr3_engine.cpp" ^
     "src\d3d11\sharpen_pass.cpp" ^
-    "src\d3d11\flat_sharpen.cpp" "src\d3d11\flat_ui_layer.cpp" ^
+    "src\d3d11\flat_sharpen.cpp" "src\d3d11\flat_ui_layer.cpp" "src\d3d11\flat_star_glow.cpp" ^
     "src\d3d11\loader_panel.cpp" ^
     "src\d3d11\splash_dim.cpp" ^
     "src\d3d11\billboard_fix.cpp" ^

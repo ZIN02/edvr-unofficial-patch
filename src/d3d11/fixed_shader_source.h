@@ -334,6 +334,19 @@ float4 main(float4 p : SV_POSITION) : SV_Target {
 }
 )HLSL";
 
+// The star light for the game's bloom (visual.star_glow): one fullscreen pass that reads the star layer S (the star draws alone, replayed as the game
+// issued them) and writes it as it is. It is blended into H' with a blend factor of (m, m, m, 0) -- source BLEND_FACTOR, destination ONE, ADD -- so
+// H' = H [+ HUD] + m * S with m the setting's k - 1; the weight is the blend's, not a constant buffer's, so the shader has one texture and nothing
+// else. Non-finite texels read zero and the sum stays inside R11G11B10_FLOAT's range, as the HUD feed does.
+constexpr char kStarGlowAddPsHlsl[] = R"HLSL(
+Texture2D<float4> Star : register(t0);
+float4 main(float4 p : SV_POSITION) : SV_Target {
+    float3 c = Star.Load(int3(p.xy, 0)).rgb;
+    c = all(isfinite(c)) ? max(c, float3(0, 0, 0)) : float3(0, 0, 0);
+    return float4(min(c, float3(60000, 60000, 60000)), 0.0);
+}
+)HLSL";
+
 inline constexpr const char* kUiSeedVs = R"(
 struct V { float4 p:SV_POSITION; };
 V main(uint id:SV_VertexID) {

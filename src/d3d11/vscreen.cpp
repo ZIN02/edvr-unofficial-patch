@@ -5850,6 +5850,12 @@ void vScreenOMSetBlendStateRaw(ID3D11DeviceContext* ctx, ID3D11BlendState* state
     g_state->realOMSetBlendState(ctx, state, blendFactor, sampleMask);
 }
 
+void vScreenOMSetDepthStencilStateRaw(ID3D11DeviceContext* ctx, ID3D11DepthStencilState* state, uint32_t stencilRef) {
+    if (!ctx) return;
+    if (g_state && g_state->realOMSetDepthStencilState) g_state->realOMSetDepthStencilState(ctx, state, stencilRef);
+    else ctx->OMSetDepthStencilState(state, stencilRef);
+}
+
 void vScreenUpdateSubresourceRaw(ID3D11DeviceContext* ctx, ID3D11Resource* dstResource,
                                  uint32_t dstSubresource, const D3D11_BOX* dstBox,
                                  const void* srcData, uint32_t srcRowPitch, uint32_t srcDepthPitch) {

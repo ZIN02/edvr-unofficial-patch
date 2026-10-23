@@ -11,6 +11,7 @@
 #include "flat_mutation_diagnostic.h"
 #include "animated_history_writes.h"
 #include "flat_ui_layer.h"   // fix.ui_quality's flat layer: the draw scope's second issues (uiReissue)
+#include "flat_star_glow.h"  // visual.star_glow: a star pass issued once more into the star layer (uiReissue)
 #include <optional>
 namespace edvr {
 struct FlatMapBounceD3DDriver {
@@ -153,6 +154,12 @@ struct FlatRuntimeDrawScope {
     // chain's first level. Begin binds H' = H + the HUD layer's light at `glowSlot` for the game's issue (glowOriginal holds the game's view then),
     // End puts the game's view back.
     bool uiGlow=false;
+    // visual.star_glow (flat_star_glow.h): this draw is a star pass the gates let through (starReplay: issue it once more into the star layer, right after
+    // the game's own issue; starRole is the pass), or any star pass of any target (starTouched: kept out of the offscreen fast path); starW/H is its colour
+    // target. starFeed: this is the trigger draw and the star layer holds light, so the first-level draw reads it added to H' (beginActualDraw).
+    bool starReplay=false,starTouched=false,starFeed=false;
+    uint8_t starRole=0;
+    uint32_t starW=0,starH=0;
     uint32_t glowSlot=0,glowHdrW=0,glowHdrH=0,glowTargetW=0,glowTargetH=0;
     const void* glowHdr=nullptr;
     uint64_t glowVs=0,glowPs=0;
@@ -177,10 +184,13 @@ struct FlatRuntimeDrawScope {
                                                                      foregroundPlanned, untrustedPlanned); }
     // After the game's own issue and endActualDraw: the second issues fix.ui_quality's flat layer asks for, each the game's
     // draw again through `issue` (the hook's own real call, same arguments) -- a taken draw's colourless depth/stencil
-    // write-back into the game's buffer, and the admitted tonemap's re-issue over the HDR HUD layer. Nothing otherwise.
+    // write-back into the game's buffer, and the admitted tonemap's re-issue over the HDR HUD layer -- and visual.star_glow's
+    // star pass into the star layer. Nothing otherwise.
     template <class Issue> void uiReissue(Issue issue) {
         if (!ctx) return;
         if (uiTaken && flatUiLayerWriteBackBegin(ctx)) { issue(); flatUiLayerWriteBackEnd(ctx); }
+        // visual.star_glow: a star pass the game just issued into H is issued once more into the star layer, with the game's own state (the hook's real call).
+        if (starReplay && flatStarGlowReplayBegin(ctx, starRole, starW, starH)) { issue(); flatStarGlowReplayEnd(ctx); }
         // The weapons' light is re-issued through the same draw before the HUD's (fix.sharp_weapons: the layer binds each step's source and blend and says when
         // none is left); with only the HUD in the layer the plan is one step and the loop never runs.
         if (uiTone && flatUiLayerToneBegin(ctx)) { issue(); while (flatUiLayerToneNext(ctx)) issue(); flatUiLayerToneEnd(ctx); }

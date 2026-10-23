@@ -599,8 +599,8 @@ void flatUiLayerNoteSceneDraw(ID3D11DeviceContext* ctx, uint32_t count, uint32_t
 }
 
 bool flatUiGlowWanted(bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvSlot, uint32_t hdrW, uint32_t hdrH, uint32_t targetW,
-                      uint32_t targetH) {
-    const bool wanted = flatUiGlowFeedWanted(flatUiLayerOn(), triggerSrvKnown, triggerAmbiguous, srvSlot, hdrW, hdrH, targetW, targetH);
+                      uint32_t targetH, bool starLive) {
+    const bool wanted = flatUiGlowFeedAsked(flatUiLayerOn(), starLive, triggerSrvKnown, triggerAmbiguous, srvSlot, hdrW, hdrH, targetW, targetH);
     if (flatUiLayerOn()) {
         ++g_w.glowTriggers;
         if (wanted) ++g_w.glowHalf;
@@ -613,22 +613,26 @@ bool flatUiGlowWanted(bool triggerSrvKnown, bool triggerAmbiguous, uint32_t srvS
 }
 
 bool flatUiGlowBegin(ID3D11DeviceContext* ctx, uint64_t frame, uint32_t slot, const void* hdr, uint64_t vs, uint64_t ps, uint32_t hdrW,
-                     uint32_t hdrH, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView** original) {
-    if (!ctx || !original || *original || !flatUiLayerOn()) return false;
+                     uint32_t hdrH, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView** original, UiGlowStar* star) {
+    // Asked by the HUD layer (fix.ui_quality) or by the star glow's input (visual.star_glow): either alone makes H'.
+    const bool layerOn = flatUiLayerOn();
+    if (!ctx || !original || *original || !(layerOn || star)) return false;
     FlatComputeInternalScope internal;
     Ptr<ID3D11ShaderResourceView> game;
     ctx->PSGetShaderResources(slot, 1, &game);
     int verdict = static_cast<int>(UiGlowFeed::kNotReady);
-    ID3D11ShaderResourceView* fed = uiLayerGlowFeed(ctx, frame, slot, hdr, &verdict);
+    ID3D11ShaderResourceView* fed = uiLayerGlowFeed(ctx, frame, slot, hdr, &verdict, star);
     if (verdict < 0 || verdict >= static_cast<int>(UiGlowFeed::kCount)) verdict = static_cast<int>(UiGlowFeed::kFault);
-    ++g_w.glow[verdict];
+    // The HUD's own counts: a feed that was the star light alone (no HUD in the layer this frame) is the star line's, not this layer's.
+    const bool hudFed = !star || star->hudIncluded || verdict != static_cast<int>(UiGlowFeed::kFed);
+    if (layerOn && hudFed) ++g_w.glow[verdict];
     if (!fed || !game) return false;
     ID3D11ShaderResourceView* bound = fed;
     vScreenPSSetShaderResourcesRaw(ctx, slot, 1, &bound);
     *original = game.Detach();
     g_w.glowW = hdrW;
     g_w.glowH = hdrH;
-    if (!g_glowNoted) {
+    if (layerOn && hudFed && !g_glowNoted) {
         g_glowNoted = true;
         Log::get().note("flat ui layer glow: the HUD's light joins the game's bloom -- the first-level draw vs %016llX ps %016llX (target %ux%u of the "
                         "scene's %ux%u) reads H' = H + the HUD layer at t%u from frame %llu on; the chain, its tier and the tone are the game's.",

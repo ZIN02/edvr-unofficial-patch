@@ -2,6 +2,8 @@
 #include <sstream>
 #include "flat_origin_capture.h"
 #include "flat_runtime.h"
+#include "flat_star_glow.h"   // visual.star_glow
+#include "ui_layer.h"          // UiGlowStar: the first level's star input
 #include "flat_sdk_bench_probe.h"
 #include "flat_capture_policy.h"
 #include "flat_runtime_model.h"
@@ -3272,6 +3274,7 @@ void flatRuntimeResize() {
     // fix.ui_quality's flat layer: its layers, depth targets, composite output and the views over the pictures it
     // composited (none of them the back buffer, all of them released), and the door, so a fresh one arms the layer.
     flatUiLayerRelease();
+    flatStarGlowRelease();   // visual.star_glow: the star layer is the scene target's size, made afresh by the next star frame
     s.drawPackets.cancel();
     // A reset (or the mode turned off) ends a stand-down: the new contract may well be
     // one the selector recognises, and every paused piece restarts with it.
@@ -4054,6 +4057,9 @@ void flatRuntimeWeaponFootprintBeforePresent(IDXGISwapChain* swap,UINT flags) {
 void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT flags) {
     if (!runtimeFlatProfile() || !swap || (flags & DXGI_PRESENT_TEST)) return;
     auto& s = state(); if (s.thread && !owner()) return;
+    // visual.star_glow: the setting (live), the new frame's state and the 5 s line, before any early return below -- a setting above 100 whose scope
+    // never ran still prints its line, with every count zero.
+    flatStarGlowFrame(frame + 1, flatRuntimeActive());
     s.untrusted.pollMask(s.context.Get());
     if(frame && frame%300==0 &&
        (s.untrustedAccepted || s.untrustedRefused || s.untrustedTreated || s.untrustedWorldExcluded)) {
@@ -4192,6 +4198,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
     // fix.ui_quality's flat layer: a device the layer has not seen (the actual-device-change branch above, or a device
     // adopted after a resize cleared the old one) releases every device child the shared layer keeps; same device, nothing.
     flatUiLayerNoteDevice(s.device.Get());
+    flatStarGlowNoteDevice(s.device.Get());
     // Stand-down (flat_standdown.h): what the frame that just ended showed about its
     // chain, and the mode of the frame that starts now. Before anything below reads s.work.
     bool engineConfiguredPaused = enginePausedThen;
@@ -6725,10 +6732,28 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
     // fix.ui_quality's HUD bloom (flat_ui_layer.h flatUiGlowWanted): the trigger that writes a half-size target of H is the bloom chain's first level,
     // which reads the H the layer's HUD is not in. The route's resolve above has written H by now; beginActualDraw binds H' = H + the HUD's light at the
     // slot the trigger read H at, for this draw only. Asked on every route: the copy route's frames have the same first level.
+    // visual.star_glow (flat_star_glow.h): a star pass into an H candidate is issued once more into the star layer right after the game's own issue
+    // (uiReissue), before the bloom trigger of the frame. Asked of every watched draw, and nothing else here, while the setting is above 100; a star pass of any
+    // target is kept out of the offscreen fast path (plain, below), which would serve a repeat of it without this question.
+    if (flatStarGlowOn()) {
+        FlatStarDraw star;
+        star.vs = k.vs;
+        star.ps = k.ps;
+        star.hCandidate = flatHdrCandidateDraw(k, s.hdr.outputWidth, s.hdr.outputHeight);
+        star.triggered = s.hdr.triggered;
+        star.width = k.width;
+        star.height = k.height;
+        starReplay = flatStarGlowObserve(ctx, star, &starTouched, &starRole);
+        starW = k.width;
+        starH = k.height;
+    }
     if (hdrTrigger) {
         const FlatHdrTrigger& t = s.hdr.trigger;
-        if (flatUiGlowWanted(t.srvKnown, t.ambiguous, t.srvSlot, t.hdrWidth, t.hdrHeight, t.targetWidth, t.targetHeight)) {
+        // The star layer holds light this frame: the first level reads it too, with the HUD layer live or not (fix.ui_quality is not a condition).
+        const bool starLive = flatStarGlowLive();
+        if (flatUiGlowWanted(t.srvKnown, t.ambiguous, t.srvSlot, t.hdrWidth, t.hdrHeight, t.targetWidth, t.targetHeight, starLive)) {
             uiGlow = true;
+            starFeed = starLive;
             glowSlot = t.srvSlot;
             glowHdr = t.hdr;
             glowHdrW = t.hdrWidth;
@@ -6737,6 +6762,8 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
             glowTargetH = t.targetHeight;
             glowVs = k.vs;
             glowPs = k.ps;
+        } else if (starLive) {
+            flatStarGlowNoteNoBloom();   // the trigger is not the bloom chain's first level: the game's Bloom is off, or the chain is another
         }
     }
     // fix.ui_quality's flat layer (flat_ui_layer.h): the cockpit HUD families out of H and into the shared layer as eye 0,
@@ -6838,7 +6865,7 @@ FlatRuntimeDrawScope::FlatRuntimeDrawScope(ID3D11DeviceContext* context, uint32_
         // The draw did nothing but what the offscreen fast path does when none of the blocks above planned, started or changed anything of its own.
         const bool plain = !tone && !producer && !projection && !projectionPlan && !deferredPlan && !drawCaptureStarted && !drawPacket &&
             !weaponFootprintStarted && !overlayPlanned && !d.overlayProtected && !d.alternateHdr && !d.firstPersonCohort && !foregroundPlanned &&
-            !untrustedPlanned && !domainPlanned && !uiTake && !uiTone && !uiComposite && !replaced && !hdrTrigger && cameraProbeAttempt == 0;
+            !untrustedPlanned && !domainPlanned && !uiTake && !uiTone && !uiComposite && !replaced && !hdrTrigger && cameraProbeAttempt == 0 && !starTouched;
         flatOffscreenRecord(s, d, pairFact, offscreenArgs, auditing, plain, offscreenTargetsBefore, offscreenUncertainBefore);
         return;
     }
@@ -7560,8 +7587,13 @@ void FlatRuntimeDrawScope::beginActualDraw(ID3D11Buffer* indirectArgs,UINT indir
         flatUiLayerAtCopy(ctx,s.prefix.frame,s.treated||s.hdrTreated,s.prefix.width,s.prefix.height,&original,&replaced);
     }
     // The bloom chain's first level reads H' (the HUD's light added) in place of H for this one draw; endActualDraw puts the game's view back.
-    if(uiGlow && !glowOriginal)
-        flatUiGlowBegin(ctx,state().prefix.frame,glowSlot,glowHdr,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH,&glowOriginal);
+    if(uiGlow && !glowOriginal) {
+        // visual.star_glow adds m * S to H' when the star layer holds light this frame (the first level asked for it at the trigger).
+        UiGlowStar star;
+        const bool haveStar=starFeed && flatStarGlowFeedInput(&star);
+        const bool bound=flatUiGlowBegin(ctx,state().prefix.frame,glowSlot,glowHdr,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH,&glowOriginal,haveStar?&star:nullptr);
+        if(haveStar)flatStarGlowNoteFeed(star,bound,state().prefix.frame,glowSlot,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH);
+    }
     if(domainPlanned && !producer) {
         FlatComputeInternalScope internal;flatcpu::Scope captureCost(flatcpu::kForegroundCapture);
         Ptr<ID3D11VertexShader> vs;Ptr<ID3D11PixelShader> ps;

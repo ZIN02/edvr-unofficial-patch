@@ -42,7 +42,12 @@ Three things it does that a `copy` does not:
 edvr.ini is NOT copied unless --ini says so. It is the one file in the
 payload that carries the settings of whoever flew last, a reinstall does
 not undo an edit to it, and clobbering it has cost a session. --ini backs
-it up first and says loudly what it did. The flat half's settings live in
+it up first and says loudly what it did. The one exception is a settings
+file that is not there: a game update wipes the directory, edvr.ini with it,
+and without the file the F8 menu cannot save anything. An install then writes
+the shipped default (a new file, so no backup, not journaled), and --verify-only
+warns about it. The mirror under %LOCALAPPDATA%\\EDVR is not read by this tool;
+edvr-installer.exe restores from it. The flat half's settings live in
 edvr-flat.ini instead. --ini writes the settings files of the chosen scope:
 both writes edvr.ini and edvr-flat.ini, vr writes edvr.ini, flat writes
 edvr-flat.ini. A scope that includes flat seeds a missing edvr-flat.ini from
@@ -1573,6 +1578,24 @@ def _ini_pairs(root, target, scope):
     return pairs
 
 
+def _missing_ini_defaults(root, target, scope):
+    """(half, source, target, bytes) for each settings file the scope reads that the
+    game directory lacks, with the shipped default (see _ini_template). The flat half
+    is left out while edvr.ini exists: it is seeded from it instead, so it inherits
+    the settings of whoever flew last. Nothing here reads or writes the target."""
+    halves = {"both": ("vr", "flat"), "vr": ("vr",), "flat": ("flat",)}[scope]
+    missing = []
+    for half in halves:
+        dst = _ini_target(target, half)
+        if os.path.isfile(dst):
+            continue
+        if half == "flat" and os.path.isfile(_ini_target(target, "vr")):
+            continue
+        source, data = _ini_template(root, half)
+        missing.append((half, source, dst, data))
+    return missing
+
+
 def _selects_xess(target, scope):
     """Whether the settings a scope's game reads select XeSS-SR. The flat half
     reads edvr-flat.ini and falls back to edvr.ini; the VR half reads edvr.ini."""
@@ -1878,16 +1901,35 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
         errors.append("missing optional DLSS source %s" % os.path.join(build_dir(root), "nvngx_dlss.dll"))
     xess_names = (("xess", "libxess.dll"), ("xess_license", "INTEL-XESS-LICENSE.txt"),
                   ("xess_third_party", "INTEL-XESS-THIRD-PARTY.txt"))
+    # The optional runtimes the game directory lacks -- a game update wipes them with the rest -- are installed
+    # when this build has them, whether or not --dlss / --xess / --all was given: without nvngx_dlss.dll the
+    # DLSS modes cannot run, without libxess.dll the XeSS ones cannot. One that is there is left alone unless
+    # asked for, so a plain install still preserves a foreign optional DLL. Only the missing files of the XeSS
+    # set are added; the explicit switch still installs all of it.
+    explicit_dlss, explicit_xess = include_dlss, include_xess
+    dlss_missing = (not include_dlss and not os.path.isfile(os.path.join(target, "nvngx_dlss.dll")) and
+                    os.path.isfile(os.path.join(build_dir(root), "nvngx_dlss.dll")))
+    if dlss_missing:
+        include_dlss = True
+    xess_active = xess_names if include_xess else tuple(
+        (key, name) for key, name in xess_names
+        if not os.path.isfile(os.path.join(target, name)) and os.path.isfile(os.path.join(build_dir(root), name)))
     # XeSS-SR ships with every scope: the flat half and the VR half both select it.
-    if include_xess:
-        for key, name in xess_names:
-            if not os.path.isfile(os.path.join(build_dir(root), name)):
-                errors.append("missing XeSS source %s" % os.path.join(build_dir(root), name))
+    for key, name in (xess_names if include_xess else ()):
+        if not os.path.isfile(os.path.join(build_dir(root), name)):
+            errors.append("missing XeSS source %s" % os.path.join(build_dir(root), name))
     # Each settings file the scope owns, as (source, target, receipt key, template bytes).
     ini_pairs = _ini_pairs(root, target, scope) if include_ini else []
     for source, _, _, data in ini_pairs:
         if data is None:
             errors.append("missing %s INI source %s" % (scope, source))
+    # A settings file the scope reads that is not there -- a game update wipes the
+    # directory, edvr.ini with it -- is installed from the shipped default, with or
+    # without --ini. Without it nothing can be saved: the F8 menu logs "edvr.ini
+    # could not be read" for every edit. A flat half that can inherit the settings
+    # of edvr.ini does (seed_ini, below) and gets no default.
+    # A default whose template is not there is a warning, not a refusal: the payload is what the install is for.
+    default_ini = _missing_ini_defaults(root, target, scope) if not include_ini else []
     if not os.path.isfile(p["game"]):
         errors.append("missing target executable %s" % p["game"])
     if errors:
@@ -1941,12 +1983,19 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
             print("[edvr] %s verify mismatch: %s" % (scope, descriptor)); ok = False
         if scope == "flat" and _flat_vr_leftovers(target):
             print("[edvr] flat verify mismatch: VR components remain"); ok = False
-        if include_dlss:
+        if explicit_dlss:
             dlss = os.path.join(build_dir(root), "nvngx_dlss.dll")
             dst = os.path.join(target, "nvngx_dlss.dll")
             if not os.path.isfile(dst) or sha256(dst) != sha256(dlss):
                 print("[edvr] %s verify mismatch: %s" % (scope, dst)); ok = False
-        if include_xess:
+        elif dlss_missing:
+            print("[edvr] WARNING: %s is missing, so DLSS cannot run; an install adds it from this build" %
+                  os.path.join(target, "nvngx_dlss.dll"))
+        if not explicit_xess:
+            for _, name in xess_active:
+                print("[edvr] WARNING: %s is missing, so XeSS cannot run; an install adds it from this build" %
+                      os.path.join(target, name))
+        if explicit_xess:
             for key, name in xess_names:
                 src = os.path.join(build_dir(root), name); dst = os.path.join(target, name)
                 if not os.path.isfile(dst) or sha256(dst) != sha256(src):
@@ -1966,6 +2015,10 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
         for _, ini_target, _, data in ini_pairs:
             if not os.path.isfile(ini_target) or data is None or open(ini_target, "rb").read() != data:
                 print("[edvr] %s verify mismatch: %s" % (scope, ini_target)); ok = False
+        for _, _, ini_target, _ in default_ini:
+            # Not a mismatch (no settings file is part of the payload) but the F8 menu cannot save without one.
+            print("[edvr] WARNING: %s is missing, so the F8 menu cannot save settings; an install writes the "
+                  "default" % ini_target)
         if ok: print("[edvr] %s payload and descriptor verified" % scope)
         return 0 if ok else 1
     if os.path.isfile(p["graphics_target"]):
@@ -1996,13 +2049,12 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                         "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
                         "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
                         "installed_sha256": sha256(src)})
-    if include_xess:
-        for key, name in xess_names:
-            src = os.path.join(build_dir(root), name); dst = os.path.join(target, name)
-            entries.append({"key": key, "source": os.path.abspath(src), "target": os.path.abspath(dst),
-                            "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
-                            "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
-                            "installed_sha256": sha256(src)})
+    for key, name in xess_active:
+        src = os.path.join(build_dir(root), name); dst = os.path.join(target, name)
+        entries.append({"key": key, "source": os.path.abspath(src), "target": os.path.abspath(dst),
+                        "backup": _native_backup_name(dst, tag, stamp) if os.path.isfile(dst) else None,
+                        "before_sha256": sha256(dst) if os.path.isfile(dst) else None,
+                        "installed_sha256": sha256(src)})
     # A template with no file (INI_GENERATED) is installed from its bytes, in memory.
     generated_ini = {}
     for src, dst, key, data in ini_pairs:
@@ -2039,12 +2091,24 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                       "(one value for both profiles)" % ini_target)
     print("[edvr] %s plan%s: %s" % (scope, " (DRY RUN -- nothing will be written)" if dry_run else "", target))
     for e in entries: print("       %-7s %s" % (e["key"], e["target"]))
+    if dlss_missing and not explicit_dlss:
+        print("       NOTE     nvngx_dlss.dll was missing from the game directory; installed from this build")
+    if xess_active and not explicit_xess:
+        print("       NOTE     %s missing from the game directory; installed from this build" %
+              ", ".join(name for _, name in xess_active))
     for e in entries:
         if e["key"] in generated_ini:
             print("       derive   %s from gen_installer_rc.flat_ini_bytes() (this compile-only build has no "
                   "edvr-flat.ini; nothing is written to %s)" % (e["target"], build_dir(root)))
     if seed_ini:
         print("       seed     %s (from edvr.ini; a new file, so no backup)" % _ini_target(target, "flat"))
+    for half, source, dst, data in default_ini:
+        if data is None:
+            print("       WARNING  %s is missing and its default template %s is not there, so nothing is written" %
+                  (dst, source))
+        else:
+            print("       default  %s (missing; the shipped %s defaults from %s; a new file, so no backup)" %
+                  (dst, half, "gen_installer_rc.flat_ini_bytes()" if source == INI_GENERATED else source))
     if migration:
         print("       migrate  advanced.real_dll = %s: edvr-flat.ini -> edvr.ini, so it is set once and applies to the "
               "VR and flat profiles (both files are backed up first)" % migration["value"])
@@ -2114,6 +2178,24 @@ def standard_native_install(root, target, tag, dry_run=False, verify_only=False,
                   "except for advanced.real_dll, which both profiles share)" % _ini_target(target, "flat"))
         except OSError as exc:
             print("[edvr] WARNING: flat settings seed failed (%s); copy edvr.ini to edvr-flat.ini by hand to keep your settings" % exc)
+    for half, _, dst, data in default_ini:
+        if data is None:
+            continue
+        # A new file, written exclusively so that a file that appeared since the plan is never overwritten.
+        # Not journaled, like the seed: a later edit through the F8 menu is not "the installed file changed".
+        try:
+            with open(dst, "xb") as stream:
+                stream.write(data)
+            if sha256(dst) != hashlib.sha256(data).hexdigest().upper():
+                raise OSError("hash verification failed")
+            print("[edvr] %s settings were missing: wrote the shipped defaults to %s (a game update removes this "
+                  "file; the F8 menu needs it to save)" % (half, dst))
+        except OSError as exc:
+            print("[edvr] WARNING: could not write the default %s (%s); the F8 menu cannot save until it exists" %
+                  (dst, exc))
+    if migration and migration["shared_text"] is None and os.path.isfile(migration["shared"]):
+        # The default edvr.ini was just written: the chain is added to it, not written as a lone new file.
+        migration["shared_text"], migration["shared_bom"] = _ini_read(migration["shared"])
     if migration:
         try:
             for backup in apply_real_dll_migration(migration, tag, stamp):
@@ -2380,6 +2462,55 @@ def _scope_self_test():
               and Path(g, "edvr-flat.ini").read_bytes() == b"[fix]\r\ntemporal_aa = off\r\n",
               "--scope flat --ini touched the wrong settings file")
 
+        # A settings file that is not there -- a game update wipes the directory -- is installed
+        # from the shipped default, without --ini, so the F8 menu has a file to save into.
+        g = game("default-none")
+        before = tree(g)
+        code, text = run(args_for(g, "--scope", "both", "--dry-run", tag="dnone"))
+        check(code == 0 and tree(g) == before, "a --dry-run that would write defaults wrote files")
+        check("default  " in text and text.count("default  ") == 2, "the dry-run plan did not name both defaults: %r" % text)
+        code, text = run(args_for(g, "--scope", "both", tag="dnone"))
+        check(code == 0, "--scope both with no settings files failed: %r" % text)
+        check(Path(g, "edvr.ini").read_bytes() == b"[fix]\nvr_template = 1\n",
+              "a missing edvr.ini was not installed from the template")
+        check(Path(g, "edvr-flat.ini").read_bytes() == b"[fix]\r\ntemporal_aa = off\r\n",
+              "a missing edvr-flat.ini was not installed from the flat template, not seeded from the new edvr.ini")
+        check(not list(Path(g).glob("edvr*.ini.pre-*.bak")), "a new default settings file was backed up")
+        receipt = os.path.join(g, "edvr_native_receipt.json")
+        keys = {e["key"] for e in json.loads(Path(receipt).read_text(encoding="utf-8"))["files"]}
+        check(not ({"ini", "ini_flat"} & keys), "a default settings file was journaled in the receipt: %r" % keys)
+        Path(g, "edvr.ini").write_bytes(b"[user]\nsaved-from-f8=1\n")
+        code, text = run(args_for(g, "--scope", "both", "--verify-only", tag="dnone"))
+        check(code == 0 and "WARNING" not in text, "an edited default settings file failed --verify-only: %r" % text)
+        code, text = run(args_for(g, "--scope", "both", tag="dnone2"))
+        check(code == 0 and Path(g, "edvr.ini").read_bytes() == b"[user]\nsaved-from-f8=1\n"
+              and "settings were missing" not in text, "a reinstall rewrote an existing settings file with a default")
+        os.remove(os.path.join(g, "edvr.ini"))
+        code, text = run(args_for(g, "--scope", "both", "--verify-only", tag="dnone"))
+        check(code == 0 and "edvr.ini is missing" in text and not Path(g, "edvr.ini").exists(),
+              "--verify-only did not warn about a missing edvr.ini, or wrote it: %r" % text)
+        # vr: edvr.ini only. flat: edvr-flat.ini only. A flat half with an edvr.ini to inherit gets no default.
+        g = game("default-vr")
+        code, _ = run(args_for(g, "--scope", "vr", tag="dvr"))
+        check(code == 0 and Path(g, "edvr.ini").is_file() and not Path(g, "edvr-flat.ini").exists(),
+              "--scope vr with no settings files wrote the wrong ones")
+        g = game("default-flat")
+        code, _ = run(args_for(g, "--scope", "flat", tag="dflat"))
+        check(code == 0 and Path(g, "edvr-flat.ini").read_bytes() == b"[fix]\r\ntemporal_aa = off\r\n"
+              and not Path(g, "edvr.ini").exists(), "--scope flat with no settings files wrote the wrong ones")
+        g = game("default-inherit", user_ini=b"[user]\nkeep=9\n")
+        code, text = run(args_for(g, "--scope", "both", tag="dinherit"))
+        check(code == 0 and Path(g, "edvr.ini").read_bytes() == b"[user]\nkeep=9\n"
+              and Path(g, "edvr-flat.ini").read_bytes() == b"[user]\nkeep=9\n" and "default  " not in text,
+              "a flat half with an edvr.ini to inherit got a default")
+        # An edvr-flat.ini that names a mod, with no edvr.ini: the default edvr.ini receives the chain.
+        g = game("default-chain")
+        Path(g, "edvr-flat.ini").write_bytes(b"[advanced]\nreal_dll = d3d11_mod.dll\n")
+        code, _ = run(args_for(g, "--scope", "both", tag="dchain"))
+        shared = Path(g, "edvr.ini").read_text(encoding="utf-8") if Path(g, "edvr.ini").is_file() else ""
+        check(code == 0 and "vr_template = 1" in shared and "real_dll = d3d11_mod.dll" in shared,
+              "the migrated chain did not land in the default edvr.ini: %r" % shared)
+
         # Without --ini a flat install seeds edvr-flat.ini from edvr.ini once.
         g = game("flat-seed", user_ini=b"[user]\nkeep=5\n")
         code, _ = run(args_for(g, "--scope", "flat", tag="flatseed"))
@@ -2513,6 +2644,51 @@ def _scope_self_test():
         code, text = run(args_for(g, "--scope", "vr", "--verify-only", tag="vrxess"))
         check(code == 1 and "ini selects XeSS" in text,
               "--scope vr verify did not warn for a VR ini selecting XeSS without its runtime")
+
+        # A DLSS or XeSS runtime the game directory lacks -- a game update wipes it with the rest -- is
+        # installed when the build has it, without --dlss / --xess; one that is there is left alone.
+        g = game("optional-missing")
+        before = tree(g)
+        code, text = run(args_for(g, "--scope", "vr", "--dry-run", tag="optmiss"))
+        check(code == 0 and tree(g) == before, "a --dry-run that would add the optional runtimes wrote files")
+        check("nvngx_dlss.dll was missing from the game directory" in text
+              and "libxess.dll, INTEL-XESS-LICENSE.txt, INTEL-XESS-THIRD-PARTY.txt missing" in text,
+              "the dry-run plan did not name the missing optional runtimes: %r" % text)
+        code, text = run(args_for(g, "--scope", "vr", tag="optmiss"))
+        check(code == 0, "--scope vr with no optional runtimes failed: %r" % text)
+        check(Path(g, "nvngx_dlss.dll").read_bytes() == b"DLSS" and Path(g, "libxess.dll").read_bytes() == b"XESS-RUNTIME"
+              and Path(g, "INTEL-XESS-LICENSE.txt").read_bytes() == b"XESS-LICENSE"
+              and Path(g, "INTEL-XESS-THIRD-PARTY.txt").read_bytes() == b"XESS-NOTICES",
+              "a plain install did not add the missing DLSS and XeSS runtimes")
+        receipt = os.path.join(g, "edvr_native_receipt.json")
+        keys = {e["key"] for e in json.loads(Path(receipt).read_text(encoding="utf-8"))["files"]}
+        check({"dlss", "xess", "xess_license", "xess_third_party"} <= keys and verify_native_receipt(receipt, g)["version"] == 2,
+              "the added runtimes are not in a verifying receipt: %r" % keys)
+        code, text = run(args_for(g, "--scope", "vr", "--verify-only", tag="optmiss"))
+        check(code == 0 and "WARNING" not in text, "--verify-only warned or failed with the runtimes in place: %r" % text)
+        Path(g, "nvngx_dlss.dll").unlink()
+        Path(g, "libxess.dll").unlink()
+        code, text = run(args_for(g, "--scope", "vr", "--verify-only", tag="optmiss"))
+        check(code == 0 and "nvngx_dlss.dll is missing, so DLSS cannot run" in text
+              and "libxess.dll is missing, so XeSS cannot run" in text and "INTEL-XESS-LICENSE" not in text,
+              "--verify-only did not warn, once each, about the two missing runtimes: %r" % text)
+        # One that is there is left alone, even when different; the missing files of the XeSS set are still added.
+        g = game("optional-foreign")
+        Path(g, "nvngx_dlss.dll").write_bytes(b"FOREIGN-DLSS")
+        Path(g, "libxess.dll").write_bytes(b"FOREIGN-XESS")
+        code, text = run(args_for(g, "--scope", "vr", tag="optforeign"))
+        check(code == 0 and Path(g, "nvngx_dlss.dll").read_bytes() == b"FOREIGN-DLSS"
+              and Path(g, "libxess.dll").read_bytes() == b"FOREIGN-XESS"
+              and Path(g, "INTEL-XESS-LICENSE.txt").read_bytes() == b"XESS-LICENSE"
+              and not list(Path(g).glob("nvngx_dlss.dll.pre-*.bak")),
+              "a plain install replaced a foreign optional runtime, or skipped the missing notice")
+        # A build that has no DLSS runtime installs none and is not refused for it.
+        os.rename(os.path.join(root, "build", "nvngx_dlss.dll"), os.path.join(root, "build", "nvngx_dlss.dll.away"))
+        g = game("optional-unbuilt")
+        code, text = run(args_for(g, "--scope", "vr", tag="optunbuilt"))
+        os.rename(os.path.join(root, "build", "nvngx_dlss.dll.away"), os.path.join(root, "build", "nvngx_dlss.dll"))
+        check(code == 0 and not Path(g, "nvngx_dlss.dll").exists(),
+              "a build without a DLSS runtime was refused or installed one: %r" % text)
 
         def stale_native(name):
             g = game("retire-" + name)

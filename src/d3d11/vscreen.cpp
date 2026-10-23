@@ -4248,8 +4248,11 @@ void forwardWithVerdict(ID3D11DeviceContext* self, DrawVerdict v,
         // uiLayerFamilyOf reads it) and the held world-screen identity (the
         // 2D screen's panel-sized SRV, as uiLayerDecide's kWorldScreen reads
         // it) -- both lost when the kAfterUi family was taken on its own.
+        // The panel probe is asked only where its answer can matter: uiLayerAfterWritePreserved reads panelSized alone
+        // behind !excluded && the held world screen (uiLayerNoteOther passes g_screenHeld == 1, which is what
+        // uiLayerWorldScreenHeld() returns; it is written at the frame boundary only).
         const bool afterExcluded = uiDepthIsExcluded(bindingShaderHash(BindSlot::Vs));
-        const bool afterPanelSized = srv0IsPanelSized(g_state, kind, count);
+        const bool afterPanelSized = !afterExcluded && uiLayerWorldScreenHeld() && srv0IsPanelSized(g_state, kind, count);
         uiLayer = uiLayerNoteOther(self, count, uiLayerVerdictForwards(v), g_state->curveThisDraw,
                                    afterExcluded, afterPanelSized, instances, static_cast<uint32_t>(v), kind);
         // A draw the retry took is the layer's, not the route's to re-issue (the held screen's exclusion never

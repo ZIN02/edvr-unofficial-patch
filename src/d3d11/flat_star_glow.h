@@ -27,10 +27,11 @@ struct UiGlowStar;   // ui_layer.h: the star input of the first level's pass
 // One load. True while visual.star_glow is above 100 in the flat profile.
 bool flatStarGlowOn();
 
-// Once a frame from the flat runtime's Present path, before any of its early returns (`nextFrame`: the frame that starts now; `runtimeLive`: the flat
-// runtime's scope is live -- the flat temporal anti-aliasing is on). Re-reads the setting when the settings changed (live: it applies on the next
-// frame), starts the frame's state, and prints the 5 s window while the setting is above 100 and one line when it returns to 100.
-void flatStarGlowFrame(uint64_t nextFrame, bool runtimeLive);
+// Once a frame from the flat runtime's Present path, before any of its early returns (`nextFrame`: the frame that starts now; `watched`: the frame
+// that just ended was watched by the flat runtime's draw scope, State::frameLive -- not g_flatRuntimeLive, which the frame's last hook clears before
+// Present). Re-reads the setting when the settings changed (live: it applies on the next frame), starts the frame's state, and prints the 5 s window
+// while the setting is above 100 and one line when it returns to 100.
+void flatStarGlowFrame(uint64_t nextFrame, bool watched);
 
 // One draw the scope watched, as the module needs it.
 struct FlatStarDraw {

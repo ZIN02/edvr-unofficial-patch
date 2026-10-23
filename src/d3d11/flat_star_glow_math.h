@@ -11,9 +11,11 @@
 //   - the percentage snapped to its five choices, k and m;
 //   - the pair table: which (vertex shader, pixel shader) pair is which pass of a star;
 //   - the run machine: for each pair the scope sees, whether to replay it into S, or which reason refuses it. The gates are the frame's
-//     pre-pass (a real star frame), an H-candidate target (the scene's own R11G11B10F at its extent with a depth bound; the 240x150, 256x256
-//     and 512x512 probe copies the game also draws are not), never after the bloom trigger, the ring only straight after a quad (the ring's
-//     pair is also the drives' smoke ribbon), and the jet's add only with its source draws earlier in the frame;
+//     pre-pass (a real star frame: a frame marker, drawn into whatever target the game draws it into -- the G-buffer phase's format-23 target
+//     in the 10-22 flight -- and independent of the H-candidate gate and of the run), an H-candidate target (the scene's own R11G11B10F at its
+//     extent with a depth bound; the 240x150, 256x256 and 512x512 probe copies the game also draws are not), never after the bloom trigger,
+//     the ring only straight after a quad (the ring's pair is also the drives' smoke ribbon), and the jet's add only with its source draws
+//     earlier in the frame;
 //   - the window's counts and the line that prints them, and the line for the setting going back to 100;
 //   - the first level's input as arithmetic (the contract the GPU pass is held to) and the blend equation that builds it.
 #pragma once
@@ -108,7 +110,7 @@ enum class FlatStarRefusal : uint8_t {
     kNone = 0,
     kNotHCandidate,   // the pass writes a target that is not an H candidate (the game's probe copies)
     kAfterTrigger,    // the bloom chain has already started this frame: S could not reach its first level
-    kNoPrePass,       // no H-candidate pre-pass earlier this frame: not a star frame
+    kNoPrePass,       // no pre-pass (into any target) earlier this frame: not a star frame
     kRingNotInRun,    // the ring's pair, but not straight after a quad (the drives' smoke ribbon)
     kJetNoSource,     // the jet's add or the flare without the jet's source draws earlier, or an add that is not ONE / ONE
     kSizeMismatch,    // S and H are not the same size
@@ -137,7 +139,7 @@ inline const char* flatStarRefusalName(FlatStarRefusal r) {
 
 // One frame's state. Reset at the frame boundary.
 struct FlatStarFrame {
-    bool pre = false;             // an H-candidate pre-pass was drawn
+    bool pre = false;             // a pre-pass was drawn this frame, into any target: the frame's marker, kept apart from the run (prev)
     bool jetSource = false;       // the jet's source draws were drawn
     FlatStarRole prev = FlatStarRole::kNone;  // the last star pass in the current run (an H-candidate pass); a non-star H-candidate draw ends the run
     bool anyStar = false;         // a star pass of any target was seen: the window's star-frames
@@ -176,10 +178,9 @@ inline FlatStarVerdict flatStarDecide(FlatStarFrame& f, FlatStarRole role, const
     }
     f.anyStar = true;
     if (role == FlatStarRole::kPre) {
-        if (facts.hCandidate) {
-            f.pre = true;
-            f.prev = role;
-        }
+        // The frame's marker, set whatever the target is: the game draws the depth pre-pass in its G-buffer phase, long before the star run and
+        // into a target that is not an H candidate. It is never replayed and never refused, and it does not touch the run.
+        f.pre = true;
         return v;
     }
     if (role == FlatStarRole::kJetSource) {

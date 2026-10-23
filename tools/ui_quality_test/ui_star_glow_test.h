@@ -7,7 +7,10 @@
 //   * the run machine, on draw lists transcribed from the flights' census: a B star's frame (edvr_gfx_20261022_080341), the neutron star's frame
 //     with its jet (edvr_gfx_20261022_114920 #338-#449) and the white dwarf's (080341 #461-#476), the 256x256 probe copies, a frame with no
 //     pre-pass, the drives' smoke ribbon after a star's run and straight after its arcs, a bloom trigger in the middle of a run, a jet's add without
-//     its source or with a blend that is not ONE / ONE, a flare without its source, and a source from the frame before;
+//     its source or with a blend that is not ONE / ONE, a flare without its source, and a source from the frame before; and the live sequence
+//     of the 10-22 flight (edvr_gfx_20261022_193420): the depth pre-pass drawn into a format-23 G-buffer target (not an H candidate) long
+//     before the star run, hundreds of unrelated draws, then the run into H -- the pre-pass is a frame marker, set whatever its target and kept
+//     apart from the run (the flown gate order refused every star pass no-pre-pass);
 //   * the first level's input, as arithmetic: H' = H + HUD + m * S per channel under the format's clamp, each term once (S holds no HUD), the blend
 //     that builds it, and the shader's text (one texture, no constants, no filter);
 //   * the window line and the line for the setting going back to 100;
@@ -119,6 +122,7 @@ constexpr uint64_t kOtherVs = 0x9BFC7FD232328391ull, kOtherPs = 0xDBF1725726018F
 constexpr uint64_t kBlurFirstPs = 0x30F73C5E4A94DB52ull;
 
 D pre(bool cand = true) { return {kFlatStarPreVs, 0, cand}; }
+D preG() { return pre(false); }   // the live flight's: drawn in the G-buffer phase into a format-23 target, never an H candidate
 D surf(bool cand = true) { return {kFlatStarSurfaceVs, kFlatStarSurfacePs, cand}; }
 D qa(bool cand = true) { return {kFlatStarQuadAVs, kFlatStarQuadAPs, cand}; }
 D inst(bool cand = true) { return {kFlatStarInstancedVs, kFlatStarInstancedPs, cand}; }
@@ -189,13 +193,44 @@ void testRuns() {
                                 surf(false), qa(false), inst(false), qb(false), ring(false), pre(false)});
         check(replayedIs(r, {0, 1, 1, 0, 1, 1, 1, 0, 0}), "star glow: the probe copies are not replayed");
         check(refused(r, FlatStarRefusal::kNotHCandidate) == 5 && totalRefused(r) == 5, "star glow: ...each is refused as not an H candidate, and for nothing else");
-        check(r.win.seen[0] == 2, "star glow: a probe pre-pass is seen like any pass (it sets no pre-pass: the next case)");
+        check(r.win.seen[0] == 2, "star glow: a probe pre-pass is seen like any pass (and marks the frame, as every pre-pass does)");
     }
-    // A probe's pre-pass alone makes no star frame to replay into.
+    // The pre-pass is the frame's marker whatever target it is drawn into; it is never replayed and never refused.
     {
-        const Run r = runFrame({pre(false), surf(), qa(), qb(), ring(), arcs()});
-        check(replayedIs(r, {0, 0, 0, 0, 0, 0, 0, 0, 0}) && refused(r, FlatStarRefusal::kNoPrePass) == 5 && totalRefused(r) == 5,
-              "star glow: with no H-candidate pre-pass every pass is refused as such, a probe's pre-pass included");
+        const Run r = runFrame({preG(), surf(), qa(), qb(), ring(), arcs()});
+        check(replayedIs(r, {0, 1, 1, 0, 1, 1, 1, 0, 0}) && totalRefused(r) == 0,
+              "star glow: a pre-pass into a target that is not an H candidate marks the frame: the passes after it are replayed");
+        const Run both = runFrame({preG(), pre(), preG()});
+        check(both.win.seen[0] == 3 && both.win.replayed[0] == 0 && totalRefused(both) == 0 && both.frame.pre,
+              "star glow: a pre-pass, into an H candidate or not, is seen, never replayed and never refused");
+    }
+    // THE LIVE SEQUENCE (edvr_gfx_20261022_193420): the pre-pass in the G-buffer phase, then hundreds of unrelated draws -- into the G-buffer, into
+    // H, into other targets -- then the star run into H, the 256x256 probe copies after it.
+    {
+        std::vector<D> live;
+        live.push_back(preG());
+        for (int i = 0; i < 400; ++i) live.push_back(other(i % 3 == 0));   // a third of them into an H candidate
+        for (D d : {surf(), qa(), inst(), qb(), ring(), arcs(), arcs()}) live.push_back(d);
+        for (D d : {surf(false), qa(false), inst(false), qb(false), ring(false), arcs(false), pre(false)}) live.push_back(d);
+        live.push_back(other(true));
+        const Run r = runFrame(live);
+        check(replayedIs(r, {0, 1, 1, 1, 1, 1, 2, 0, 0}) && refused(r, FlatStarRefusal::kNoPrePass) == 0,
+              "star glow: the live sequence replays the star run: the pre-pass mark survives hundreds of unrelated draws, H-candidate ones included");
+        check(refused(r, FlatStarRefusal::kNotHCandidate) == 6 && totalRefused(r) == 6, "star glow: ...and the probe copies after it are the only refusals");
+        // The run is another state: unrelated draws into H between a quad and the ring end the run, and leave the mark.
+        std::vector<D> cut;
+        cut.push_back(preG());
+        for (int i = 0; i < 50; ++i) cut.push_back(other(true));
+        for (D d : {qa(), other(true), ring()}) cut.push_back(d);
+        const Run c = runFrame(cut);
+        check(c.win.replayed[2] == 1 && c.win.replayed[5] == 0 && refused(c, FlatStarRefusal::kRingNotInRun) == 1 && refused(c, FlatStarRefusal::kNoPrePass) == 0,
+              "star glow: an unrelated H draw between the quad and the ring ends the run (ring-not-in-run) and does not clear the frame's pre-pass mark");
+        // The frame's start clears the mark.
+        const Run nextFrame = runFrame({qa(), qb(), ring()});
+        check(nextFrame.win.replayed[2] == 0 && refused(nextFrame, FlatStarRefusal::kNoPrePass) == 3, "star glow: the mark is the frame's: a frame with no pre-pass refuses its star passes");
+        // The jet chain of the live frame: the pre-pass from the G-buffer phase, the source into its own target, the add into H.
+        const Run jet = runFrame({preG(), other(true), jetSrc(), jetSrc(), blur(false), blur(true), qa(), qb(), ring(), jetAdd(), flare()});
+        check(jet.win.replayed[7] == 1 && jet.win.replayed[8] == 1 && totalRefused(jet) == 0, "star glow: the jet's add and flare replay behind a G-buffer-phase pre-pass");
     }
     // Pairs with no pre-pass at all (a draw the pairs share with another effect).
     {
@@ -449,8 +484,10 @@ std::vector<Scan> wiringPins(const std::string& runtimeCpp, const std::string& r
                     "the game's view of H goes back after the first-level draw, at endActualDraw and in the destructor: only that draw reads H'"});
     pins.push_back({"present-first",
                     inOrder(cpp, {"voidflatRuntimePresent(IDXGISwapChain*swap,uint64_tframe,HRESULThr,UINTflags){", "if(s.thread&&!owner())return;",
-                                  "flatStarGlowFrame(frame+1,flatRuntimeActive());", "s.untrusted.pollMask("}),
-                    "the setting, the frame's state and the 5 s line are read at the top of Present, before any early return"});
+                                  "flatStarGlowFrame(frame+1,s.frameLive);", "s.untrusted.pollMask("}) &&
+                        !has(cpp, "flatStarGlowFrame(frame+1,flatRuntimeActive())"),
+                    "the setting, the frame's state and the 5 s line are read at the top of Present, before any early return, and the frame that just ended is "
+                    "called watched by State::frameLive (g_flatRuntimeLive, which flatRuntimeActive reads, is cleared before Present)"});
     pins.push_back({"release", has(cpp, "flatUiLayerRelease();flatStarGlowRelease();") && has(cpp, "flatStarGlowNoteDevice(s.device.Get());"),
                     "a resize releases the star layer and a new device releases its children"});
     // The first level's pass: the HUD pass, then (or after a copy of H, when no HUD is live) the star pass, one command list.
@@ -506,7 +543,8 @@ void testWiring() {
          "if (starReplay && flatStarGlowReplayBegin(ctx, starRole, starW, starH)) { flatStarGlowReplayEnd(ctx); }"},
         {"feed-input", 0, "flatUiGlowBegin(ctx,state().prefix.frame,glowSlot,glowHdr,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH,&glowOriginal,haveStar?&star:nullptr);",
          "flatUiGlowBegin(ctx,state().prefix.frame,glowSlot,glowHdr,glowVs,glowPs,glowHdrW,glowHdrH,glowTargetW,glowTargetH,&glowOriginal,nullptr);"},
-        {"present-first", 0, "flatStarGlowFrame(frame + 1, flatRuntimeActive());", ""},
+        {"present-first", 0, "flatStarGlowFrame(frame + 1, s.frameLive);", ""},
+        {"present-first", 0, "flatStarGlowFrame(frame + 1, s.frameLive);", "flatStarGlowFrame(frame + 1, flatRuntimeActive());"},
         {"release", 0, "flatStarGlowNoteDevice(s.device.Get());", ""},
         {"pass-order", 2, "dc->CopyResource(g_glow.tex.Get(), hTex.Get());", ""},
         {"blend-factor", 2, "const float factor[4] = {use->m, use->m, use->m, 0.0f};", "const float factor[4] = {1.0f, 1.0f, 1.0f, 0.0f};"},

@@ -4059,7 +4059,7 @@ void flatRuntimePresent(IDXGISwapChain* swap, uint64_t frame, HRESULT hr, UINT f
     auto& s = state(); if (s.thread && !owner()) return;
     // visual.star_glow: the setting (live), the new frame's state and the 5 s line, before any early return below -- a setting above 100 whose scope
     // never ran still prints its line, with every count zero.
-    flatStarGlowFrame(frame + 1, flatRuntimeActive());
+    flatStarGlowFrame(frame + 1, s.frameLive);
     s.untrusted.pollMask(s.context.Get());
     if(frame && frame%300==0 &&
        (s.untrustedAccepted || s.untrustedRefused || s.untrustedTreated || s.untrustedWorldExcluded)) {

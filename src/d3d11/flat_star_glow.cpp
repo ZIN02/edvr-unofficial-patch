@@ -35,7 +35,6 @@ uint32_t g_configGeneration = 0;
 bool g_unrecognisedNoted = false;
 bool g_wasOn = false;
 int g_windowPercent = 100;
-int g_lastLive = -1;                       // -1 unknown, else the flat runtime's scope state last noted
 ULONGLONG g_windowStart = 0;
 uint64_t g_frameNo = 0;
 uint64_t g_layerFailedFrame = ~0ull;      // the frame S could not be made in
@@ -231,7 +230,7 @@ void logOff(int fromPercent) {
 
 bool flatStarGlowOn() { return g_percent.load(std::memory_order_relaxed) > 100; }
 
-void flatStarGlowFrame(uint64_t nextFrame, bool runtimeLive) {
+void flatStarGlowFrame(uint64_t nextFrame, bool watched) {
     if (!runtimeFlatProfile()) return;
     Config& cfg = Config::get();
     // Live: the settings' generation is read BEFORE the values (config.h), so a swap that lands between costs one more read, never a stale one.
@@ -263,27 +262,21 @@ void flatStarGlowFrame(uint64_t nextFrame, bool runtimeLive) {
             g_windowPercent = percent;
             g_windowStart = now;
             g_win = FlatStarWindow{};
-            g_lastLive = -1;
-            Log::get().note("flat star glow: on at setting=%d (k=%.2f, m=%.2f) from frame %llu; a line every 5 s follows (setting=%d with every count zero "
-                            "means no star pass reached the scope), and one line when the setting returns to 100",
-                            percent, flatStarGlowK(percent), flatStarGlowM(percent), static_cast<unsigned long long>(nextFrame), percent);
+            Log::get().note("flat star glow: on at setting=%d (k=%.2f, m=%.2f) from frame %llu; the frame that just ended was %s by the flat runtime's draw "
+                            "scope; a line every 5 s follows (setting=%d with every count zero means no star pass reached the scope), and one line when the "
+                            "setting returns to 100",
+                            percent, flatStarGlowK(percent), flatStarGlowM(percent), static_cast<unsigned long long>(nextFrame),
+                            watched ? "watched" : "NOT watched (a stood-down frame, or the flat temporal anti-aliasing is off)", percent);
         } else if (now - g_windowStart >= 5000) {
             logWindow(percent, g_win);
             g_win = FlatStarWindow{};
             g_windowStart = now;
-        }
-        const int live = runtimeLive ? 1 : 0;
-        if (live != g_lastLive) {
-            g_lastLive = live;
-            Log::get().note("flat star glow: the flat runtime's draw scope is %s%s", runtimeLive ? "live" : "NOT live",
-                            runtimeLive ? "" : " (the glow acts only with the flat temporal anti-aliasing on and the work not stood down); no star pass is watched");
         }
     } else if (g_wasOn) {
         g_wasOn = false;
         logOff(g_windowPercent);
         g_win = FlatStarWindow{};
         g_windowPercent = 100;
-        g_lastLive = -1;
         releaseSaved();     // nothing is held at 100
         releaseObjects();
     }

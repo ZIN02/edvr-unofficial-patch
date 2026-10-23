@@ -358,9 +358,16 @@ the Ghidra scripts, and, kept local and never committed, the game executables fo
 - Source comments and docs here cite its files as `analysis\decomp\...`. Those files are not in this public
   repository: a citation is a pointer for the maintainer, not evidence a stranger can check, so state the
   fact in the doc as well, and do not paste decompiled code into this repository or its issues.
-- A Claude Code session in a worktree is stopped from writing into the main checkout by a hook. To work on
-  `analysis\` write through a clone of it (or run the session from the main checkout), and pull in the
-  main checkout; do not try to get around the hook.
+- **A session in a worktree does not write into `analysis\`.** The app stops Write and Edit there, and one
+  analysis session, started from the main checkout, is the only writer: it reviews, files and commits what
+  others hand over. Do not get around the guard with a shell write, a second clone or a junction. To hand over
+  a finding, make a new folder `C:\Users\seanm\AppData\Local\EDVR\analysis-inbox\<yyyymmdd-hhmmss>-<topic>\`
+  (outside every repository, so it survives your worktree), put the notes and scripts in it with a
+  `MANIFEST.md` (build, from, summary, and for each file its destination under `analysis\`; the format and the
+  checks are in `analysis\AGENTS.md`, "Intake"), then send the folder name to the session titled
+  `elite-analysis intake` (`ListAgents`, or `mcp__ccd_session_mgmt__list_sessions`) if it is running. If it
+  is not, say in your report that an item is waiting. Cite the file in your doc as `analysis\decomp\<name>`
+  once it is filed. Reading `analysis\` needs no handover.
 
 ## Layout
 

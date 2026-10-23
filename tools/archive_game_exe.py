@@ -18,8 +18,10 @@ It copies the game exe to analysis\\EliteDangerous64-<build>.exe, the name
 build_diff.py's examples use. analysis\\ is git-ignored: game files are never
 committed. The build is the last field of VersionInfo.txt's "Version" beside
 the exe (2026.10.13.334473 -> 334473). The copy is written to a temp name,
-hashed, and renamed into place, so a partial copy never carries the final
-name.
+hashed, and published under the final name only if nothing holds it yet
+(_publish), so a partial copy never carries the final name and two runs
+racing on the same build (installs from two worktrees) never replace each
+other's copy.
 
   * the destination already holds the same bytes -> "already archived", 0;
   * the destination holds different bytes under the same build -> refused,
@@ -123,13 +125,41 @@ def archive(exe, dest_dir, build=None, dry_run=False, out=print):
         if sha256_of(temp) != source_hash:
             out("[archive] refused: the copy's hash differs from %s (changed while copying?)" % exe)
             return 1
-        os.replace(temp, target)
-        temp = None
+        if not _publish(temp, target):
+            # Another run (another worktree's install) published this build first.
+            if sha256_of(target) == source_hash:
+                out("[archive] already archived: %s (%s)" % (target, identity))
+                return 0
+            out("[archive] refused: %s was archived concurrently with different bytes; the installed "
+                "exe is %s. Check which copy is right before replacing it." % (target, identity))
+            return 1
     finally:
-        if temp and os.path.exists(temp):
+        if os.path.exists(temp):
             os.remove(temp)
     out("[archive] archived %s -> %s (%s)" % (exe, target, identity))
     return 0
+
+
+def _publish(temp, target):
+    """Give temp the final name only if nothing holds it yet; False if something does.
+
+    A hard link fails atomically on an existing name, so two runs racing past
+    the existence check cannot replace each other's copy. os.replace would.
+    Where a link is unsupported, Windows' rename is the fallback: it also never
+    replaces an existing file."""
+    try:
+        os.link(temp, target)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        if os.name != "nt":
+            raise
+    try:
+        os.rename(temp, target)
+        return True
+    except FileExistsError:
+        return False
 
 
 def _fake_pe(path, stamp, size_of_image, filler=b""):
@@ -184,6 +214,28 @@ def self_test():
               "a dry run reports the same refusal")
         check(sha256_of(target) == before, "a refused archive leaves the existing copy alone")
         check(not [n for n in os.listdir(dest) if n.startswith(".archive-")], "no temp file is left behind")
+
+        # A concurrent run publishes the same build after this run's existence
+        # check, while it copies: never replaced, whatever the racer's bytes.
+        real_copy = shutil.copyfile
+        for racer, want, word in ((b"two", 0, "already archived"), (b"three", 1, "refused")):
+            race_dest = os.path.join(td, "race-%d" % want)
+            os.makedirs(race_dest)
+            race_target = os.path.join(race_dest, "EliteDangerous64-334473.exe")
+
+            def racing_copy(src, dst, _racer=racer, _target=race_target):
+                _fake_pe(_target, 0x6ACD513D, 0x640C000, _racer)
+                return real_copy(src, dst)
+            shutil.copyfile = racing_copy
+            try:
+                rc = archive(exe, race_dest, out=lines.append)
+            finally:
+                shutil.copyfile = real_copy
+            with open(race_target, "rb") as f:
+                kept = f.read()
+            check(rc == want and word in lines[-1], "a racing archive with %r bytes reports %s" % (racer, word))
+            check(kept.endswith(racer), "a racing archive never replaces the copy published first (%r)" % racer)
+            check(os.listdir(race_dest) == ["EliteDangerous64-334473.exe"], "a lost race leaves no temp file")
 
         os.remove(os.path.join(game, "VersionInfo.txt"))
         check(archive(exe, dest, out=lines.append) == 1, "a missing VersionInfo.txt is refused")

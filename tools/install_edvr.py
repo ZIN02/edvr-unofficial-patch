@@ -2939,6 +2939,7 @@ def _main(argv=None):
             target = resolve_target(args.target)
             try:
                 if args.verify_only: return native_direct_verify(root, target, args.native_loader, args.native_runtime or "system")
+                archive_installed_exe(root, target, args.dry_run)
                 return native_direct(root, target, args.native_loader, args.native_runtime or "system", args.dry_run)
             except (OSError, ValueError) as exc:
                 print("[edvr] ERROR: direct native operation failed: %s" % exc)
@@ -3899,8 +3900,58 @@ def _run_self_test_labelled():
             sys.stdout, sys.stderr = real_out, real_err
 
 
+def _archive_route_self_test():
+    """Every real install route archives the game exe, a dry run as a dry run;
+    no --verify-only route does. The installs themselves are stubbed out."""
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="edvr_archive_route_test_")
+    names = ("archive_installed_exe", "resolve_target", "standard_native_install",
+             "native_install", "native_direct", "native_direct_verify", "verify_native_receipt")
+    saved = {n: globals()[n] for n in names}
+    archived = []
+    try:
+        loader = os.path.join(tmp, "loader.dll")
+        receipt = os.path.join(tmp, "receipt.json")
+        for path in (loader, receipt):
+            with open(path, "wb") as f:
+                f.write(b"x")
+        globals().update(
+            archive_installed_exe=lambda root, target, dry_run=False: archived.append(dry_run),
+            resolve_target=lambda spec: tmp,
+            standard_native_install=lambda *a, **k: 0,
+            native_install=lambda *a, **k: 0,
+            native_direct=lambda *a, **k: 0,
+            native_direct_verify=lambda *a, **k: 0,
+            verify_native_receipt=lambda *a, **k: {"target": tmp})
+        base = ["--root", tmp, "--target", "steam"]
+        native = base + ["--native-openxr", "--dll", "--scope", "vr"]
+        direct = native + ["--no-backup", "--native-loader", loader]
+        for argv, want, what in (
+                (base, [False], "standard install"),
+                (base + ["--dry-run"], [True], "standard dry run"),
+                (base + ["--verify-only"], [], "standard --verify-only"),
+                (native + ["--native-receipt", receipt], [False], "native install"),
+                (native + ["--native-receipt", receipt, "--verify-only"], [], "native --verify-only"),
+                (direct, [False], "direct native install"),
+                (direct + ["--dry-run"], [True], "direct native dry run"),
+                (direct + ["--verify-only"], [], "direct native --verify-only")):
+            del archived[:]
+            try:
+                rc = main(argv)
+            except SystemExit as exc:
+                rc = exc.code
+            if rc != 0 or archived != want:
+                print("archive route: %s returned %r and archived %r, want 0 and %r" % (what, rc, archived, want))
+                ok = False
+    finally:
+        globals().update(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
 def self_test():
     ok = True
+    if not _archive_route_self_test(): ok = False
     if not _game_probe_self_test(): ok = False
     if not _xess_opt_in_self_test(): ok = False
     if not _compile_only_self_test(): ok = False

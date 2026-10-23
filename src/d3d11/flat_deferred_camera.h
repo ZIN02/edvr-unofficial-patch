@@ -56,8 +56,20 @@ inline double flatDeferredFloatBound(unsigned operations,double magnitude) {
     return operations*u/(1.0-operations*u)*magnitude +
         operations*static_cast<double>(std::numeric_limits<float>::denorm_min());
 }
+// The clip x/y coefficients are sums of products of a rotation row and the frustum scale,
+// so a coefficient that cancels to a small result still carries rounding of the scale's size.
+// Rotation rows have unit length: by Cauchy-Schwarz the terms of any coefficient in clip row r
+// sum to at most the length of that row's xyz, which is the frustum scale (the horizontal scale
+// for x, the vertical for y). Only a camera and CB2 finalized separately need this allowance.
+inline double flatDeferredFrustumScale(const float rows[][4],unsigned r) {
+    if(r>=2)return 0;
+    return std::sqrt(double(rows[r][0])*rows[r][0]+double(rows[r][1])*rows[r][1]+double(rows[r][2])*rows[r][2]);
+}
+// frustumScaleForward: the camera was finalized from the phased frustum and the CB2 from an
+// unphased one (the whole-camera omission), so the forward comparison carries that allowance.
 inline FlatDeferredCameraMatch flatMatchDeferredCamera(const unsigned char* cameraBytes,
-                                                       const unsigned char* cb2Bytes) {
+                                                       const unsigned char* cb2Bytes,
+                                                       bool frustumScaleForward=false) {
     if(!cameraBytes || !cb2Bytes)return FlatDeferredCameraMatch::Unavailable;
     float camera[6][4],rows[kFlatDeferredCameraRows][4];
     std::memcpy(camera,cameraBytes,sizeof(camera));std::memcpy(rows,cb2Bytes,sizeof(rows));
@@ -72,7 +84,8 @@ inline FlatDeferredCameraMatch flatMatchDeferredCamera(const unsigned char* came
     // additions to the independently rounded stored translation. Near stays exact.
     for(unsigned r=0;r<4;++r)for(unsigned c=0;c<3;++c) {
         const double a=rows[r][c],b=camera[c][r];
-        if(std::abs(a-b)>flatDeferredFloatBound(8,std::abs(a)+std::abs(b)))return FlatDeferredCameraMatch::Forward;
+        const double scale=frustumScaleForward?flatDeferredFrustumScale(rows,r):0;
+        if(std::abs(a-b)>flatDeferredFloatBound(8,std::abs(a)+std::abs(b)+2*scale))return FlatDeferredCameraMatch::Forward;
     }
     if(rows[2][3]!=camera[3][2])return FlatDeferredCameraMatch::Forward;
     for(unsigned r:{0u,1u,3u}) {
@@ -121,19 +134,25 @@ inline double flatDeferredReverseDelta(double stored,double phase,double homogen
 // reversed madd's pre-cancellation magnitude; a float undo measured after
 // cancellation rejects a real omission. The corrected upload is certified
 // separately by the strict matcher, including its nonsingularity test.
+// The camera always carries the requested phase. The CB2 forward rows carry it
+// when only the inverse rays omit it, and carry none when the whole camera
+// omits it; then the rows are compared raw, charge no reversal, and, being
+// finalized apart from the camera, carry the frustum-scale allowance.
 inline bool flatDeferredDephasedOmission(const float camera[6][4],const float rows[7][4],
-        double ndcX,double ndcY) {
+        double ndcX,double ndcY,bool forwardCarriesPhase=true) {
+    const double rowX=forwardCarriesPhase?ndcX:0,rowY=forwardCarriesPhase?ndcY:0;
     double cam[4][4],cb[4][4];
     for(unsigned i=0;i<4;++i)for(unsigned k=0;k<4;++k){cam[i][k]=camera[i][k];cb[k][i]=rows[k][i];}
     for(unsigned i=0;i<4;++i){
         cam[i][0]-=ndcX*cam[i][3];cam[i][1]-=ndcY*cam[i][3];
-        cb[0][i]-=ndcX*cb[3][i];cb[1][i]-=ndcY*cb[3][i];
+        cb[0][i]-=rowX*cb[3][i];cb[1][i]-=rowY*cb[3][i];
     }
     for(unsigned r=0;r<4;++r)for(unsigned c=0;c<3;++c){
         double delta=0;
-        if(r==0)delta=flatDeferredReverseDelta(rows[0][c],ndcX,rows[3][c])+flatDeferredReverseDelta(camera[c][0],ndcX,camera[c][3]);
-        if(r==1)delta=flatDeferredReverseDelta(rows[1][c],ndcY,rows[3][c])+flatDeferredReverseDelta(camera[c][1],ndcY,camera[c][3]);
-        const double magnitude=std::abs(cb[r][c])+std::abs(cam[c][r]);
+        if(r==0)delta=flatDeferredReverseDelta(rows[0][c],rowX,rows[3][c])+flatDeferredReverseDelta(camera[c][0],ndcX,camera[c][3]);
+        if(r==1)delta=flatDeferredReverseDelta(rows[1][c],rowY,rows[3][c])+flatDeferredReverseDelta(camera[c][1],ndcY,camera[c][3]);
+        const double scale=forwardCarriesPhase?0:flatDeferredFrustumScale(rows,r);
+        const double magnitude=std::abs(cb[r][c])+std::abs(cam[c][r])+2*scale;
         const double bound=delta+flatDeferredFloatBound(8,magnitude);
         if(!(std::abs(cb[r][c]-cam[c][r])<=bound))return false;
     }
@@ -141,8 +160,8 @@ inline bool flatDeferredDephasedOmission(const float camera[6][4],const float ro
     const double world[]={camera[5][0],camera[5][1],camera[5][2]};
     for(unsigned r:{0u,1u,3u}){
         double sum=cb[r][3],magnitude=std::abs(sum),delta=0;
-        if(r==0)delta+=flatDeferredReverseDelta(rows[0][3],ndcX,rows[3][3]);
-        if(r==1)delta+=flatDeferredReverseDelta(rows[1][3],ndcY,rows[3][3]);
+        if(r==0)delta+=flatDeferredReverseDelta(rows[0][3],rowX,rows[3][3]);
+        if(r==1)delta+=flatDeferredReverseDelta(rows[1][3],rowY,rows[3][3]);
         for(unsigned c=0;c<3;++c){
             const double term=cam[c][r]*world[c];sum+=term;magnitude+=std::abs(term);
             if(r==0)delta+=flatDeferredReverseDelta(camera[c][0],ndcX,camera[c][3])*std::abs(world[c]);
@@ -159,8 +178,8 @@ inline bool flatDeferredDephasedOmission(const float camera[6][4],const float ro
         for(unsigned i=0;i<3;++i){
             const double ray=rows[kFlatDeferredInverseOffsetRows+i][rayColumns[c]];
             const double term=cb[clip][i]*ray;sum+=term;magnitude+=std::abs(term);
-            if(clip==0)delta+=flatDeferredReverseDelta(rows[0][i],ndcX,rows[3][i])*std::abs(ray);
-            if(clip==1)delta+=flatDeferredReverseDelta(rows[1][i],ndcY,rows[3][i])*std::abs(ray);
+            if(clip==0)delta+=flatDeferredReverseDelta(rows[0][i],rowX,rows[3][i])*std::abs(ray);
+            if(clip==1)delta+=flatDeferredReverseDelta(rows[1][i],rowY,rows[3][i])*std::abs(ray);
         }
         residual[r][c]=sum-expected[r][c];bounds[r][c]=flatDeferredFloatBound(12,magnitude)+delta;
         if(!(std::abs(residual[r][c])<=bounds[r][c]))return false;
@@ -190,6 +209,29 @@ inline bool flatRepairDeferredMissingPhase(const unsigned char* cameraBytes,
     if(!flatJitterInverseUvRay(rays,jitter))return false;
     std::memcpy(rows+kFlatDeferredInverseOffsetRows,rays,sizeof(rays));
     if(flatMatchDeferredCamera(cameraBytes,reinterpret_cast<unsigned char*>(rows))!=FlatDeferredCameraMatch::Match)return false;
+    std::memcpy(corrected,rows,sizeof(rows));return true;
+}
+// The pass can also be fed a CB2 with no phase in any row (supercruise and
+// planetary flight) while the donor camera carries it: forward and inverse
+// rows agree with each other but equal the donor with the requested phase
+// removed. Certify exactly that, then rebuild the span with the layouts the
+// projection patches use (forward dp4 on rows 0..3, inverse rays on rows 4..6)
+// so the bytes equal the uploaded clone. The result passes the strict matcher
+// with the same frustum-scale allowance on the forward rows.
+inline bool flatRepairDeferredWholeOmission(const unsigned char* cameraBytes,
+        const unsigned char* original, const FlatProjectionJitter& jitter,
+        unsigned char* corrected) {
+    if(!corrected || !flat_projection_detail::finite(jitter) ||
+       (jitter.ndcX==0 && jitter.ndcY==0) ||
+       flatMatchDeferredCamera(cameraBytes,original)!=FlatDeferredCameraMatch::Forward)return false;
+    float camera[6][4],rows[kFlatDeferredCameraRows][4];
+    std::memcpy(camera,cameraBytes,sizeof(camera));std::memcpy(rows,original,sizeof(rows));
+    if(!flatDeferredDephasedOmission(camera,rows,jitter.ndcX,jitter.ndcY,false))return false;
+    float forward[4][4],rays[3][4];
+    std::memcpy(forward,rows,sizeof(forward));std::memcpy(rays,rows+kFlatDeferredInverseOffsetRows,sizeof(rays));
+    if(!flatJitterForwardDp4(forward,jitter) || !flatJitterInverseUvRay(rays,jitter))return false;
+    std::memcpy(rows,forward,sizeof(forward));std::memcpy(rows+kFlatDeferredInverseOffsetRows,rays,sizeof(rays));
+    if(flatMatchDeferredCamera(cameraBytes,reinterpret_cast<unsigned char*>(rows),true)!=FlatDeferredCameraMatch::Match)return false;
     std::memcpy(corrected,rows,sizeof(rows));return true;
 }
 

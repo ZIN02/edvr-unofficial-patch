@@ -323,6 +323,11 @@ HMODULE WINAPI oculusRouteLoadLibraryW(LPCWSTR path) {
 
 }  // namespace
 
+HMODULE oculusRouteDispatchFrom(LPCWSTR path, uintptr_t returnAddress,
+                                HMODULE (WINAPI* forward)(LPCWSTR)) {
+    return routeDispatch(path, returnAddress, forward);
+}
+
 void oculusRouteInstallEarly(bool nativeBuild) {
     saturatingIncrement(g_installAttempts);
     if (nativeBuild) {

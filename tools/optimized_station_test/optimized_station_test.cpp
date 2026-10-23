@@ -1456,6 +1456,36 @@ int main(int argc, char** argv) {
         check(got.empty() && again.lost == 0 && again.calls == 0, "v14.26 gather, one thread: a drained entry is not delivered twice, and the loss is counted once");
     }
     {
+        // Built 2026-10-23: two unfinished drains in a row put the tick more than the ring behind, and the drain after them skips the oldest passes. Their
+        // entries are never read, so they are lost and must be counted, even when no writer comes back to that buffer to overwrite them: an uncounted loss
+        // is an informative pass that silently misses records, and the station's fail-safe (a loss keeps every record) never fires.
+        struct Item {
+            uint32_t thread = 0;
+            uint32_t seq = 0;
+            uint32_t stamp = 0;
+        };
+        std::atomic<uint32_t> stamp{0};
+        se::PassGather<Item, 2, 8> gb(stamp);
+        stamp.fetch_add(1);   // pass 1
+        {
+            se::PassGather<Item, 2, 8>::Writer w(gb);
+            w.call(0x3000);
+            for (uint32_t k = 0; k < 5; ++k) {
+                Item it;
+                it.seq = k;
+                w.push(it);
+            }
+        }
+        stamp.fetch_add(4);   // the tick falls behind: passes 1..4 closed, none drained, and no writer returns
+        uint64_t delivered = 0;
+        uint64_t lost = gb.drain([&](const Item&) { ++delivered; }).lost;
+        for (int k = 0; k < 4; ++k) {
+            stamp.fetch_add(1);
+            lost += gb.drain([&](const Item&) { ++delivered; }).lost;
+        }
+        check(delivered == 0 && lost == 5, "gather, skipped passes: the entries of a pass the tick skipped are counted lost though no writer overwrites them");
+    }
+    {
         // Eight writers and a draining tick: every entry is delivered once or counted as lost, and each writer's entries keep their order.
         struct Item {
             uint32_t thread = 0;

@@ -99,6 +99,10 @@ try:
     from tools import gen_installer_rc
 except ImportError:
     import gen_installer_rc
+try:
+    from tools import archive_game_exe
+except ImportError:
+    import archive_game_exe
 
 GAME_EXE = "EliteDangerous64.exe"
 
@@ -1416,6 +1420,20 @@ def frontier_dirs():
     if not local:
         return []
     return _products_under(os.path.join(local, "Frontier_Developments"))
+
+
+def archive_installed_exe(root, target, dry_run=False):
+    """Keep the game exe EDVR is being installed against (archive_game_exe.py).
+
+    The next game update overwrites it in place, and build_diff.py map needs
+    it as the old build. Best effort: a failed or refused archive is reported
+    and never stops the install."""
+    exe = os.path.join(target, GAME_EXE)
+    try:
+        archive_game_exe.archive(exe, archive_game_exe.default_dest(root), dry_run=dry_run,
+                                 out=lambda line: print("[edvr] " + line))
+    except (OSError, ValueError) as exc:
+        print("[edvr] WARNING: could not archive %s (%s); the install continues." % (exe, exc))
 
 
 def resolve_target(spec):
@@ -2943,6 +2961,7 @@ def _main(argv=None):
         root = os.path.abspath(args.root) if args.root else repo_root()
         target = resolve_target(args.target)
         tag = args.tag or short_hash(root)
+        archive_installed_exe(root, target, args.dry_run)
         return native_install(root, target,
                               args.native_receipt,
                               tag, args.dry_run, args.keep_backups)
@@ -2962,6 +2981,8 @@ def _main(argv=None):
     xess_source = os.path.join(build_dir(root), "libxess.dll")
     if args.xess and not os.path.isfile(xess_source):
         ap.error("--xess requested but %s is missing" % xess_source)
+    if not args.verify_only:
+        archive_installed_exe(root, target, args.dry_run)
     return standard_native_install(root, target, tag, args.dry_run,
                                    args.verify_only,
                                    include_dlss=(args.dlss or (args.all and os.path.isfile(dlss_source))),

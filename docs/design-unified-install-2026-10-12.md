@@ -43,11 +43,8 @@
   - ruled out: the render thread waiting, because render_thread_wait_ms_sum
     was 0 in every flat window
   - ruled out: the flat head-pose publication (fix 1) keeping the Pimax screen
-    on, because with pose_cache off a woken headset also stayed awake over
-    90 s untouched (edvr_openxr_20261023_122201)
-- **Open (2026-10-23):** in flat an awake Pimax never sleeps while the session
-  runs. It predates fix 1; the suspect is the flat-clear frame loop (section
-  12), cause not proven. No flat frame cost since fix 1, but the display stays on.
+    on, because with pose_cache off a woken headset also stayed on until
+    Pimax's ~6 min in-session timeout (edvr_openxr_20261023_122201)
 - **Limits of a live switch ("kept until restart"):** `fix.vscreen_res_width`
   leaves the on-foot screen low-res until a restart in VR (3.4); an unexplained
   curve flip was seen once, not shown by the route and maps-gate lines.
@@ -702,23 +699,23 @@ awake); at launch `vr window: mode request #1` should read `remembered_gate_clos
 
 ### Flown A/B: does the head-pose publication keep the headset awake? (Frontier, Pimax Crystal Super, 2026-10-23)
 
-The Crystal Super sleeps its screen after about 30 s untouched, and an asleep headset makes xrWaitFrame take about 70 ms, so
-whether the headset sleeps decides which regime flat runs in.
+The Crystal Super sleeps its screen after about 30 s untouched when no app session is running, and an asleep headset makes xrWaitFrame
+take about 70 ms, so whether the headset sleeps decides which regime flat runs in.
 
 - Fix build ccc8a184, `pose_cache` on (the default), flat; runtime log `edvr_openxr_20261023_120256_*`. The headset stayed awake for
   the whole 4.5 minute session: 54 windows with `clear_wait_ms_mean` about 5.2 and no window showing the 70 ms asleep wait. The user
   saw the headset screen stay on in flat.
 - The same build with `pose_cache=off` added to `Openvr\win64\edvr_openxr.ini` (since restored), flat; runtime log
-  `edvr_openxr_20261023_122201_*`. The headset was asleep from launch: 70-71 ms waits in windows 1-19, and the slow regime lasted
-  until 12:23:41 local. The user woke it at about 12:23:40 (window 20: 8.1 ms, window 21: 3.8 ms) and left it untouched. It stayed
-  awake at about 5 ms through window 38 (12:25:13), more than 90 s.
+  `edvr_openxr_20261023_122201_*`, which kept running. The headset was asleep from launch: 70-71 ms waits in windows 1-19, and the
+  slow regime lasted until 12:23:41 local. The user woke it at about 12:23:40 (window 20: 8.1 ms, window 21: 3.8 ms) and left it
+  untouched. It stayed awake at about 5 ms through window 38 (12:25:13), then fell asleep at about 12:29:40: in window 92
+  `clear_wait_ms_mean` went to 13.9, then 68-70 ms from window 93. The game thread's loss returned to 4.1-4.4 s per 5 s window, as
+  expected with the cache off.
 
-So the publication is not what keeps the screen on: with the cache off, a woken headset also stayed awake over 90 s untouched.
-Fix 1 did not cause it and does not change it.
+So the publication is not what keeps the screen on. With the cache off the woken headset also stayed on, and it slept about six
+minutes after the user woke it. With an app session running the Pimax sleeps after about six minutes untouched, not the 30 s seen
+with no session. Nothing in EDVR is shown to keep it awake, and the 12:02 run with the fix on lasted only about 4.5 minutes, short of
+that timer.
 
 ruled out: the flat head-pose publication (fix 1) keeping the Pimax screen on, because with pose_cache off a woken headset also stayed
-awake over 90 s untouched (edvr_openxr_20261023_122201).
-
-Open: in flat an awake Pimax never sleeps while the session runs. That predates fix 1; the suspect is the flat-clear frame loop
-(section 12), which submits an empty frame every headset frame. It costs no flat frame rate since fix 1, but it keeps the headset
-display on. Its cause is not proven.
+on until Pimax's ~6 min in-session timeout (edvr_openxr_20261023_122201).

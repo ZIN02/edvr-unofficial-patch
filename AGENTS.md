@@ -340,6 +340,28 @@ file.
 - No agent-addressed text in source comments, commit messages or release
   notes: none of them can be stripped.
 
+## The analysis directory
+
+`analysis\` in the **main checkout** is its own git repository (private: `characterecho-sean/elite-analysis`),
+cloned into this one and git-ignored here. It holds the decompiler and disassembly notes, the address maps and
+the Ghidra scripts, and, kept local and never committed, the game executables for builds 332841, 334473 and
+334925 and the Ghidra projects. **Read `analysis\AGENTS.md` before working in it**; it has its own rules and skills
+(`elite-rva`, `retarget-build`, `ghidra-headless`, `record-finding`).
+
+- A git worktree has no `analysis\`. Reach it by the main checkout's absolute path
+  (`C:\Users\seanm\projects\edvr-unofficial-patch\analysis`; from a worktree, `git rev-parse --git-common-dir`
+  names `<main>\.git`). **Never junction or symlink it into a worktree**: removing the worktree would delete
+  the 4 GB of Ghidra projects through the link. `tools\build_diff.py` and the per-arc `pins.py` take its
+  executables by path.
+- It is a separate repository: commit there with `git -C analysis ...`, to its own `main`, and stage files by
+  path. Its history is not EDVR's, and nothing in it ships in an EDVR archive.
+- Source comments and docs here cite its files as `analysis\decomp\...`. Those files are not in this public
+  repository: a citation is a pointer for the maintainer, not evidence a stranger can check, so state the
+  fact in the doc as well, and do not paste decompiled code into this repository or its issues.
+- A Claude Code session in a worktree is stopped from writing into the main checkout by a hook. To work on
+  `analysis\` write through a clone of it (or run the session from the main checkout), and pull in the
+  main checkout; do not try to get around the hook.
+
 ## Layout
 
 | Path | What |
@@ -352,5 +374,6 @@ file.
 | `tools\` | Python tools, each with `--self-test`; C++ test rigs in subdirs |
 | `docs\` | one investigation doc per arc — read its `## Status` block first |
 | `.agents\` | agent-only material: handoff prompts, plans; `export-ignore`, never in an archive |
+| `analysis\` | main checkout only: the private `elite-analysis` repository (git-ignored here), see above |
 | `build.bat` | full build, all gates; `--dll-only` is the receipt-guarded promotion path |
 | `package.bat <version>` | packages a release from the last full build; it does not build, and refuses unless the build's receipt matches the tree (run `build.bat --wait-lock` first) |

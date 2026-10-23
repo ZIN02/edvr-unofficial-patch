@@ -9,15 +9,40 @@ census design. This doc records what EDVR's review made of it and what was built
 - **State:** RocketsProjects' read-only audit (EDVR-001, 42 findings, source pinned at 74081399,
   received 2026-10-22) was checked against HEAD c16a46b3. The 23 active findings plus the smoke-depth
   reads (G09) each got a source review. Eight became changes on branch
-  `claude/edvr-performance-optimizations-8aff5f`. All of them keep output identical, and none is
-  flown.
+  `claude/edvr-performance-optimizations-8aff5f`. All of them keep output identical. First flown
+  2026-10-23 (below).
 - **Built (CPU):** CPU-02, CPU-04, CPU-05 and CPU-06 in 92904483; CPU-12 and CPU-17 in 24a0c1b0.
 - **Built (GPU):** G09 (ZS/ZUI absent bits in `zSceneAt`) and a tiled 3×3 depth fetch in the
   native-TAA pass, in ab78bbf4, 42bf0a99 and fa1afa36; see the G09 entry below.
 - **Reviewed:** an adversarial review of every commit found no output-changing bug. Its test-strength
   and diagnostic findings were fixed in 1088ed18 and fa1afa36.
 - **No config keys.** Every change is exactly equivalent, so none gets a toggle.
-- **Next flight:** VR cockpit in space, a station and on foot, on the Frontier install. Check:
+- **Flight 1** (2026-10-23, v0.21.0-19-g02c8f39c, Frontier).
+  - **Flights:** 133549 and 133813 on Pimax (menu and hangar); 135250 on SteamVR aapvr (menu,
+    hangar, concourse on foot, Explorer Cam switches).
+  - **G09 presence (135250, 69,144 mv dispatches):**
+    - neither layer bound: 58%;
+    - UI depth only: 27%;
+    - both: 15%;
+    - smoke only: 0.
+    So the ZS load is skipped on 85% of dispatches and the ZUI load on 58%.
+  - **CPU-06:** the depth view memo hits 96-99.5%.
+  - **G09 timing is below the noise of a free flight.** The temporal price mv line is flat (0.10
+    against 0.11 ms a pair). The census "motion prep" door reads 0.17-0.36 ms a frame in new menu
+    windows against 0.13-0.21 in baselines, where the menu ran different content (composite and
+    hologram passes at 2/frame against about 1). An exact reading needs a same-scene A/B.
+  - **The main-menu 3D hangar hitches are game-side and in every build**, at the same size:
+    - the scene creation burst (139 textures, 121 buffers, 208.1 MB);
+    - a single 450-520 ms freeze at Elite+0x5d6e7f with no EDVR code on the stack;
+    - 30-60 ms frames with EDVR under 1 ms in the frame.
+  - **The concourse overrun past 11.1 ms is not a regression.** It is a busy-area CPU limit that
+    starts at an area-streaming frame, not at a mode switch. Explorer Cam adds about 1.5 ms. The
+    10-14 flight (v0.19.1) shows the same state and the same switch transients.
+  - **EDVR's share there is about 3 ms of a 12 ms cycle**, of which draw hooks are 1.7-2.5 ms. That
+    is a target for the render-thread CPU arc, not for this branch.
+  - **Untested:** a cold-driver compile of the new shaders in VR. The flat first launch showed a
+    possible +10-35 ms on one or two frames, once.
+- **Still to check on a later flight:**
   - **Build identity:** `edvr_log.py --expect-build HEAD`.
   - **CPU-06:** the 30 s "ui quality: depth view memo" line, in VR and in flat. Expect hits to
     dominate.

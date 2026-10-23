@@ -6842,6 +6842,26 @@ void vScreenFrameBoundary() {
                     static_cast<unsigned long long>(lacked[1]), static_cast<unsigned long long>(lacked[2]));
             }
         }
+        // The motion prep's scene-depth layers, the same way: how often each
+        // of the smoke's depth and the private UI depth was absent, which
+        // zSceneAt then skips rather than fetches as zeros.
+        {
+            static uint64_t lastLayerDispatches = 0;
+            uint64_t byLayers[4] = {};
+            if (temporalPassMvDepthLayerTotals(byLayers)) {
+                const uint64_t dispatches = byLayers[0] + byLayers[1] + byLayers[2] + byLayers[3];
+                if (dispatches != lastLayerDispatches) {
+                    lastLayerDispatches = dispatches;
+                    Log::get().note(
+                        "motion prep depth layers: %llu mv dispatches this session; smoke and UI depth "
+                        "both bound %llu, smoke depth only %llu, UI depth only %llu, neither %llu (an "
+                        "absent layer is skipped, not read as zeros from a null view).",
+                        static_cast<unsigned long long>(dispatches), static_cast<unsigned long long>(byLayers[0]),
+                        static_cast<unsigned long long>(byLayers[1]), static_cast<unsigned long long>(byLayers[2]),
+                        static_cast<unsigned long long>(byLayers[3]));
+                }
+            }
+        }
         // The sharpening's, the same way. Worded for the profile (VR counts
         // eye-submits, flat counts frames), which is why it lives beside the
         // pass and not here.

@@ -52,8 +52,9 @@
 - **Temporary keys:** none. No user-facing key is added.
 - **Phase 2 FLOWN OK** (live switch, no leak over 12 switches, the headset
   panel while flat, section 12). **Phase 3 BUILT, installer NOT YET RUN for
-  real** (section 13). **2026-10-14 cold flat start flipped to VR:** fixed,
-  NOT FLOWN (section 14).
+  real** (section 13). Not yet flown: an Epic install through the GUI, a
+  Frontier launcher launch. **2026-10-14 cold flat start flipped to VR:**
+  fixed, NOT FLOWN (section 14).
 - **Next:** fly `claude/flat-owner-waits`: the `flat_owner_waits` line must
   show `flat_cache_answers` high, `locate_head` hops near zero, other-thread
   wait near zero asleep and awake; the mode-request lines must show

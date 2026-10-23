@@ -113,6 +113,7 @@ void refreshUserSize() {
 // What requestReplacement did with a request, named exactly: the one log line says it after the decision, not before.
 enum class ModeAction : uint8_t {
     PassNotAllowed,        // the profile gate (vrWindowRewriteAllowed): the request goes through untouched, the saved mode is not read
+    RememberedGateClosed,  // a non-windowed request with VR not live: its block is kept, then the gate does not allow a rewrite and it passes unchanged
     Remembered,            // VR inactive, a non-windowed request: its block is kept, the request passes unchanged
     Rewritten,             // VR on, a windowed request: the remembered block was written into the request
     LeftVrInactive,        // VR inactive and the request is windowed: nothing to remember, nothing changed
@@ -123,6 +124,7 @@ enum class ModeAction : uint8_t {
 const char* modeActionName(ModeAction a) {
     switch (a) {
         case ModeAction::PassNotAllowed: return "passthrough_not_allowed";
+        case ModeAction::RememberedGateClosed: return "remembered_gate_closed";
         case ModeAction::Remembered: return "remembered";
         case ModeAction::Rewritten: return "rewritten";
         case ModeAction::LeftVrInactive: return "left_as_is_vr_inactive";
@@ -210,11 +212,12 @@ void logModeRequestReturn(const ModeRequestRecord& r) {
     if (formatModeReturnLine(r, have, style, cw, ch, vrSsaaGateFrame(), msSinceInstall(), line, sizeof(line))) Log::get().note("%s", line);
 }
 
-// The mode request's window rewrite (H6; the maintainer's decision: keep the user's display mode when 3D is on). VR profile, or flat and
-// passthrough with VR in scope and live (vr_window_gate.h): otherwise the request passes byte for byte, and the saved mode is not read. VR inactive: a non-windowed request is remembered
-// whole (its block) and passes unchanged. VR active (or the settings file's mode is on at a windowed request): a windowed request
-// (kind 0) gets the remembered block restored before the original runs, so the apply builds the remembered mode. Nothing is changed
-// while VR is inactive.
+// The mode request's window rewrite (H6; the maintainer's decision: keep the user's display mode when 3D is on). A non-windowed request (kind
+// != 0) made while VR is not live is remembered whole (its block) in every profile, before the gate: a flat launch's own mode request is the
+// mode the first live switch must keep, and the gate decides the rewrite only. The rewrite runs in the VR profile, or flat and passthrough with
+// VR in scope and live (vr_window_gate.h); otherwise the request passes byte for byte and the saved mode is not read. VR active (or the settings
+// file's mode is on at a windowed request): a windowed request (kind 0) gets the remembered block restored before the original runs, so the
+// apply builds the remembered mode. A request made while VR is live is never remembered. Nothing in a request is changed while VR is inactive.
 uint64_t requestReplacement(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h) {
     // Every call is counted and the first kModeRequestTraceCap are logged in every profile (a flat launch included): the entry is read here,
     // the one line is written once the decision is made, and a second line after the original returns. Logging changes nothing below.
@@ -225,19 +228,36 @@ uint64_t requestReplacement(void* a, void* b, void* c, void* d, void* e, void* f
     // Timed while the flat profile is active (cross_profile_cost.h inactiveFor): from entry to the forward call, the rewrite included.
     cross_profile::Probe probe = cross_profile::enterSite(cross_profile::Site::VrModeRequest,
         cross_profile::inactiveFor(cross_profile::Owner::Vr, runtimeFlatProfile(), runtimeVrProfile()));
-    // Before any read of the saved mode. Flat and Passthrough rewrite only with VR in scope and a live session (vr_window_gate.h).
-    if (!vrWindowRewriteAllowed(runtimeProfileValue(), runtimeScopeIncludesVr(), vrSsaaHoldVrLive())) {
+    const bool live = vrSsaaHoldVrLive();
+    const uintptr_t req = reinterpret_cast<uintptr_t>(b);
+    uint32_t kind = 0;
+    const bool haveKind = readU32(req + kReqKindOff, &kind);
+    // Remembered before the gate and before any read of the saved mode, in every profile: what the game asked for while VR was not live is the
+    // mode a later live switch keeps. Only the guarded reads of the request and stores into the remembered block.
+    bool remembered = false, unreadable = false;
+    if (haveKind && kind != 0 && !live) {
+        uint64_t q[4] = {};
+        bool ok = true;
+        for (int i = 0; i < 4 && ok; ++i) ok = readU64(req + kReqBlockOff + 8u * i, &q[i]);
+        if (ok) {
+            for (int i = 0; i < 4; ++i) g_block[i].store(q[i], std::memory_order_release);
+            g_rememberedKind.store(kind, std::memory_order_release);
+            g_remembered.store(true, std::memory_order_release);
+            remembered = true;
+        } else {
+            unreadable = true;
+        }
+    }
+    // Flat and Passthrough rewrite only with VR in scope and a live session (vr_window_gate.h).
+    if (!vrWindowRewriteAllowed(runtimeProfileValue(), runtimeScopeIncludesVr(), live)) {
         probe.stop();
-        if (trace) logModeRequest(&record, ModeAction::PassNotAllowed);
+        if (trace) logModeRequest(&record, remembered ? ModeAction::RememberedGateClosed : ModeAction::PassNotAllowed);
         const uint64_t passed = g_requestOrig(a, b, c, d, e, f, g, h);
         if (trace) logModeRequestReturn(record);
         return passed;
     }
     ModeAction action = ModeAction::LeftVrInactive;
-    const uintptr_t req = reinterpret_cast<uintptr_t>(b);
-    uint32_t kind = 0;
-    const bool haveKind = readU32(req + kReqKindOff, &kind);
-    bool vrOn = vrSsaaHoldVrLive();
+    bool vrOn = live;
     if (!vrOn && haveKind && kind == 0) {
         int mode = 0;
         char raw[24] = {};
@@ -245,17 +265,7 @@ uint64_t requestReplacement(void* a, void* b, void* c, void* d, void* e, void* f
     }
     if (!vrOn) {
         if (haveKind && kind != 0) {
-            uint64_t q[4] = {};
-            bool ok = true;
-            for (int i = 0; i < 4 && ok; ++i) ok = readU64(req + kReqBlockOff + 8u * i, &q[i]);
-            if (ok) {
-                for (int i = 0; i < 4; ++i) g_block[i].store(q[i], std::memory_order_release);
-                g_rememberedKind.store(kind, std::memory_order_release);
-                g_remembered.store(true, std::memory_order_release);
-                action = ModeAction::Remembered;
-            } else {
-                action = ModeAction::LeftUnreadable;
-            }
+            action = remembered ? ModeAction::Remembered : unreadable ? ModeAction::LeftUnreadable : ModeAction::LeftVrInactive;
         } else if (!haveKind) {
             action = ModeAction::LeftUnreadable;
         }

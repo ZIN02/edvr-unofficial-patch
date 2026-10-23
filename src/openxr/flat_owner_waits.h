@@ -94,9 +94,14 @@ class FlatOwnerWaits final {
     uint64_t n = 0, behindClear = 0;
     double p50Ms = 0, p95Ms = 0, maxMs = 0, sumMs = 0, runMaxMs = 0;
   };
+  // Why a flat head locate was not answered from the pose publication (pose_cache.h answerFlat) and took the owner hop.
+  enum class CacheFallback : unsigned { Unpublished = 0, Keys, Stale, Count };
   struct Snapshot {
     uint64_t pumps = 0, clearFrames = 0, jobs = 0, behindClear = 0, behindPump = 0, localPose = 0, localPoll = 0;
     double pumpMaxMs = 0, clearWaitSumMs = 0, clearWaitMaxMs = 0, renderWaitSumMs = 0, otherWaitSumMs = 0;
+    // The flat head locate: answered from the owner's per-headset-frame publication, hopped because it could not be, or refused (not seated).
+    uint64_t cacheAnswers = 0, cacheFallbacks = 0, cacheRefused = 0, cacheFallbackReasons[unsigned(CacheFallback::Count)] = {};
+    double cacheAgeP50Ms = 0, cacheAgeP95Ms = 0, cacheAgeMaxMs = 0;
     SiteReport sites[kSites];
   };
 
@@ -142,6 +147,22 @@ class FlatOwnerWaits final {
     std::lock_guard<std::mutex> lock(mutex_);
     ++w_.clearFrames; w_.clearWaitSumMs += ms; w_.clearWaitMaxMs = (std::max)(w_.clearWaitMaxMs, ms);
   }
+
+  // Whether the graphics half reads flat now: the route the host takes for a head locate (the same test the instrument itself uses).
+  bool flatNow() const { return hooks_.flat && hooks_.flat(); }
+  // A flat head locate answered from the publication, at the publication's age; hopped because it could not be; refused (not the seated origin).
+  void noteFlatCacheAnswer(uint64_t ageUs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++w_.cacheAnswers;
+    w_.cacheAgeMaxMs = (std::max)(w_.cacheAgeMaxMs, double(ageUs) / 1000.0);
+    if (ages_.stored < kAgeSamples) ages_.us[ages_.stored++] = int64_t(ageUs);
+  }
+  void noteFlatCacheFallback(CacheFallback why) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++w_.cacheFallbacks;
+    if (unsigned(why) < unsigned(CacheFallback::Count)) ++w_.cacheFallbackReasons[unsigned(why)];
+  }
+  void noteFlatCacheRefused() { std::lock_guard<std::mutex> lock(mutex_); ++w_.cacheRefused; }
 
   // A game call answered without a hop, in the same window.
   void noteLocalPose() { if (hooks_.flat && hooks_.flat()) localPose_.fetch_add(1, std::memory_order_relaxed); }
@@ -243,6 +264,11 @@ class FlatOwnerWaits final {
       }
       s.stored = 0;
     }
+    if (ages_.stored) {
+      out.cacheAgeP50Ms = double(pick(ages_.us, ages_.stored, 50)) / 1000.0;
+      out.cacheAgeP95Ms = double(pick(ages_.us, ages_.stored, 95)) / 1000.0;
+    }
+    ages_.stored = 0;
     out.localPose = localPose_.exchange(0, std::memory_order_relaxed);
     out.localPoll = localPoll_.exchange(0, std::memory_order_relaxed);
     w_ = Snapshot{};
@@ -251,7 +277,8 @@ class FlatOwnerWaits final {
 
   // flat_owner_waits,window=N,window_s=5,elapsed_ms=E,idle_pumps=P,idle_pump_ms_max=M,clear_frames=C,clear_wait_ms_mean=a,clear_wait_ms_max=b,
   //   jobs=J,behind_clear=B,behind_pump=BP,render_thread_wait_ms_sum=r,other_thread_wait_ms_sum=o,local_pose_cache=L,local_poll_event=Q,
-  //   kinds=site:n/behind_clear/queue_p50/queue_p95/queue_max/queue_sum/run_max|...
+  //   flat_cache_answers=A,flat_cache_fallbacks=F,flat_cache_fallback_reasons=unpublished:a/keys:b/stale:c,flat_cache_refused=R,
+  //   flat_cache_age_ms_p50/p95/max=x/y/z,kinds=site:n/behind_clear/queue_p50/queue_p95/queue_max/queue_sum/run_max|...
   // Every site prints, with explicit zeros. ms with one decimal. Returns the length written, or 0 when the buffer is too small.
   static int formatFlatOwnerWaitsLine(uint64_t window, double elapsedMs, const Snapshot& s, char* buf, size_t cap) {
     if (!buf || cap < 2) return 0;
@@ -259,9 +286,13 @@ class FlatOwnerWaits final {
     int n = std::snprintf(buf, cap,
         "flat_owner_waits,window=%llu,window_s=%llu,elapsed_ms=%.0f,idle_pumps=%llu,idle_pump_ms_max=%.1f,clear_frames=%llu,"
         "clear_wait_ms_mean=%.1f,clear_wait_ms_max=%.1f,jobs=%llu,behind_clear=%llu,behind_pump=%llu,"
-        "render_thread_wait_ms_sum=%.1f,other_thread_wait_ms_sum=%.1f,local_pose_cache=%llu,local_poll_event=%llu,kinds=",
+        "render_thread_wait_ms_sum=%.1f,other_thread_wait_ms_sum=%.1f,local_pose_cache=%llu,local_poll_event=%llu,"
+        "flat_cache_answers=%llu,flat_cache_fallbacks=%llu,flat_cache_fallback_reasons=unpublished:%llu/keys:%llu/stale:%llu,"
+        "flat_cache_refused=%llu,flat_cache_age_ms_p50/p95/max=%.1f/%.1f/%.1f,kinds=",
         ull(window), ull(kWindowUs / 1000000), elapsedMs, ull(s.pumps), s.pumpMaxMs, ull(s.clearFrames), mean, s.clearWaitMaxMs,
-        ull(s.jobs), ull(s.behindClear), ull(s.behindPump), s.renderWaitSumMs, s.otherWaitSumMs, ull(s.localPose), ull(s.localPoll));
+        ull(s.jobs), ull(s.behindClear), ull(s.behindPump), s.renderWaitSumMs, s.otherWaitSumMs, ull(s.localPose), ull(s.localPoll),
+        ull(s.cacheAnswers), ull(s.cacheFallbacks), ull(s.cacheFallbackReasons[0]), ull(s.cacheFallbackReasons[1]),
+        ull(s.cacheFallbackReasons[2]), ull(s.cacheRefused), s.cacheAgeP50Ms, s.cacheAgeP95Ms, s.cacheAgeMaxMs);
     if (n < 0 || size_t(n) >= cap) return 0;
     for (unsigned k = 0; k < kSites; ++k) {
       const SiteReport& r = s.sites[k];
@@ -287,6 +318,8 @@ class FlatOwnerWaits final {
  private:
   static constexpr uint32_t kPump = 1, kClear = 2;
   struct Site { unsigned stored = 0; int64_t queueUs[kSamples]; };
+  static constexpr unsigned kAgeSamples = 1024;   // flat_cache ages per window: ~175 answers per 5 s at one locate per game frame
+  struct Ages { unsigned stored = 0; int64_t us[kAgeSamples]; };
   static unsigned long long ull(uint64_t v) { return static_cast<unsigned long long>(v); }
   // Nearest rank, as OwnerInvokeStats: v[(n*pct+99)/100 - 1]. Sorts the first n.
   static int64_t pick(int64_t* v, unsigned n, unsigned pct) {
@@ -304,6 +337,7 @@ class FlatOwnerWaits final {
   std::mutex mutex_;
   Snapshot w_;
   Site sites_[kSites];
+  Ages ages_;
 };
 
 } // namespace edvr::openxr

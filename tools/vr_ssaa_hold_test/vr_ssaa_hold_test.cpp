@@ -274,9 +274,10 @@ void windowFlatCases() {
     callRequest(buf);
     check(g_origKind == 2 && std::memcmp(g_origBlock, before, sizeof(before)) == 0,
           "flat: a non-windowed request passes unchanged");
-    bool kept = true;
-    for (int i = 0; i < 4; ++i) kept = kept && edvr::g_block[i].load() == remembered[i];
-    check(kept && edvr::g_rememberedKind.load() == 1, "flat: the remembered block is not replaced by a flat request");
+    bool taken = true;
+    for (int i = 0; i < 4; ++i) taken = taken && edvr::g_block[i].load() == nonWindowed[i];
+    check(taken && edvr::g_rememberedKind.load() == 2,
+          "flat, VR not live: a non-windowed request is remembered (the launch's own mode), while it still passes unchanged");
     reportGroup("flat profile", c0, f0);
 }
 
@@ -414,6 +415,65 @@ void modeRequestTraceCases() {
     reportGroup("mode request trace", c0, f0);
 }
 
+// The launch's own mode request is remembered whatever the profile, so the first live switch keeps it. The gate decides the rewrite only.
+void rememberAtLaunchCases() {
+    const int c0 = g_checks, f0 = g_fails;
+    const uint64_t launch[4] = {0, 0x19, 0, 0x1010000000002ull};   // flight 2026-10-23: kind 2, borderless 3840x2160
+    const uint64_t windowed[4] = {0x4444, 0x5555, 0x6666, 0};
+    const uint64_t vrChoice[4] = {0xAAAA, 0xBBBB, 0xCCCC, 3};
+    uint8_t buf[0x28], before[0x28];
+
+    // Flat launch: kind 2 at frame 1, VR not live, the gate closed. Remembered, logged as such, forwarded byte for byte.
+    resetWindowState();
+    edvr::g_runtimeProfile = edvr::RuntimeProfile::Flat;
+    makeRequest(buf, launch);
+    std::memcpy(before, buf, sizeof(buf));
+    callRequest(buf);
+    check(std::strcmp(lastAction(), "remembered_gate_closed") == 0 && edvr::g_remembered.load() && edvr::g_rememberedKind.load() == 2 &&
+          g_origKind == 2 && std::memcmp(g_origBlock, before, sizeof(before)) == 0 && edvr::g_readSettingsCalls == 0,
+          "flat launch: the kind 2 request is remembered with the gate closed, logged remembered_gate_closed, and forwarded unchanged");
+
+    // 3D on: the windowed request, VR live, the gate open: rewritten to the launch's block.
+    edvr::g_stubLive = true;
+    makeRequest(buf, windowed);
+    callRequest(buf);
+    check(std::strcmp(lastAction(), "rewritten") == 0 && g_origKind == 2 && forwardedBlockIs(launch),
+          "3D on after a flat launch: the windowed request is rewritten to the remembered launch block");
+
+    // A request made while VR is live is not remembered, in any profile.
+    makeRequest(buf, vrChoice);
+    callRequest(buf);
+    check(std::strcmp(lastAction(), "left_as_is_vr_on_non_windowed") == 0 && edvr::g_rememberedKind.load() == 2 && edvr::g_block[1].load() == 0x19,
+          "a kind 3 request made while VR is live is not remembered; the launch block stays");
+    for (auto profile : {edvr::RuntimeProfile::Flat, edvr::RuntimeProfile::Vr, edvr::RuntimeProfile::Passthrough}) {
+        resetWindowState();
+        edvr::g_runtimeProfile = profile;
+        edvr::g_stubLive = true;
+        makeRequest(buf, vrChoice);
+        callRequest(buf);
+        check(!edvr::g_remembered.load(), "VR live: a non-windowed request is not remembered in this profile");
+    }
+
+    // A windowed request with nothing remembered is left as it was.
+    resetWindowState();
+    edvr::g_runtimeProfile = edvr::RuntimeProfile::Flat;
+    edvr::g_stubLive = true;
+    makeRequest(buf, windowed);
+    std::memcpy(before, buf, sizeof(buf));
+    callRequest(buf);
+    check(std::strcmp(lastAction(), "left_as_is_nothing_remembered") == 0 && g_origKind == 0 && std::memcmp(g_origBlock, before, sizeof(before)) == 0,
+          "3D on with nothing remembered: the windowed request is left as the game made it");
+
+    // The VR profile remembers as it did: VR not live, kind 2, action remembered.
+    resetWindowState();
+    edvr::g_runtimeProfile = edvr::RuntimeProfile::Vr;
+    edvr::g_stubSavedMode = 0;
+    makeRequest(buf, launch);
+    callRequest(buf);
+    check(std::strcmp(lastAction(), "remembered") == 0 && edvr::g_rememberedKind.load() == 2, "VR profile, VR not live: remembered, as before");
+    reportGroup("remember at launch", c0, f0);
+}
+
 // The install: the forward is published through Prepare before the entry is published, and cleared when CodeHook refuses.
 void installCases() {
     const int c0 = g_checks, f0 = g_fails;
@@ -459,6 +519,7 @@ int main(int argc, char** argv) {
     windowFlatCases();
     windowVrCases();
     modeRequestTraceCases();
+    rememberAtLaunchCases();
     installCases();
     if (g_fails) {
         std::printf("vr_ssaa_hold_test: %d of %d checks FAILED\n", g_fails, g_checks);

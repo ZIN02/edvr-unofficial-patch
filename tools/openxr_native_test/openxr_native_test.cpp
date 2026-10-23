@@ -24,6 +24,7 @@
 #include "pose_cache_cases.h"
 #include "pose_cache_invalidation_cases.h"
 #include "pose_cache_lock_cases.h"
+#include "flat_head_cache_cases.h"
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -699,6 +700,7 @@ int selfTest() {
   edvr::openxr::test::runSeatOrderCases(check);
   edvr::openxr::test::runPoseCacheCases(check);
   edvr::openxr::test::runPoseCacheInvalidationCases(check);
+  edvr::openxr::test::runFlatHeadCacheCases(check);
   edvr::openxr::test::runPoseCacheLockCases(check);
   Options o;
   check(parse({L"--loader",L"C:\\runtime\\loader.dll"},o)&&o.seconds==10,"default duration");

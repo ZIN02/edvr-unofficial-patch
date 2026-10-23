@@ -87,7 +87,9 @@ template<class Check> void runFlatOwnerWaitsCases(Check check) {
       check(f.at("window") == "1" && f.at("window_s") == "5" && f.at("elapsed_ms") == "5000" && f.at("idle_pumps") == "0" &&
         f.at("clear_frames") == "0" && f.at("clear_wait_ms_mean") == "0.0" && f.at("clear_wait_ms_max") == "0.0" && f.at("jobs") == "0" &&
         f.at("behind_clear") == "0" && f.at("behind_pump") == "0" && f.at("render_thread_wait_ms_sum") == "0.0" &&
-        f.at("other_thread_wait_ms_sum") == "0.0" && f.at("local_pose_cache") == "0" && f.at("local_poll_event") == "0",
+        f.at("other_thread_wait_ms_sum") == "0.0" && f.at("local_pose_cache") == "0" && f.at("local_poll_event") == "0" &&
+        f.at("flat_cache_answers") == "0" && f.at("flat_cache_fallbacks") == "0" && f.at("flat_cache_refused") == "0" &&
+        f.at("flat_cache_fallback_reasons") == "unpublished:0/keys:0/stale:0" && f.at("flat_cache_age_ms_p50/p95/max") == "0.0/0.0/0.0",
         "flat-owner-waits: a window with nothing queued prints its zeros");
       const std::string kinds = f.at("kinds");
       size_t entries = 0, pos = 0;
@@ -127,6 +129,9 @@ template<class Check> void runFlatOwnerWaitsCases(Check check) {
       "flat-owner-waits line: clear wait mean and local answers parse back");
     FlatOwnerWaits::Snapshot big;
     big.pumps = big.clearFrames = big.jobs = big.behindClear = big.behindPump = big.localPose = big.localPoll = 18446744073709551615ull;
+    big.cacheAnswers = big.cacheFallbacks = big.cacheRefused = 18446744073709551615ull;
+    for (auto& r : big.cacheFallbackReasons) r = 18446744073709551615ull;
+    big.cacheAgeP50Ms = big.cacheAgeP95Ms = big.cacheAgeMaxMs = 1e12;
     big.pumpMaxMs = big.clearWaitSumMs = big.clearWaitMaxMs = big.renderWaitSumMs = big.otherWaitSumMs = 1e12;
     for (auto& s : big.sites) { s.n = s.behindClear = 18446744073709551615ull; s.p50Ms = s.p95Ms = s.maxMs = s.sumMs = s.runMaxMs = 1e12; }
     const int len = FlatOwnerWaits::formatFlatOwnerWaitsLine(99999999, 123456789.0, big, line, sizeof line);

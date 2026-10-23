@@ -6473,9 +6473,12 @@ void uiLayerFrameBoundary(ID3D11DeviceContext* ctx) {
     if (runtimeFlatProfile()) {
         // The flat profile: this file's per-eye layer is never live there (fix.temporal_aa reads off through the flat
         // gate), so its totals would only say so. The panel half's line is the key's 30 s account in flat. The scene draws still run
-        // seedWritersCheck there, so the depth-view memo's counts are reported here, before g_win is cleared below.
+        // seedWritersCheck there, so the depth-view memo's counts are reported here, before g_win is cleared below. Only while the
+        // layer is live (or the window counted something before it stood down): flatUiLayerNoteSceneDraw returns early unless the
+        // layer took a draw this frame, so with the layer off nothing can reach the memo and the line would be zeros every 30 s. A
+        // live layer that nothing reached still logs its zeros.
         uiPanelScaleLog();
-        logDsvMemo();
+        if (detail::g_uiLayerLive || g_win.dsvMemoHits || g_win.dsvMemoMisses) logDsvMemo();
     } else if (g_target > 0.0f || anything) {
         uint64_t samples = 0;  // what logTotals is about to sort
         for (const RouteStats& r : g_routeStats) samples += r.n;

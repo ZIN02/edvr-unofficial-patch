@@ -135,3 +135,22 @@ temporal_aa_fast_cs 2016^2, depth on, world path on): bound 0.1440-0.1481 -> 0.1
    quiet NaNs, denormals of both signs, -1 and -0.01 in Z and in the bound layer: byte-identical, WARP (the rig has no hardware path).
 5. probe.w bit 256 was per-object motion's until 319c1c5a; the cbuffer comment says so, for eye dumps older than that.
 on_foot_split_test's R5k pin now counts four `split.x > 0.0` (the fill's gate is the fourth).
+
+2026-10-23, final adversarial review: three small findings, fixed.
+1. main_depth_tile_test.h never varied split.x or candMask (always 2 and 15), so a gate that under-filled at split.x 0, or tested only
+   candidate 1 (candMask & 2) and dropped candidate 3, passed. It now runs 78 configurations: the 50 above, 16 with split.x 0 (head term
+   and world term each on or off, probe.w 0 and 128) and 12 on the candidate mask: 0, 2, 8, 5 and 10, each with the split on and the
+   world term off and with the world term set and the split off, plus two with candidates 1 and 3 asked and no depth or no history. The output A/B
+   cannot see an OVER-fill (a gate that fills where nothing reads the tile writes the same bytes), so withFillProbe counts the groups
+   that wrote the tile (Stats[120], rig-only text on the poisoned compile) and the rig requires all 20 where the 3x3 can run and none
+   where it cannot, per variant. Mutants of the production gate, each failing the rig: `tvUsed.w || tvCam.w` (the split.x guard
+   dropped: over-fill at split.x 0, caught by the probe, after the output compare for that configuration had passed), `(tvUsed.w || tvCam.w)
+   && split.x > 0` (under-fill at split.x 0 with the head's term, caught by the A/B), `candMask & 2` and `candMask & 8` (candidate 3 or 1
+   dropped, caught by the A/B at candMask 8 and 2), `candMask != 0` (candidates 0 and 2 cannot read the tile; caught by the probe at
+   candMask 5). The mutant tile index is now caught in 22 configurations, the world-split-less gate in 6.
+2. screen_consumer_test's special-depth pass compares the same new blob with a null-view fetch against the literal +0.0 through the same
+   max, so it proves skipping equals fetching for -0/NaN/denormal/negative depths, not that the new max operand order matches the old
+   shader; its comment now says so and points at zscene_gate_test.h, whose parity runs the production zSceneAt against the old expression.
+3. logDsvMemo ran every 30 s in the flat profile with the layer off, when flatUiLayerNoteSceneDraw returns early and nothing can reach
+   the memo. The flat call is now gated on the layer being live (or the window having counted something before it stood down); a live
+   layer that nothing reached still logs its zeros. ui_after_ui_test's CPU-06 scan pins the new form.

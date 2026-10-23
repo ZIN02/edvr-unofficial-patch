@@ -896,10 +896,15 @@ void testCpuPathWiring(const std::string& layerText, const std::string& layerSqu
           "CPU-06: logDsvMemo reports both counts");
     check(occurrences(totals, "logDsvMemo();") == 1 && totals.find("dsvMemo") == std::string::npos,
           "CPU-06: logTotals reports the counts through logDsvMemo, once, with no copy of the line of its own");
-    const size_t flatReport = layerSqueezed.find("uiPanelScaleLog();logDsvMemo();}elseif(g_target>0.0f||anything){");
+    // The flat call is gated: with the layer off nothing can reach the memo (flatUiLayerNoteSceneDraw returns early unless the layer took
+    // a draw this frame), so only a live layer, or a window that counted something before it stood down, reports; a live layer that
+    // nothing reached still reports its zeros.
+    const size_t flatReport = layerSqueezed.find(
+        "uiPanelScaleLog();if(detail::g_uiLayerLive||g_win.dsvMemoHits||g_win.dsvMemoMisses)logDsvMemo();}elseif(g_target>0.0f||anything){");
     const size_t windowReset = flatReport == std::string::npos ? std::string::npos : layerSqueezed.find("g_win=Window{};", flatReport);
     check(flatReport != std::string::npos && windowReset != std::string::npos && occurrences(layerSqueezed, "logDsvMemo();") == 2,
-          "CPU-06: the flat profile's window report calls logDsvMemo (beside the panel half's line), before g_win is reset; no other caller");
+          "CPU-06: the flat profile's window report calls logDsvMemo (beside the panel half's line) only while the layer is live or the window "
+          "counted something, before g_win is reset; no other caller");
 }
 
 void testWiring() {

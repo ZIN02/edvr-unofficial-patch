@@ -518,10 +518,14 @@ void testScreenConsumers(ID3D11Device* dev,ID3D11DeviceContext* ctx) {
             check(!same(honest,lie),"absent-layer gate control: a shipping blob honours bit 256 (a bound, nearer UI depth skipped changes the outputs)");
             check(same(lie,nothingBound),"absent-layer gate control: bit 256 over a bound UI depth reads exactly as no UI depth");
         }
-        // The same parity over the depth classes the max chain must carry bit for bit, since fxc writes the shipping
-        // blobs' max operands in the other order (max(zs, z)): -0, +0, both quiet NaNs, the smallest and largest
-        // denormals and a negative one, -1 and -0.01, with ordinary depths between, in Z and in whichever of ZS / ZUI
-        // is bound, the patterns staggered so the three layers' classes meet in many pairings. WARP (this rig's device).
+        // The same fetched-versus-skipped parity over the depth classes the max chain must carry bit for bit: -0, +0,
+        // both quiet NaNs, the smallest and largest denormals and a negative one, -1 and -0.01, with ordinary depths
+        // between, in Z and in whichever of ZS / ZUI is bound, the patterns staggered so the three layers' classes meet
+        // in many pairings. Both arms run the same shipping blob (the null-view fetch against the literal +0.0 the bit
+        // substitutes, through the same max instruction), so this proves skipping a layer equals fetching a null one for
+        // those inputs. It does NOT prove the new max operand order matches the old shader's: that comparison, the
+        // production zSceneAt against the expression it replaced, is the zscene gate harness
+        // (tools\ui_depth_test\zscene_gate_test.h). WARP (this rig's device).
         {
             const uint32_t kClasses[]={0x80000000u,0x7FC00000u,0xFFC00000u,0x00000001u,0x007FFFFFu,0x80000001u,
                                        0xBF800000u,0xBC23D70Au,0x00000000u,0x3BA3D70Au,0x3D4CCCCDu};

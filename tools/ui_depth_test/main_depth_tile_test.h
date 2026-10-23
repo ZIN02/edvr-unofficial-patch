@@ -13,12 +13,17 @@
 // offset into its texture and not a multiple of 8 either way (partial groups, the clamped edges), a depth map of
 // sky, far and near surfaces with a few signed zeros, denormals and NaNs, the smoke's and the UI depth bound or
 // not, the screen map, the coverage mask and the previous UI colour; the configurations: depth bound or not, the
-// head's depth term and the world path each on or off, six probe.w words, and no history.
+// head's depth term and the world path each on or off, six probe.w words, no history, split.x 0 (no world path
+// whatever tvCam.w says), and the diagnostic variant's candidate mask (0, 2, 8, 5, 10: which of candidates 1 and 3, the two
+// that fetch with depth, are asked, and the two that cannot read the tile).
 // Non-vacuity: the world path ran where asked (Stats[15]), the depth changes the outputs, WARP agrees with
 // itself, a mutant tile index (every tap the pixel's own entry) is caught, and only where the 3x3 runs. The fill's
 // gate, over a tile poisoned first (withPoison, so an unfilled entry reads the same on every device): the production
 // gate matches the reference in every configuration, both variants, and a mutant gate (the world split left out) is
-// caught exactly where the world split alone runs the 3x3.
+// caught exactly where the world split alone runs the 3x3. The gate's other half, that it fills nothing where the 3x3
+// cannot run, is not visible in the outputs, so withFillProbe counts the groups that wrote the tile: all of them where
+// the constants let the 3x3 run (per variant: the head's term, the world split with split.x > 0, and in the diagnostic
+// variant candidate 1 or 3), none where they do not.
 // The fill's control flow in both shipping blobs' DXBC: the barrier at depth 0, the tile's stores inside a branch.
 // By hand: ui_depth_test --main-tile [--adapter nvidia] [--bench] (the bench: temporal_aa_fast_cs at 2016x2016 against the
 // untiled main, and on a history reset and with no depth against the ungated fill; zscene_gate_test.h's harness).
@@ -40,10 +45,14 @@ struct Rig {
 uint32_t hash32(uint32_t x) { x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16; return x; }
 float unit(uint32_t x) { return float(hash32(x) & 0xFFFFFFu) / float(0xFFFFFF); }
 
-struct Cfg { int knobsY, tvUsedW, tvCamW, haveHistory; uint32_t probeW; };
+// splitX is split.x (the world/ship split's distance, 0 = no split, so the world path is off whatever tvCam.w says) and candMask the
+// instrument's candidate mask (bit c: candidate c runs; 1 and 3 fetch with depth, so bits 1 and 3, mask & 10, read the 3x3). The
+// diagnostic variant reads candMask; the fast variant has no candidates and ignores it.
+struct Cfg { int knobsY, tvUsedW, tvCamW, haveHistory; uint32_t probeW; int splitX = 2, candMask = 15; };
 std::string cfgText(const Cfg& c) {
-    char b[120];
-    std::snprintf(b, sizeof(b), "knobs.y %d, tvUsed.w %d, tvCam.w %d, haveHistory %d, probe.w %u", c.knobsY, c.tvUsedW, c.tvCamW, c.haveHistory, c.probeW);
+    char b[200];
+    std::snprintf(b, sizeof(b), "knobs.y %d, tvUsed.w %d, tvCam.w %d, haveHistory %d, probe.w %u, split.x %d, candMask %d", c.knobsY, c.tvUsedW, c.tvCamW,
+                  c.haveHistory, c.probeW, c.splitX, c.candMask);
     return b;
 }
 
@@ -68,18 +77,20 @@ std::vector<char> buildParams(ID3D11ShaderReflectionConstantBuffer* P, UINT size
     rows("c2R0", "c2R1", "c2R2", .031f, .011f);
     rows("c3R0", "c3R1", "c3R2", .012f, -.007f);
     const float blend = .9f, gamma = 1.25f;
-    const int candMask = 15;
-    put("blend", &blend, 4); put("gamma", &gamma, 4); put("haveHistory", &c.haveHistory, 4); put("candMask", &candMask, 4);
+    put("blend", &blend, 4); put("gamma", &gamma, 4); put("haveHistory", &c.haveHistory, 4); put("candMask", &c.candMask, 4);
     f4("knobs", .0001f, float(c.knobsY), .025f, 1000);
     f4("tvUsed", .012f, -.007f, .02f, float(c.tvUsedW)); f4("tvCand", -.03f, .002f, .01f, 0); f4("tvCam", .35f, -.12f, .9f, float(c.tvCamW));
-    f4("split", 2, 0, 0, 0);
+    f4("split", float(c.splitX), 0, 0, 0);
     const bool coverage = (c.probeW & (4u | 128u)) != 0;
     f4("probe", 1, 1, coverage ? 1.0f : 0.0f, float(c.probeW));
     f4("holoJitter", .15f, -.1f, 1, 1);
     return cb;
 }
 
-struct Outputs { std::vector<uint32_t> o, n, un, stats; };
+// fills: the groups whose tile the fill wrote, counted by withFillProbe's text in Stats[kFillProbeSlot] and moved out of stats here so the
+// A/B compares every other word (0 for a shader without the probe).
+constexpr size_t kFillProbeSlot = 120;
+struct Outputs { std::vector<uint32_t> o, n, un, stats; uint32_t fills = 0; };
 bool same(const Outputs& a, const Outputs& b) { return a.o == b.o && a.n == b.n && a.un == b.un && a.stats == b.stats; }
 std::string firstDiff(const Outputs& a, const Outputs& b) {
     const std::pair<const char*, std::pair<const std::vector<uint32_t>*, const std::vector<uint32_t>*>> outs[] = {
@@ -184,6 +195,8 @@ Outputs run(ID3D11Device* dev, ID3D11DeviceContext* ctx, Rig& r, ID3D11ComputeSh
     check(SUCCEEDED(ctx->Map(r.statsStage.Get(), 0, D3D11_MAP_READ, 0, &m)), "main depth tile: stats map");
     out.stats.assign(static_cast<const uint32_t*>(m.pData), static_cast<const uint32_t*>(m.pData) + 128);
     ctx->Unmap(r.statsStage.Get(), 0);
+    out.fills = out.stats[kFillProbeSlot];
+    out.stats[kFillProbeSlot] = 0;
     return out;
 }
 
@@ -204,6 +217,17 @@ std::string withPoison(const std::string& hlsl) {
     check(at != std::string::npos && hlsl.find(kAt, at + 1) == std::string::npos, "main depth tile: main's tile origin found exactly once");
     const size_t after = at + std::strlen(kAt);
     return hlsl.substr(0, after) + "\n    for (uint pk = gi; pk < 100u; pk += 64u) mainDepthTile[pk] = asfloat(0x7F7FFFFFu);" + hlsl.substr(after);
+}
+// Whether the fill ran (rig-only text, on a poisoned text): after main's barrier, thread 0 of each group adds one to Stats[kFillProbeSlot]
+// when tile entry 0 is no longer the poison (the rig's depths are never FLT_MAX; a NaN entry counts as written). The outputs cannot say it: a gate that
+// fills where nothing reads the tile, or leaves a poisoned entry the 3x3 never reads, writes the same bytes. So this is what pins the
+// gate's other half, that it does NOT fill where the 3x3 cannot run (the fetches it exists to skip).
+std::string withFillProbe(const std::string& hlsl) {
+    const char* kAt = "uint count[48] = {";
+    const size_t at = hlsl.find(kAt);
+    check(at != std::string::npos && hlsl.find(kAt, at + 1) == std::string::npos, "main depth tile: main's count array found exactly once");
+    return hlsl.substr(0, at) + "if (gi == 0u && asuint(mainDepthTile[0]) != 0x7F7FFFFFu) InterlockedAdd(Stats[" + std::to_string(kFillProbeSlot) +
+           "], 1u);\n    " + hlsl.substr(at);
 }
 // The fill's control flow in a shipping blob's DXBC, main's top up to its first barrier: every store to the tile
 // (the groupshared array of 100) inside a branch, and the barrier (sync_g_t) outside every branch and loop, where
@@ -252,12 +276,13 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     check(at != std::string::npos && hlsl.find(kAnchor, at + 1) == std::string::npos, "main depth tile: the tile index found exactly once");
     std::string mutant = hlsl;
     mutant.replace(at, std::strlen(kAnchor), "const int2 t = int2(p) - gMainDepthTileOrigin + int2(0, 0) + 1;");
-    // The fill's gate, with the tile poisoned first (withPoison): the production gate must still match the reference in
-    // every configuration, both variants (every entry the 3x3 reads was filled: the head's term, the world split, and
-    // the instrument's depth candidates), and the second mutant, the gate without the world split, must not where the
-    // world split alone runs the 3x3.
-    const std::string poisoned = withPoison(hlsl);
-    const std::string gateMutant = withPoison(withGate(hlsl, "haveHistory != 0 && knobs.y != 0.0 && tvUsed.w != 0.0"));
+    // The fill's gate, with the tile poisoned first (withPoison) and the fill counted (withFillProbe): the production gate must
+    // still match the reference in every configuration, both variants (every entry the 3x3 reads was filled: the head's term,
+    // the world split, and the instrument's depth candidates), fill exactly the groups of the configurations whose 3x3 can run
+    // (no fill where nothing reads the tile: split.x 0, a candidate mask without candidate 1 or 3, no history, no depth), and
+    // the second mutant, the gate without the world split, must not match where the world split alone runs the 3x3.
+    const std::string poisoned = withFillProbe(withPoison(hlsl));
+    const std::string gateMutant = withFillProbe(withPoison(withGate(hlsl, "haveHistory != 0 && knobs.y != 0.0 && tvUsed.w != 0.0")));
     // The six compiles together: main alone is ~20 s in fxc (production flags: cs_5_0, flags 0).
     ComPtr<ID3DBlob> refDiagCode, refFastCode, mutantCode, gateMutantCode, poisonDiagCode, poisonFastCode;
     {
@@ -295,7 +320,21 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         for (uint32_t pw : {0u, 1u, 32u, 128u, 6u, 64u | 256u}) cfgs.push_back({ky, tu, tc, 1, pw});
     cfgs.push_back({1, 1, 1, 0, 0u});
     cfgs.push_back({1, 1, 1, 0, 32u});
-    int compared = 0, mutantCaught = 0, depthMatters = 0, gateMutantCaught = 0, unfilled = 0;
+    // split.x 0: no world/ship split, so the world path is off whatever tvCam.w says. The head's depth term alone reads the 3x3 (tvUsed.w 1),
+    // or nothing does, and a gate that wanted the split for the head's term would under-fill, one that ignored it over-fill.
+    for (int ky : {1, 0}) for (int tu : {1, 0}) for (int tc : {1, 0})
+        for (uint32_t pw : {0u, 128u}) cfgs.push_back({ky, tu, tc, 1, pw, 0});
+    // candMask (the diagnostic variant; the fast one ignores it): candidates 1 and 3 fetch with depth (mask & 10), 0 and 2 do not. With no
+    // head term and no world path the mask alone decides, so each of the two bits, both, neither, and the two that cannot read must show;
+    // once with the split on and the world term off (tvCam.w 0), once with the world term set and the split off.
+    for (int cm : {0, 2, 8, 5, 10}) {
+        cfgs.push_back({1, 0, 0, 1, 0u, 2, cm});
+        cfgs.push_back({1, 0, 1, 1, 0u, 0, cm});
+    }
+    cfgs.push_back({0, 0, 0, 1, 0u, 2, 10});   // candidates 1 and 3 asked, no depth bound: nothing to fetch
+    cfgs.push_back({1, 0, 0, 0, 0u, 2, 10});   // candidates 1 and 3 asked, a history reset: no fetch
+    const uint32_t groups = ((kW + 7) / 8) * ((kH + 7) / 8);   // one tile each
+    int compared = 0, mutantCaught = 0, depthMatters = 0, gateMutantCaught = 0, unfilled = 0, unfilledDiag = 0;
     char label[320];
     std::vector<Outputs> byDepth[2];
     for (const Cfg& c : cfgs) {
@@ -320,39 +359,51 @@ int abTest(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         for (uint32_t v : nf.n) if (v == 0x7F7F7F7Fu) written = false;
         std::snprintf(label, sizeof(label), "main depth tile [%s]: every pixel of N written", where.c_str());
         check(written, label);
-        const bool world = c.knobsY && c.tvCamW && c.haveHistory;
+        const bool world = c.knobsY && c.tvCamW && c.splitX > 0 && c.haveHistory;
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the world path ran exactly where asked (Stats[15] = %u)", where.c_str(), nd.stats[15]);
         check((nd.stats[15] > 0) == world, label);
-        const bool runs3x3 = c.knobsY && (c.tvUsedW || c.tvCamW) && c.haveHistory;   // the fast blob: the used fetch only
+        // Where the 3x3 can run, from the constants alone: a history to blend and a depth bound, and the head's depth term or the world
+        // split (the fast blob: the used fetch only), and in the diagnostic variant a depth candidate too (1 or 3).
+        const bool runs3x3 = c.knobsY && (c.tvUsedW || (c.tvCamW && c.splitX > 0)) && c.haveHistory;
+        const bool runs3x3Diag = c.knobsY && c.haveHistory && (c.tvUsedW || (c.tvCamW && c.splitX > 0) || (c.candMask & 10) != 0);
         if (!same(of, mf)) ++mutantCaught;
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the mutant tile index is caught exactly where the 3x3 runs", where.c_str());
         check(runs3x3 == !same(of, mf), label);
-        // The production gate fills nothing here (a reset, or no depth term to read): the parity above held without a fill.
-        if (!runs3x3) ++unfilled;
         // The production gate over a poisoned tile: every entry the 3x3 reads was filled, both variants.
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate over a poisoned tile matches the untiled reference (fast)", where.c_str());
         check(same(of, poisonF), label);
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate over a poisoned tile matches the untiled reference (diagnostic)", where.c_str());
         check(same(od, poisonD), label);
+        // ...and filled the tile in every group where the 3x3 can run and in none where it cannot (the outputs of the unfilled
+        // configurations are the reference's without a fill; an over-fill would write the same bytes, so the probe is what says it).
+        if (!runs3x3) ++unfilled;
+        if (!runs3x3Diag) ++unfilledDiag;
+        std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate (fast) wrote the tile in %u of %u groups, exactly where the 3x3 can run (expected %u)",
+                      where.c_str(), poisonF.fills, groups, runs3x3 ? groups : 0u);
+        check(poisonF.fills == (runs3x3 ? groups : 0u), label);
+        std::snprintf(label, sizeof(label), "main depth tile [%s]: the production fill gate (diagnostic) wrote the tile in %u of %u groups, exactly where the 3x3 can run (expected %u)",
+                      where.c_str(), poisonD.fills, groups, runs3x3Diag ? groups : 0u);
+        check(poisonD.fills == (runs3x3Diag ? groups : 0u), label);
         // The wrong gate (poisoned) leaves the tile unfilled where the world split alone runs the 3x3, and only there.
         const bool gateMissed = runs3x3 && !(c.knobsY && c.tvUsedW && c.haveHistory);
         if (!same(of, gf)) ++gateMutantCaught;
         std::snprintf(label, sizeof(label), "main depth tile [%s]: the mutant fill gate (world split left out) is caught exactly where it leaves the 3x3 unfilled", where.c_str());
         check(gateMissed == !same(of, gf), label);
-        if (c.haveHistory && c.tvUsedW && c.tvCamW && c.probeW == 0) byDepth[c.knobsY].push_back(nf);
+        if (c.haveHistory && c.tvUsedW && c.tvCamW && c.probeW == 0 && c.splitX == 2 && c.candMask == 15) byDepth[c.knobsY].push_back(nf);
         compared += 7;
     }
     if (!byDepth[0].empty() && !byDepth[1].empty() && !same(byDepth[0][0], byDepth[1][0])) ++depthMatters;
     check(depthMatters > 0, "main depth tile: the scene depth changes the outputs (the A/B sees the 3x3)");
     std::snprintf(label, sizeof(label), "main depth tile: the mutant tile index (the 3x3 collapsed) is caught (%d configurations)", mutantCaught);
     check(mutantCaught > 0, label);
-    std::snprintf(label, sizeof(label), "main depth tile: the mutant fill gate is caught (%d configurations) and the unfilled configurations are compared (%d)",
-                  gateMutantCaught, unfilled);
-    check(gateMutantCaught > 0 && unfilled > 0, label);
+    std::snprintf(label, sizeof(label), "main depth tile: the mutant fill gate is caught (%d configurations) and the unfilled configurations are compared (%d fast, %d diagnostic)",
+                  gateMutantCaught, unfilled, unfilledDiag);
+    check(gateMutantCaught > 0 && unfilled > 0 && unfilledDiag > 0, label);
     std::printf("PASS: main depth tile: temporal_aa_cs and temporal_aa_fast_cs byte-identical to the untiled main over %zu configurations "
-                "(%d dispatch pairs; %ux%u at (%u,%u) in %ux%u; %d with the fill gated off); the production gate over a poisoned "
-                "tile matched in all, both variants; the mutant tile index caught in %d, the mutant fill gate in %d\n",
-                cfgs.size(), compared, kW, kH, kRegX, kRegY, kTexW, kTexH, unfilled, mutantCaught, gateMutantCaught);
+                "(%d dispatch pairs; %ux%u at (%u,%u) in %ux%u; split.x 0 and candidate masks 0/2/8/5/10 among them); the production gate over a "
+                "poisoned tile matched in all, both variants, and wrote the tile in exactly the groups where the 3x3 can run (%d configurations fast and "
+                "%d diagnostic with the fill gated off); the mutant tile index caught in %d, the mutant fill gate in %d\n",
+                cfgs.size(), compared, kW, kH, kRegX, kRegY, kTexW, kTexH, unfilled, unfilledDiag, mutantCaught, gateMutantCaught);
     return int(cfgs.size());
 }
 

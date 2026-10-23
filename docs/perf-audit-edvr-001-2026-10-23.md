@@ -99,9 +99,10 @@ Proofs:
   the very array bound before each Dispatch and precede `setParams`. Both were checked with mutants.
 - **screen_consumer_test:** the five shipping blobs are byte-identical with bits clear and set,
   including -0, NaN, denormal and negative depths.
-- **main_depth_tile_test:** O/N/UN/Stats byte for byte against the untiled main over 50 configurations
-  with partial groups. A poisoned tile catches a wrong fill gate. A mutant tile index is caught in all
-  18 configurations that run the 3×3.
+- **main_depth_tile_test:** O/N/UN/Stats byte for byte against the untiled main over 78 configurations
+  with partial groups (split.x 0 and the diagnostic variant's candidate masks among them). A poisoned tile
+  catches an under-filling fill gate, and a probe that counts the groups which wrote the tile catches an
+  over-filling one. A mutant tile index is caught in all 22 configurations that run the 3×3.
 
 Bench (RTX 5090, 2016² for one eye, RocketsProjects' method, outputs byte-checked first), in ms an eye:
 

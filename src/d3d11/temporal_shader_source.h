@@ -41,6 +41,11 @@ StructuredBuffer<HoloRecord> HR : register(t13);
 #ifndef EDVR_CELESTIAL
 #define EDVR_CELESTIAL 1
 #endif
+// EDVR_MAIN_DEPTH_TILE 0 compiles main's 3x3 depth fetch as it was before its group tile (fetchHistoryT): the private UI
+// depth rig (main_depth_tile_test.h) builds it and holds every output of the production main to it, byte for byte.
+#ifndef EDVR_MAIN_DEPTH_TILE
+#define EDVR_MAIN_DEPTH_TILE 1
+#endif
 )HLSL"
 R"HLSL(
 // ENGINE_MOTION_HLSL_BEGIN
@@ -689,6 +694,16 @@ bool backgroundHistoryHidden(int2 local,float2 p,float2 motion,float zraw,float 
 }
 )HLSL"
 R"HLSL(
+#if EDVR_MAIN_DEPTH_TILE
+// main's tile of this frame's scene depth: the group's 8x8 with a one-texel
+// apron, entry (x, y) = zSceneAt at the group's origin + (x - 1, y - 1),
+// clamped to the image as the 3x3 below clamps, filled at the top of main()
+// for every group. fetchHistoryT's 3x3 reads it where main set
+// gMainDepthTile; any other entry (a rig's) never sets it and fetches as before.
+groupshared float mainDepthTile[100];
+static bool gMainDepthTile = false;
+static int2 gMainDepthTileOrigin = int2(0, 0);   // the group's first pixel (main sets it)
+#endif
 // zPred: the predicted view depth of this pixel's surface in last frame's
 // eye space, metres -- 0 when the pixel took no real depth (the far plane, no
 // depth bound).
@@ -736,8 +751,20 @@ bool fetchHistoryT(float2 p, float3 r0, float3 r1, float3 r2, float3 tv,
         float zr = 0.0;
         [unroll] for (int oy = -1; oy <= 1; ++oy) {
             [unroll] for (int ox = -1; ox <= 1; ++ox) {
+#if EDVR_MAIN_DEPTH_TILE
+                // The same texel from main's tile: clamp(p + o) is the entry
+                // (p - origin + o + 1), filled as clamp(origin + entry - 1).
+                float zs;
+                if (gMainDepthTile) {
+                    const int2 t = int2(p) - gMainDepthTileOrigin + int2(ox, oy) + 1;
+                    zs = mainDepthTile[t.y * 10 + t.x];
+                } else {
+                    zs = zSceneAt(region.xy + clamp(int2(p) + int2(ox, oy), int2(0, 0), size - 1));
+                }
+#else
                 int2 q = clamp(int2(p) + int2(ox, oy), int2(0, 0), size - 1);
                 float zs = zSceneAt(region.xy + q);
+#endif
                 zr = max(zr, zs);
                 if (zs > 0.0) ++depthN;
             }
@@ -1116,8 +1143,21 @@ R"HLSL(
 R"HLSL(
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
+#if EDVR_MAIN_DEPTH_TILE
+    // The history fetch's 3x3 of the scene depth, once a group: 100 fetches
+    // where the pixels' own 3x3s were 576 (and twice that again for the
+    // instrument's depth candidates). Every group fills it, whatever its
+    // pixels then do, so the 3x3 never reads an entry it did not write;
+    // threads past the image fill clamped entries and meet the barrier.
+    gMainDepthTile = true;
+    gMainDepthTileOrigin = int2(id.xy) - int2(gi & 7u, gi >> 3u);
+    for (uint tk = gi; tk < 100u; tk += 64u)
+        mainDepthTile[tk] = zSceneAt(region.xy + clamp(gMainDepthTileOrigin + int2(tk % 10u, tk / 10u) - 1, int2(0, 0), size - 1));
+#endif
 #if EDVR_TEMPORAL_DIAGNOSTICS
     if (gi < 48) gCount[gi] = 0;
+#endif
+#if EDVR_TEMPORAL_DIAGNOSTICS || EDVR_MAIN_DEPTH_TILE
     GroupMemoryBarrierWithGroupSync();
 #endif
     uint count[48] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};

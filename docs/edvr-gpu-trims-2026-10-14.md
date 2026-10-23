@@ -42,7 +42,7 @@ Proposed, not built (ranked by saving; all change the data flow and want a fligh
 - P1 UI resolve passthrough (up to ~0.07 an eye, 0.15 a frame): let DLSS write dlSubmit directly and resolve in place only where it
   changes a pixel. Needs NGX to accept the typeless dlSubmit, and the eye-run captures/probeNv that read dlOut after the resolve.
 - P2 motion prep: the null ZS/ZUI skip is BUILT 2026-10-23, not flown (G09, RocketsProjects' finding; journal): mv -13% with both layers
-  absent, -6% with UI depth bound. Left: 16x16 groups, 20x20 tile. Flight: "motion prep depth layers" line; census "motion prep" lower.
+  absent, -6% with UI depth bound; native TAA's 3x3 depth now a group tile, -13% (journal). Flight: "motion prep depth layers" line.
 - P3 HUD tonemap re-issue + coverage (0.098 an eye, 0.2 a frame): two passes over the 130 MB HDR layer; merging needs the game's tonemap PS to
   write alpha. Skipping untouched tiles needs a content test the layer does not have (same as the composite's "open, not tried").
 - P4 pose table: six dependent dispatches, ~0.04 ms; fusing two or three saves ~0.02. Join: one group, latency-bound.
@@ -97,3 +97,18 @@ So the uniform branch takes all of (c)'s saving (more with the UI depth off, whe
 the fully compiled-out (c') it leaves ~0.0013 ms an eye. Shipped as the branch: the two-copy switch is not needed. The first runs that
 afternoon (Elite running on the same GPU at 38%) moved by +-40% between runs and are not evidence. RocketsProjects' RTX 5060 figures
 for (c): 0.3104 -> 0.2451 UI off, 0.2584 -> 0.2300 UI on (72/72 rounds).
+
+2026-10-23, later. The native-TAA own pass (`main`) read the 3x3 of zSceneAt around every pixel in fetchHistoryT, 9 calls a pixel and
+twice that again for the instrument's two depth candidates (diagnostic shader). It now reads a 10x10 groupshared tile (the 8x8 group,
+a one-texel apron, clamped exactly as the 3x3 clamped), filled at the top of main by every group before one barrier in uniform control
+flow; a static flag main sets selects the tile, so any other entry that calls fetchHistoryT (a rig's) fetches as before. Unconditional
+fill (also with no depth bound or no history: a few null loads then, never a stale entry). EDVR_MAIN_DEPTH_TILE 0 compiles the old
+3x3; fxc gives it the bytecode of the shipped main byte for byte, both variants, so the reference is the old shader, not a rebuild.
+DXBC, fast main: Z loads 12 -> 4 sites (the 3x3 gone, the fill's loop, count[17] and holoPixel kept), one tgsm array of 100, one barrier.
+Proof: ui_depth_test (main_depth_tile_test.h) holds both embedded main blobs to the EDVR_MAIN_DEPTH_TILE 0 compile, O/N/UN/Stats byte for
+byte, over 50 configurations on a 37x29 region offset (5,3) in 48x40 (partial groups both ways; depth on/off, head depth term, world
+path, six probe.w words incl. screen, scanner, adaptive UI and absent layers; no history), WARP in the build and the 5090 by hand
+(`--main-tile --adapter nvidia`); a mutant tile index (every tap the centre) is caught in exactly the 18 configurations where the 3x3
+runs. The terrain rig's anchors in fetchHistoryT are untouched. Bench (`--main-tile --adapter nvidia --bench`, the paired method above,
+temporal_aa_fast_cs 2016^2, depth on, world path on): bound 0.1440-0.1481 -> 0.1263-0.1299 ms an eye (paired -0.019..-0.021, -13 to
+-14%, 12/12 rounds in all three runs); layers absent with the bits set 0.1380 -> 0.1186 (-0.018..-0.021, 12/12).

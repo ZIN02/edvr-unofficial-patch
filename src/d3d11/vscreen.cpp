@@ -2232,7 +2232,7 @@ DrawVerdict beginPanelOverride(ID3D11DeviceContext* self, char kind, UINT count,
             if (bindingResolve(bindingGet(BindSlot::Rtv0), &info) &&
                 info.isTexture2D) {
                 introPanelNoteFill(info.a, info.b);
-                // And the skip's witness: with fix.intro_video = skip this
+                // And the skip's witness: with visual.intro_video = skip this
                 // fill is the movie playing despite the refusal.
                 introSkipNoteMovieDrew();
             }

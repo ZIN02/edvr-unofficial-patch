@@ -128,7 +128,7 @@ independently verified against the qualified build. The graphics SHA256 is
 SHA256 is `76f8b09fa3a5a7647ac37d91514d6f3e1eed84f69b9ae7df1d9f2dc6548f9b92`.
 The live INI is byte-unchanged at
 `9aea022b28529565735ac1ad2403ca4ac9dbcd886ffb0df658969ba7d2bb8f54`, retaining
-`fix.intro_video = skip` and enabled census logging. The VR-subdirectory INI
+`visual.intro_video = skip` and enabled census logging. The VR-subdirectory INI
 remains absent and the original OpenVR runtime is unchanged. The archive
 includes the preflight configuration snapshot and install receipt. The
 completed Frontier flight is recorded below.

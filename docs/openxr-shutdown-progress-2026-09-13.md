@@ -161,7 +161,7 @@ logs, the user's report, parsed QPC evidence and the postflight configuration
 are archived in
 `build/frontier-shutdown-progress-20260913/flight-20260913-132808/`. The
 original OpenVR runtime DLL is unchanged. The INI changed during this run only
-at `fix.intro_video`, from `screen` to `skip`; its postflight SHA256 is
+at `visual.intro_video`, from `screen` to `skip`; its postflight SHA256 is
 `9aea022b28529565735ac1ad2403ca4ac9dbcd886ffb0df658969ba7d2bb8f54`. Census
 logging remained enabled. The postflight setting is preserved.
 

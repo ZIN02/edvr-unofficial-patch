@@ -31,7 +31,10 @@ inline bool flatProfileReadsKey(const char* key) {
         // The launch movie (intro_skip.cpp), flat's one value being `skip`: the game's open of the ident file is answered "not found". Every
         // other value plays the movie (intro_mode.h: introVideoParseFor), so the VR panel and resample stay inert in flat. Unlisted, getString
         // answers "off" here and the skip never arms.
-        std::strcmp(key, "fix.intro_video") == 0 ||
+        std::strcmp(key, "visual.intro_video") == 0 ||
+        // The star glow (visual.star_glow, star_glow.h): a percentage of the halo the game's own bloom draws around a star, flat only for now.
+        // The Visual tab's row. Unlisted, getString answers "off" here, which the reader takes for the stock 100.
+        std::strcmp(key, "visual.star_glow") == 0 ||
         // The AA comparison key (aa_compare.cpp): turns EDVR's temporal AA off for a side-by-side look and back, runtime only. Unlisted, a hotkey
         // key reads empty in flat, which is unbound.
         std::strcmp(key, "hotkey.compare_aa") == 0 ||

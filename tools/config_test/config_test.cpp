@@ -54,6 +54,7 @@
 #include "../../src/common/ini_name.h"
 #include "../../src/common/real_dll_choice.h"
 #include "../../src/common/runtime_profile.h"
+#include "../../src/common/star_glow.h"
 #include "../../src/common/temporal_mode.h"
 #include "../../src/common/log.h"
 #include "../../src/d3d11/explorer_cam_follow_core.h"   // the Explorer Cam trims' and smoothing defaults: header-only, no link
@@ -2098,6 +2099,106 @@ int main(int argc, char** argv) {
             Config::get().setAuditTables(nullptr, 0, nullptr, 0);
         }
 
+        // --- fix.intro_video moved to visual.intro_video (2026-10-22), over the SHIPPED tables ----
+        //
+        // The same proof as the trims: the tables the DLLs register come from the real edvr.ini, so what is shown is that an old-layout
+        // [fix] line is read as the new key, that the retired default is not a choice, and that it is the shipped annotation doing it.
+        {
+            using contractgen::kKnownKeys;
+            using contractgen::kMovedKeys;
+            constexpr size_t kKnownCount = sizeof(kKnownKeys) / sizeof(kKnownKeys[0]);
+            constexpr size_t kMovedCount = sizeof(kMovedKeys) / sizeof(kMovedKeys[0]);
+            static const char* filtered[kMovedCount][3];
+            size_t filteredCount = 0;
+            bool carriesIntro = false;
+            int olderIntro = 0;
+            for (size_t i = 0; i < kMovedCount; ++i) {
+                const std::string oldKey = kMovedKeys[i][0], newKey = kMovedKeys[i][1];
+                if (oldKey == "fix.intro_video" && newKey == "visual.intro_video" && std::string(kMovedKeys[i][2]) == "screen") {
+                    carriesIntro = true;
+                    continue;   // the control's tables lose this one move
+                }
+                if (newKey == "visual.intro_video") ++olderIntro;
+                for (int c = 0; c < 3; ++c) filtered[filteredCount][c] = kMovedKeys[i][c];
+                ++filteredCount;
+            }
+            check(carriesIntro, "the shipped moved-from map carries fix.intro_video to visual.intro_video, its shipped default screen");
+            check(olderIntro == 3, "...and the three older intro keys still land on the same key");
+            int known = 0, retired = 0;
+            for (size_t i = 0; i < kKnownCount; ++i) {
+                if (strcmp(kKnownKeys[i], "visual.intro_video") == 0 || strcmp(kKnownKeys[i], "visual.star_glow") == 0) ++known;
+                if (strcmp(kKnownKeys[i], "fix.intro_video") == 0) ++retired;
+            }
+            check(known == 2 && retired == 0, "visual.intro_video and visual.star_glow are known keys, and fix.intro_video is not one any more",
+                  std::to_string(known) + " known, " + std::to_string(retired) + " retired still known");
+
+            Config::get().setAuditTables(kKnownKeys, kKnownCount, kMovedKeys, kMovedCount);
+            if (!writeIni(scratch, "[fix]\r\nintro_video = skip\r\n")) {
+                fail("old-layout intro_video ini", "could not write it");
+            } else {
+                Config::get().init(scratch);
+                expectStr("visual.intro_video", "skip", "an old-layout [fix] intro_video is read as visual.intro_video");
+                // The retired default is not a choice: nothing is synthesized, so the key's own default (the caller's) rules.
+                if (!rewriteIni(scratch, "[fix]\r\nintro_video = screen\r\n") || !Config::get().reloadIfChanged()) {
+                    fail("old-layout stale intro_video reload", "the edit did not reload");
+                } else {
+                    expectStr("visual.intro_video", "<unset>", "an old-layout line still carrying the shipped default is ignored, not read");
+                }
+                // Both spellings: the new name wins.
+                if (!rewriteIni(scratch, "[fix]\r\nintro_video = skip\r\n[visual]\r\nintro_video = stock\r\n") ||
+                    !Config::get().reloadIfChanged()) {
+                    fail("both-layout intro_video reload", "the edit did not reload");
+                } else {
+                    expectStr("visual.intro_video", "stock", "when both spellings are set, visual.intro_video wins");
+                }
+                // A new-layout file is read as it stands.
+                if (!rewriteIni(scratch, "[visual]\r\nintro_video = skip\r\nstar_glow = 150\r\n") || !Config::get().reloadIfChanged()) {
+                    fail("new-layout intro_video reload", "the edit did not reload");
+                } else {
+                    expectStr("visual.intro_video", "skip", "a new-layout visual.intro_video is read as it stands");
+                    check(edvr::starGlowPercent(Config::get()) == 150, "visual.star_glow = 150 reads as 150 percent");
+                }
+            }
+            // CONTROL: the same old-layout file over the same tables minus that one move: the value is stranded under the old name.
+            Config::get().setAuditTables(kKnownKeys, kKnownCount, reinterpret_cast<const char* const(*)[3]>(filtered), filteredCount);
+            if (!writeIni(scratch, "[fix]\r\nintro_video = skip\r\n")) {
+                fail("control intro_video ini", "could not write it");
+            } else {
+                Config::get().init(scratch);
+                expectStr("visual.intro_video", "<unset>", "control: without the annotation an old-layout intro_video is NOT read as the new name");
+            }
+            Config::get().setAuditTables(nullptr, 0, nullptr, 0);
+        }
+
+        // --- visual.star_glow: the percentages, read exactly ---------------------
+        {
+            struct Case { const char* text; int percent; bool recognised; };
+            const Case cases[] = {{"100", 100, true}, {"125", 125, true}, {"150", 150, true}, {"175", 175, true}, {"200", 200, true},
+                                  {"", 100, false}, {"off", 100, false}, {"110", 100, false}, {"225", 100, false}, {"150%", 100, false},
+                                  {"1.5", 100, false}, {"150.0", 100, false}, {" 150", 100, false}, {"-150", 100, false}};
+            for (const Case& c : cases) {
+                bool recognised = false;
+                const int got = edvr::starGlowParse(c.text, &recognised);
+                check(got == c.percent && recognised == c.recognised,
+                      (std::string("star glow \"") + c.text + "\" reads as " + std::to_string(c.percent) + (c.recognised ? "" : " (unrecognised)")).c_str(),
+                      "got " + std::to_string(got) + (recognised ? " recognised" : " unrecognised"));
+            }
+            bool recognised = true;
+            check(edvr::starGlowParse(nullptr, &recognised) == 100 && !recognised, "a null value is the stock 100, unrecognised");
+            // Through the Config accessor, absent and set. The key is flat-listed (flat_profile_keys.h); in VR it reads whatever the file says.
+            Config::get().setAuditTables(nullptr, 0, nullptr, 0);
+            if (!writeIni(scratch, "[fix]\r\nblack_void = on\r\n")) {
+                fail("star glow absent ini", "could not write it");
+            } else {
+                Config::get().init(scratch);
+                check(edvr::starGlowPercent(Config::get(), &recognised) == 100 && recognised, "an absent visual.star_glow is the stock 100, recognised");
+                Config::get().set("visual.star_glow", "175");
+                check(edvr::starGlowPercent(Config::get()) == 175, "a set visual.star_glow = 175 reads as 175 percent");
+                Config::get().set("visual.star_glow", "banana");
+                check(edvr::starGlowPercent(Config::get(), &recognised) == 100 && !recognised, "a typo is the stock 100, unrecognised: it must not strengthen the picture");
+            }
+        }
+
         // --- the log directory, and the environment's say over it ----------
         //
         // build.bat's test runner gives each rig's proxies their own log
@@ -2553,6 +2654,20 @@ int main(int argc, char** argv) {
             if (Config::get().getString("fix.ui_quality", "100") == "100")
                 ok("flat ui_quality uses the 100 default when absent");
             else fail("flat ui_quality default", "missing key was not 100");
+            // The Visual tab's two keys (2026-10-22): read in flat. Refused, the star glow would read "off" (the stock 100 anyway, but never the
+            // 150 somebody chose) and the movie's skip could never arm; the retired [fix] name is refused, so the one place that reads it is the
+            // moved-from map.
+            if (Config::get().getString("visual.intro_video", "screen") == "screen" && edvr::starGlowPercent(Config::get()) == 100)
+                ok("flat visual.intro_video and visual.star_glow use their defaults when absent");
+            else fail("flat visual defaults", "an absent [visual] key did not read its default");
+            if (!rewriteIni(scratch, "[fix]\r\nintro_video = skip\r\n[visual]\r\nintro_video = skip\r\nstar_glow = 150\r\n") ||
+                !Config::get().reloadIfChanged()) {
+                fail("flat visual scratch ini", "the edit did not reload");
+            } else {
+                expectStr("visual.intro_video", "skip", "flat reads visual.intro_video");
+                check(edvr::starGlowPercent(Config::get()) == 150, "flat reads visual.star_glow = 150 as 150 percent");
+                expectStr("fix.intro_video", "off", "flat refuses the retired fix.intro_video name");
+            }
         }
     }
     Config::get().set("advanced.input_gate", "off");

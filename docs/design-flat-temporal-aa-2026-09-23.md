@@ -52,7 +52,7 @@
   real cause in the messages, a VR Supersampling warning: BUILT 10-01
   (claude/flat-upscale), NOT FLOWN; its F8 text now waits 2 s before it
   changes cause (a loading screen's size flipped it five times in 9 s).
-- **10-14 BUILT, NOT FLOWN:** flat `fix.intro_video = skip` (intro-video.md); AA comparison key F7 (last entry).
+- **10-14 BUILT, NOT FLOWN:** flat `visual.intro_video = skip` (intro-video.md); AA comparison key F7 (last entry).
 - **10-17 RC3 scope fix PASS:** Steam flat `c7c14898`, probe off, main-menu and carrier on-foot F7 comparisons visibly fixed. Nonzero phases/history recover with zero stable phase/backend failures; user approved merge (last entry).
 - **10-17 F1 flat PASS:** `942cfeb3`; steadier stationary edges and seven normal-space ambiguity resets with clean
   history recovery. Temporary `diag.flat_origin_capture = off`. Exact re-anchor/VR separate.

@@ -8,11 +8,14 @@ census design. This doc records what EDVR's review made of it and what was built
 
 - **State:** RocketsProjects' read-only audit (EDVR-001, 42 findings, source pinned at 74081399,
   received 2026-10-22) was checked against HEAD c16a46b3. The 23 active findings plus the smoke-depth
-  reads (G09) each got a source review. Seven became changes on branch
+  reads (G09) each got a source review. Eight became changes on branch
   `claude/edvr-performance-optimizations-8aff5f`. All of them keep output identical, and none is
   flown.
 - **Built (CPU):** CPU-02, CPU-04, CPU-05 and CPU-06 in 92904483; CPU-12 and CPU-17 in 24a0c1b0.
-- **Built (GPU):** G09 (ZS/ZUI absent bits in `zSceneAt`), see the G09 entry below.
+- **Built (GPU):** G09 (ZS/ZUI absent bits in `zSceneAt`) and a tiled 3×3 depth fetch in the
+  native-TAA pass, in ab78bbf4, 42bf0a99 and fa1afa36; see the G09 entry below.
+- **Reviewed:** an adversarial review of every commit found no output-changing bug. Its test-strength
+  and diagnostic findings were fixed in 1088ed18 and fa1afa36.
 - **No config keys.** Every change is exactly equivalent, so none gets a toggle.
 - **Next flight:** VR cockpit in space, a station and on foot, on the Frontier install. Check:
   - **Build identity:** `edvr_log.py --expect-build HEAD`.
@@ -75,7 +78,47 @@ averages, 12 interleaved paired rounds × 3 runs):
 - This is a per-dispatch microbench. It is not a frame-rate claim, and it says nothing about how
   often smoke is absent in live VR. The new presence counter answers that.
 
-(Implementation results, rig and bench numbers: filled in when the branch lands.)
+**Built** (ab78bbf4, 42bf0a99, review fixes fa1afa36).
+
+The shader:
+- The Z load is unconditional. The ZS and ZUI loads sit behind `[branch]`; the DXBC puts every t6/t7
+  load inside an `if_z`.
+- `depthLayersAbsentBits` (temporal_pass.h) reads `srvs[6]` and `srvs[7]` from the array bound at the
+  mv and main dispatches.
+- The "motion prep depth layers" line counts mv dispatches by presence combination.
+
+The native-TAA pass (main) reads its 3×3 scene depth from a 10×10 groupshared tile with a one-texel
+apron (`[numthreads(8,8,1)]`).
+- The fill runs only where the 3×3 does: history, depth, and a depth or world term on.
+- The barrier is unconditional.
+
+Proofs:
+- **ui_depth_test zscene gate:** 1000 bit-pattern triples × 4 presence combinations, asuint-equal on
+  WARP and the 5090.
+- **The CPU half:** a behavioural test over 26 slot cases, plus source scans that the bits come from
+  the very array bound before each Dispatch and precede `setParams`. Both were checked with mutants.
+- **screen_consumer_test:** the five shipping blobs are byte-identical with bits clear and set,
+  including -0, NaN, denormal and negative depths.
+- **main_depth_tile_test:** O/N/UN/Stats byte for byte against the untiled main over 50 configurations
+  with partial groups. A poisoned tile catches a wrong fill gate. A mutant tile index is caught in all
+  18 configurations that run the 3×3.
+
+Bench (RTX 5090, 2016² for one eye, RocketsProjects' method, outputs byte-checked first), in ms an eye:
+
+| Pass | Case | Before | After |
+|---|---|---|---|
+| mv | UI depth off (both layers absent) | 0.0426 | 0.0370 (−13%) |
+| mv | UI depth on (smoke absent) | 0.0433 | 0.0408 (−6%) |
+| mv | all bound, bits clear | 0.0433 | about 1% faster (no regression) |
+| main (native TAA) | depth on | 0.146 | 0.128 (−13%) |
+| main | history reset | 0.059 (tile, ungated fill) | 0.034-0.038 |
+| main | no depth | 0.128 (tile, ungated fill) | 0.088-0.094 |
+
+- In mv, the gate matches RocketsProjects' compiled no-smoke variant and also skips the ZUI fetch.
+- The 5090 times are about 1/7 of the 5060's, so mid-range cards save several times more in absolute
+  terms.
+- How often the layers are absent in live VR is still unmeasured. The presence line answers that on
+  the first flight.
 
 ## Measure first (real, not built)
 

@@ -270,7 +270,9 @@ minutes after a flight finally reproduced the effect being chased.
   has corrupted Sean's working config.
 - `edvr.ini` in a game directory carries the settings of whoever flew
   last. A reinstall does not undo an edit to it. `install_edvr.py` does not
-  touch it unless `--ini` says so, and backs it up when it does.
+  overwrite an existing one unless `--ini` says so (and backs it up when it
+  does); a missing one it writes, from the newest copy in the `%LOCALAPPDATA%\EDVR`
+  mirror when there is one, else from the shipped default.
 - `edvr-flat.ini` is the flat profile's own settings file: while the flat
   profile is active, EDVR reads it first and falls back to `edvr.ini`.
   `--scope flat --ini` writes it (never `edvr.ini`), `--scope both --ini`

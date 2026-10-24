@@ -132,7 +132,7 @@ bool candidate(Rig& r, Tex& hdr, uint64_t frame) {
 }
 
 void runCase(Rig& r, Tex& hdr, const char* mode, const char* quality, uint64_t frame,
-             bool copyTone = false, Tex* firstDecided = nullptr) {
+             bool copyTone = false, Tex* firstDecided = nullptr, bool expectSmoothed = true) {
     auto& cfg = Config::get();
     cfg.set("fix.ui_quality", quality);
     cfg.set("fix.sharp_weapons", mode);
@@ -214,6 +214,11 @@ void runCase(Rig& r, Tex& hdr, const char* mode, const char* quality, uint64_t f
     ID3D11ShaderResourceView* original = nullptr;
     bool replaced = false;
     flatUiLayerAtCopy(r.ctx.Get(), frame, true, kDoorW, kDoorH, &original, &replaced);
+    // The HUD layer's edge smoothing (advanced.hud_edge_smoothing, default on): the adapter asked, the composite read the SMAA output; with the key off it
+    // read the raw layer. A key the flat allow-list lacked would read off here and fail the first.
+    const UiLayerEdgeSmoothingResult edge = uiLayerFlatEdgeSmoothingResult();
+    check(edge.outcome == (expectSmoothed ? UiLayerEdgeSmoothing::kSmoothed : UiLayerEdgeSmoothing::kRaw) && edge.w && edge.h,
+          expectSmoothed ? "the flat copy's composite read the SMAA output of the layer" : "with the key off the flat copy's composite read the raw layer");
     ComPtr<ID3D11ShaderResourceView> composite;
     r.ctx->PSGetShaderResources(0, 1, &composite);
     ComPtr<ID3D11Resource> resource;
@@ -258,7 +263,10 @@ int main(int argc, char** argv) {
           "before a tone proves the HDR target, the weapon stays in the game frame");
     check(!candidate(r, hdr, first), "the proving tone has no captured weapon content to reissue");
     runCase(r, hdr, "on", "off", first + 1);
-    runCase(r, hdr, "plain", "off", first + 2);
+    // The edge smoothing key is live (advanced.hud_edge_smoothing, on by default): off, the next frame's composite reads the raw layer; on again, the smoothed one.
+    cfg.set("advanced.hud_edge_smoothing", "off");
+    runCase(r, hdr, "plain", "off", first + 2, false, nullptr, false);
+    cfg.set("advanced.hud_edge_smoothing", "on");
     runCase(r, hdr, "on", "100", first + 3);
     // Also prove a second physical target for frame N+4. Its first decision
     // in that frame will be abandoned, while the later weapon target is

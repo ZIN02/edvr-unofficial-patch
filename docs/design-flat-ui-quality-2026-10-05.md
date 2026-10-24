@@ -43,20 +43,20 @@
   - the flat resize-loop fix (771bb99a): exercised OK by windowed resizes on
     13:23 and 13:51 (`result=ok refs=0`).
 - **Ruled-out pointer:** the 2026-10-09 entries; [crisp-ui-handoff.md](crisp-ui-handoff.md).
-- **0.19.0 review (10-09), finding 3:** the Supersampling setter's panel factor is
-  held until the scene's size follows it, its epoch check and write one operation
-  under the floats' lock (last entry; built, not flown).
-- **System Map families (10-10, built, not flown):** `kMapCanvas` and `kMapSprite`
-  (flat only; asked while GuiFocus 6, 7 or 8 is open, on the HDR target) go into the
-  flat UI layer like the HUD families, so they are drawn at D x T after the upscale.
-  "flat ui layer map:" counts them; 10-22: the game-334473 Galaxy icon PS joins, and the Full System
-  Scanner's tone is named so its text is taken too (built, not flown). Entries at end.
-- **Temporary:** no keys; the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
-- **Local flight, next locally:** 4b7bfec4 (120427.log, SS 0.5 then about 0.65/UI 125) verified the rendering path; cleanup 02f50bd7
-  keeps the flown guards (88 CPU checks), is pushed and compiled, no repeat flight needed. Keep codex/xess-flat separate pending
-  the user's Windows full build/testing.
+- **0.19.0 review (10-09), finding 3:** the Supersampling setter's panel factor is held until the scene's size
+  follows it, its check and write one operation under the floats' lock (built, not flown).
+- **System Map families (10-10, built, not flown):** `kMapCanvas` and `kMapSprite` (flat only; asked while GuiFocus 6, 7
+  or 8 is open, on the HDR target) go into the flat UI layer like the HUD families, drawn at D x T after the upscale
+  ("flat ui layer map:"); 10-22: the game-334473 Galaxy icon PS joins, and the Full System Scanner's tone is named too.
+- **Temporary:** `advanced.hud_edge_smoothing` (on | off, hidden; the A/B key for the HUD edge smoothing below, shipped as
+  the winning value when its flight settles it); the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
+- **Local flight, next locally:** 4b7bfec4 (SS 0.5 then about 0.65/UI 125) verified the rendering path; cleanup 02f50bd7 keeps
+  the flown guards (88 CPU checks), no repeat flight needed. Keep codex/xess-flat separate pending the user's Windows full build.
 - **2026-10-22, the scanner's zoom (second fix built, not flown):** a one-ulp camera difference between HDR writers refused the map
-  recovery's frames; the copy-branch waiver missed the scanner (flight 135701), now also at the admission by structure. Last entry.
+  recovery's frames; the copy-branch waiver missed the scanner (flight 135701), now also at the admission by structure.
+- **2026-10-24, edge smoothing for the HUD layer (built, not flown):** below 4K the HUD's slanted edges showed hard steps: the
+  layer is composited after the anti-aliasing, so its T box was its only smoothing. SMAA 1x now runs over the layer's finished
+  content before the composite (`advanced.hud_edge_smoothing`, flat only; "flat ui layer smaa:" lines). Last entry.
 - **Next on Epic:** fly SS 0.5 on the shipped build (the copy route under eced5813's
   admission change) and 100% at SS 1.0; then an Epic flight opening all three maps.
 
@@ -1037,3 +1037,58 @@ planet and the HUD text goes blurry for runs of about 2.4 s, crisp for about 1 s
   (a second cause marks the target: read the `flat runtime conflict` line); a refusal `inconsistent-draw-order` or another new reason
   (the waived frame failed a later check of the selection: the reveal composite drawn after the first consumer); a cockpit or DSS window
   with either counter above 0 (the gate leaked).
+
+## 2026-10-24: edge smoothing for the HUD layer (built, not flown)
+
+A user below 4K reported hard stair steps on the HUD's slanted lines. The clearest is the chamfered bracket round "RST" in the power
+distributor panel: its diagonal runs show a step every pixel or two, where the game's own build smoothed them.
+
+- Cause. The layer is composited over the finished picture, after the anti-aliasing (the game's SMAA or DLSS, or EDVR's own), so none of it
+  reaches the HUD. The only smoothing a layer pixel has is the box over its footprint at T (the 2026-10-21 entry: T squared samples a pixel,
+  four at 200). On a display below 4K that is too little for a diagonal run to look smooth.
+- Two places the steps can come from. H1: vector geometry rasterised into the layer, which a live switch from 100 to 200 smooths at once (the
+  next frame draws it into a layer twice the size). H2: edges baked into a Scaleform panel texture at the size the game laid the panel out at,
+  which smooths only after a trip through the main menu has the game lay the panel out again at 200. SMAA on the layer's image works on
+  whatever the layer holds, so it covers both. If a flight shows the steps surviving the switch to 200 until the menu trip, that is H2 and the
+  layer's size alone never reaches it.
+- Where. The flat adapter reads `advanced.hud_edge_smoothing` on every output copy and tells the layer (`uiLayerFlatSetEdgeSmoothing`) just
+  before `uiLayerComposite`. The layer takes the ask on entry and clears it, so the VR profiles, which never ask, composite exactly as before.
+  With the ask, `compositeInner` runs SMAA 1x over the 8-bit layer into an R8G8B8A8 texture of the layer's size and binds that where the
+  composite reads the layer. The composite shader is unchanged, and the multiply transmittance, when there is one, is read as before. Key off,
+  or any failure: the raw layer, as it was.
+- The passes (`ui_layer_smaa.h`, bytecode built offline with the map's SMAA). The layer holds premultiplied light in rgb and transmittance in
+  alpha, cleared to (0, 0, 0, 1). A dark opaque backing is rgb 0 and a 0 against the clear's rgb 0 and a 1, so only alpha shows that edge. The
+  edge pass is therefore new (`uiSmaaEdges`, `ui_layer_smaa_shader.h`): SMAA's colour edge test with the colour distance taken over all four
+  channels, the threshold, steps and local contrast adaptation as `SMAAColorEdgeDetectionPS` has them. The weights and the blend are the map's
+  plain SMAA entries (`smaaWeights`, `smaaBlend`) over `SMAA.hlsl` as upstream wrote it, `SMAA_PRESET_HIGH`, AreaTex and SearchTex from
+  `map_smaa.cpp`. The blend writes all four channels with no colour transform: mixing premultiplied rgb and transmittance linearly is what the
+  composite's own box filter already does to them, so it is exact for this composite.
+- Resources and failure. Made at the first composite that asks, at the layer's size, and made again when the size moves; the compute slots the
+  passes use are put back (the two samplers by the passes, the rest by `compositeInner`). A creation that fails logs once per size with the
+  HRESULT and stands down at that size, with no retry per frame. With the key off the targets are let go; they also go with the layer (a
+  resize, a device change, the layer not live).
+- Memory. 10 bytes a layer pixel (edges 2, weights 4, output 4): 37 MB at 2560x1440 x 100, 83 MB at 3840x2160 x 100, 332 MB at 3840x2160 x 200,
+  on top of the 8-bit layer, the HDR layer and the depth-stencil target of the 2026-10-21 entry.
+- Cost. Not measured. Three compute passes at the layer's size, run inside the span the GPU census times as the layer composite
+  (`DoorUiLayerComposite`), so that figure includes them while the key is on. The 30 s flat report times nothing of its own.
+- Not changed. The holograms stay in the frame, through the anti-aliasing, so this smooths nothing of them.
+- Tests (`flat_mono_resolve_test`, unit `uiLayerSmaaGpuTests`, shard 3; the build's bytecode on WARP over a 64x64 layer in the layer's own
+  convention). A staircase of rise 1 over run 4 in opaque white takes 92 intermediate pixels in rgb and in alpha, with its summed opacity at
+  2591.83 against 2592.00. The same staircase in dark opaque takes 92 intermediate alpha values with rgb still 0, and the map's colour-only edge
+  pass in the edge pass's place leaves it a staircase (the control). An all-clear layer comes out exactly (0, 0, 0, 1); straight bands across
+  the layer, horizontal and vertical, white and dark, come out unchanged; the samplers come back and no view is left bound; a size change
+  re-makes the targets; a failure at a size is told once and not retried there. `flat_weapon_admission_test` runs the whole adapter and layer on
+  WARP and holds the result: smoothed by default, raw with the key off, smoothed again with it on.
+- Log. Once per creation: `flat ui layer smaa: ready at 2560x1440 -- edges R8G8, weights and output R8G8B8A8, 36.9 MB`. Once per distinct
+  failure: `flat ui layer smaa: stood down at WxH -- <what failed> hr=0x%08X`. Every 30 s, whenever the window composited the layer:
+  `flat ui layer smaa: key=on smoothed=N raw-key-off=M raw-fault=K size=WxH`. `smoothed` counts composites that read the SMAA output,
+  `raw-key-off` those with the key off, `raw-fault` those that fell back; `key=` is the value the adapter read, so a key the flat allow-list
+  lacked would show as `key=off`. A window with composites and all three counts 0 means the composite never reached the smoothing.
+- Flight. Flat, a display below 4K (2560x1440 is the case in hand), UI quality 100, in the cockpit. Look at the "RST" bracket in the power
+  distributor and the other diagonal edges, then change `advanced.hud_edge_smoothing` to off and on again live (edvr.ini, hot reload) and
+  compare both the bracket and the small labels and numbers: the smoothing must not soften the text. Then once at 200, to see whether anything
+  stays stepped (H2: switch, look, go through the main menu, look again). Then open the Galaxy Map and the System Map, whose canvas and
+  icons go through the same layer. In the log: one `ready` line at the layer's size; 30 s lines with `key=on smoothed` above 0 and `raw-fault=0`,
+  and after the toggle `key=off raw-key-off` above 0; no `stood down`. Failures: `smoothed=0` with `key=on` and `raw-fault` above 0 (read the
+  `stood down` line and its HRESULT); `key=off` with the key unset (the flat allow-list entry is missing); text visibly softer with the key on.
+  Read the census's layer composite figure with the key on and off for the cost.

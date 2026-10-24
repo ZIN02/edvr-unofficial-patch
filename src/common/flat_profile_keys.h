@@ -53,6 +53,9 @@ inline bool flatProfileReadsKey(const char* key) {
         // chain (bloom, tone, copy) is in no effects archive, so a running game is the only place its bytecode can be read.
         // Developer tier, no flat panel row. Unlisted, getBool answers false here whatever the file says.
         std::strcmp(key, "advanced.glare_shader_dump") == 0 ||
+        // The HUD layer's edge smoothing (flat_ui_layer.cpp, ui_layer_smaa.h): on | off, read live a frame at a time. TEMPORARY A/B key; developer tier, no flat
+        // panel row. Unlisted, getBool answers false here whatever the file says, which reads as off, and the 30 s "flat ui layer smaa:" line shows key=off.
+        std::strcmp(key, "advanced.hud_edge_smoothing") == 0 ||
         // The journal watcher, for the System Map's GuiFocus (journal_watch.h: journalFlatGuiFocus). Its other accessors answer
         // flat with the no-journal values, so enabling the watcher here changes no other flat behaviour. journal_dir names the
         // Saved Games folder when the default is wrong; unlisted, it reads "off" and the watcher looks in a folder named "off".

@@ -2,7 +2,7 @@
 
 ## Status
 
-- **State (2026-10-24, whole-camera repair refuses 4 of 8 phases):** a user's `edvr_gfx_20261024_134658` (v0.21.0, RTX 4060, 2560x1440 DLAA, in a station): from 13:55:57 one frame in four is refused `deferred-inverse-unproven`, all 107 captured failures `forward-mismatch`; the `6b8f62c1` repair accepts phases 1, 5, 6, 8 of the 8 and refuses 2, 3, 4, 7 with no line saying which check fails. FLOWN with the probe `396bce13` (`edvr_gfx_20261024_151628`, `_151924`): all 85 refusals are `stage=dephase check=translation row=0 col=3`; the donor camera carries the jitter at 1.0001x the requested phase, which the translation bound (tiny when the camera is near the world origin) refuses. No fix yet; options in the last entry.
+- **State (2026-10-24, whole-camera repair refuses 4 of 8 phases):** a user's `edvr_gfx_20261024_134658` (v0.21.0, RTX 4060, 2560x1440 DLAA, in a station): from 13:55:57 one frame in four is refused `deferred-inverse-unproven`, all 107 captured failures `forward-mismatch`; the `6b8f62c1` repair accepts phases 1, 5, 6, 8 of the 8 and refuses 2, 3, 4, 7 with no line saying which check fails. FLOWN with the probe `396bce13` (`edvr_gfx_20261024_151628`, `_151924`): all 85 refusals are `stage=dephase check=translation row=0 col=3`; the donor camera carries the jitter at 1.0001x the requested phase, which the translation bound (tiny when the camera is near the world origin) refuses. The translation allowance now follows the world multiply (last entry): BUILT, NOT FLOWN.
 - **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. FLOWN 11:25 (`edvr_gfx_20261022_112019`, d4abc498): not enough, the G-buffer holds no camera-bearing writer at all (`why=no-witness-entry`), same cycle (403 and 473 `door-refused-untreated` per 30 s). Rule: a lighting pass over a G-buffer the game cleared and nothing wrote since is neither verified nor failed (`why=empty-gbuffer`). FLOWN 13:07 (`edvr_gfx_20261022_130004`, a7a5f5ac): panels steady; that body had a witness, so the rule ran only on entry/exit frames: still to be seen on a body with none.
 - **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`): the stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth; DoF off fixed it (user). MERGED (CI green, 618f1454): the composite taken as the scene HDR's alias (`dofCompositeVerified`, `flat dof composite:` line); the user reports it works with DoF on (no log read yet). See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
@@ -18631,3 +18631,36 @@ Options, none built (the repair is unchanged):
    keeps the check tight and makes the 1.0001 visible.
 3. Find where the game's camera gets 1.0001 (render size, a near-plane term) and request the phase it will apply.
 The 22 `bytes` captures belong in `flat_deferred_forward_omission_captures.h` first, as refused-today cases, whichever is chosen.
+
+### 2026-10-24: the translation allowance follows the world multiply (built, not flown)
+
+Review (Opus 5.5, independent): all three claims of the previous entry hold; it ported the dephase check and reproduced every logged residual and bound.
+It also found where the 1.0001x comes from: the game forms the off-centre window in float32 (`tools/c2_derive_test/c2_derive_model.h:139-167`) and
+takes p8 = (R+L)/(L-R), so the phase it lands is the request rounded at the step of the frustum, about 2e-8 in ndc at this scale (2.5e-5 px at 2560).
+Emulating that branch with the frustum scales read from the CB2 gives 1.0001001 for x phases 0.125, 0.25 and 0.375 and 1.0000084 for 0.4375, matching
+the bytes to about seven digits. Not an EDVR bug, not a size, and nothing to request: every requested bound lands on the same rounding grid.
+
+Ruled out: option 2 (measure the carried phase), because the x-row coefficient it would read is the one being certified, and the error is absolute so a
+ratio tolerance drifts by 1e-3 at small phases; option 3 (request the phase the game will land), because the rounding cannot be requested away.
+
+Also found: widening only the dephase check would still have been refused at the strict re-match's translation check (same gap: the patched CB2
+carries the nominal phase, the camera the landed one), which the probe never reached.
+
+Fix (option 1, BUILT, NOT FLOWN): `flatDeferredWorldAllowance` in `flat_deferred_camera.h` adds `flatDeferredFloatBound(8, 2*frustumScale_r*sum|world_c|)` to the
+translation bound for rows 0 and 1, only in whole-omission mode (`flatDeferredDephasedOmission` with `forwardCarriesPhase` false, and
+`flatMatchDeferredCamera` with `frustumScaleForward`). The default matcher, the inverse-only repair and row 3 (w) are unchanged. It is the forward comparison's
+own allowance (the camera and CB2 are finalized apart), charged where the coefficients are multiplied by the position. Window: the review measured a sideways displacement of
+1.8e-5 to 3.2e-5 m at 11 m as the first refused (about 20 ulps of the position); the rig refuses 2e-4 m sideways and 1e-3 m along the view (the w row has no allowance).
+`flat_deferred_reject.h` mirrors both.
+
+Tests. `flat_deferred_landed_phase_captures.h` holds the eleven distinct pairs of the probe flights (refused before, accepted now: strict rematch Match, clone equals
+the patch preparation) with the negatives of the supercruise rig plus camera-position displacements. `flat_deferred_generated_tests.h` builds 2,688
+camera/CB2 pairs the way the game's projection does (four fields of view, four aspects and sizes, six positions from the origin to 100 m, four tilts, seven
+phases) and checks every one repairs, that the zero-phase pair matches the strict matcher, that the landed phase is 1.0001x as the flights saw, and that 8,064 displaced cameras are
+refused. With the allowance set to zero the generator test fails on 1,466 of the 2,688 and the captures on 22 checks: it would have caught this. The 31
+supercruise and 35 rc.5 captures and the probe-agreement test are unchanged.
+
+Flight signature: `edvr_log.py --expect-build` the new commit; `flat deferred HDR camera:` shows `relation=forward-mismatch accepted=1 repair=whole prepared=1` on every
+nonzero phase; no `flat deferred whole-omission refused:` line; no `deferred-inverse-unproven` and no 4-frame cycle at 2560x1440 (the runtime window reads `treated-jittered`).
+A `whole-omission refused ... stage=rematch` would mean the matcher change missed; a persisting `stage=dephase` that the allowance did not cover (read `ratio`).
+The probe lines stay in this build so the flight reads either way.

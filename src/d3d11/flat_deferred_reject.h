@@ -51,7 +51,9 @@ inline FlatDeferredCameraMatch flatExplainDeferredMatch(const unsigned char* cam
     for(unsigned r:{0u,1u,3u}) {
         double sum=rows[r][3], magnitude=std::abs(sum);
         for(unsigned c=0;c<3;++c) { const double term=double(camera[c][r])*camera[5][c]; sum+=term; magnitude+=std::abs(term); }
-        const double bound=flatDeferredFloatBound(8,magnitude);
+        const double allowance=frustumScaleForward&&r<2?
+            flatDeferredWorldAllowance(flatDeferredFrustumScale(rows,r),camera[5][0],camera[5][1],camera[5][2]):0;
+        const double bound=flatDeferredFloatBound(8,magnitude)+allowance;
         if(std::abs(sum)>bound) { fail(why, stage, "translation", r, 3, std::abs(sum), bound); return FlatDeferredCameraMatch::Translation; }
     }
     const unsigned clipRows[]={0,1,3}, rayColumns[]={0,1,3};
@@ -107,7 +109,9 @@ inline bool flatExplainDephasedOmission(const float camera[6][4], const float ro
             if(r==0) delta+=flatDeferredReverseDelta(camera[c][0],ndcX,camera[c][3])*std::abs(world[c]);
             if(r==1) delta+=flatDeferredReverseDelta(camera[c][1],ndcY,camera[c][3])*std::abs(world[c]);
         }
-        const double bound=flatDeferredFloatBound(8,magnitude)+delta;
+        const double allowance=!forwardCarriesPhase&&r<2?
+            flatDeferredWorldAllowance(flatDeferredFrustumScale(rows,r),world[0],world[1],world[2]):0;
+        const double bound=flatDeferredFloatBound(8,magnitude)+delta+allowance;
         if(!(std::abs(sum)<=bound)) { fail(why, "dephase", "translation", r, 3, std::abs(sum), bound); return false; }
     }
     const unsigned clipRows[]={0,1,3}, rayColumns[]={0,1,3};

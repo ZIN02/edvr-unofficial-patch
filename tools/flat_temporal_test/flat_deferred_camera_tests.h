@@ -9,6 +9,8 @@
 #include "flat_deferred_rc5_camera_captures.h"
 #include "flat_deferred_forward_omission_captures.h"
 #include "flat_deferred_reject_tests.h"
+#include "flat_deferred_landed_phase_tests.h"
+#include "flat_deferred_generated_tests.h"
 namespace deferred_camera_test {
 using namespace edvr;
 inline unsigned run(){
@@ -179,6 +181,8 @@ inline unsigned run(){
  failures+=deferred_rc5_camera::run();
  failures+=deferred_forward_omission::run();
  failures+=deferred_reject::run();
+ failures+=deferred_landed_phase::run();
+ failures+=deferred_generated::run();
  std::ifstream cameraHeader("src/d3d11/flat_deferred_camera.h");std::string cameraSource,cameraLine;
  while(std::getline(cameraHeader,cameraLine))cameraSource+=cameraLine+'\n';
  const auto repairFn=cameraSource.find("inline bool flatRepairDeferredMissingPhase(");

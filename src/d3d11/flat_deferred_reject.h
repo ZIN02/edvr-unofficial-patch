@@ -181,6 +181,30 @@ struct FlatSecondCameraReport {
     unsigned firstDiff = 0;                     // index (0..23) of the first differing float
     double maxAbs = 0, maxRel = 0;              // over the differing floats; rel = |a-b| / max(|a|,|b|)
 };
+// The jitter phase a camera's 96 bytes carry, as the game's projection builds it: clip x = x0 + ndcX * w, clip y = y0 + ndcY * w, where the
+// w row (camera[c][3]) is the view axis and x0, y0 are orthogonal to it. So ndcX = (x row . w row) / (w row . w row), likewise y, and the
+// scale is what is left of the row. Log only: it says whether the draws of a camera were jittered by the phase EDVR requested.
+struct FlatCameraPhase {
+    bool valid = false;
+    double ndcX = 0, ndcY = 0, scaleX = 0, scaleY = 0, nearPlane = 0;
+};
+inline FlatCameraPhase flatEstimateCameraPhase(const unsigned char* cameraBytes) {
+    FlatCameraPhase r;
+    if(!cameraBytes) return r;
+    float camera[6][4]; std::memcpy(camera, cameraBytes, sizeof(camera));
+    for(unsigned c=0;c<4;++c) for(unsigned i=0;i<4;++i) if(!std::isfinite(camera[c][i])) return r;
+    double ww=0, xw=0, yw=0;
+    for(unsigned c=0;c<3;++c) { ww+=double(camera[c][3])*camera[c][3]; xw+=double(camera[c][0])*camera[c][3]; yw+=double(camera[c][1])*camera[c][3]; }
+    if(!(ww>0)) return r;
+    r.ndcX=xw/ww; r.ndcY=yw/ww;
+    double sx=0, sy=0;
+    for(unsigned c=0;c<3;++c) {
+        const double x=camera[c][0]-r.ndcX*camera[c][3], y=camera[c][1]-r.ndcY*camera[c][3];
+        sx+=x*x; sy+=y*y;
+    }
+    r.scaleX=std::sqrt(sx); r.scaleY=std::sqrt(sy); r.nearPlane=camera[3][2]; r.valid=true;
+    return r;
+}
 inline FlatSecondCameraReport flatExplainSecondCamera(const unsigned char* first, const unsigned char* offender,
                                                       const unsigned char* cb2) {
     FlatSecondCameraReport r;

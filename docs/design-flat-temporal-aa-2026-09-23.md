@@ -55,8 +55,7 @@
   changes cause (a loading screen's size flipped it five times in 9 s).
 - **10-14 BUILT, NOT FLOWN:** flat `visual.intro_video = skip` (intro-video.md); AA comparison key F7 (last entry).
 - **10-17 RC3 scope fix PASS:** Steam flat `c7c14898`, probe off, main-menu and carrier on-foot F7 comparisons visibly fixed. Nonzero phases/history recover with zero stable phase/backend failures; user approved merge (last entry).
-- **10-17 F1 flat PASS:** `942cfeb3`; steadier stationary edges and seven normal-space ambiguity resets with clean
-  history recovery. Temporary `diag.flat_origin_capture = off`. Exact re-anchor/VR separate.
+- **10-17 F1 flat PASS:** `942cfeb3`; steadier stationary edges, seven normal-space ambiguity resets recovered cleanly. Temporary `diag.flat_origin_capture = off`.
 - **10-16 flat Debug tab, BUILT, NOT FLOWN:** the flat F8 panel has two tabs, Performance and Debug. Debug holds the MOTION SOURCE VIEW,
   `advanced.flat_refusal_view` (this is the flat view that survived the 2026-10-09 cull of VR's `temporal_aa_debug`; green exact engine record,
   blue camera term, the refusals in the eye path's colours; section below) and `advanced.flat_cpu_timing`. Both live, off by default.

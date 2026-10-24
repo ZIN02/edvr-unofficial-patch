@@ -2,7 +2,7 @@
 
 namespace edvr {
 
-// SMAA 1x over the HUD layer's finished 8-bit content, in the flat profile, before the composite downsamples it (advanced.hud_edge_smoothing;
+// SMAA 1x over the HUD layer's finished 8-bit content, in the flat profile, before the composite downsamples it (fix.hud_antialiasing;
 // docs/design-flat-ui-quality-2026-10-05.md, "2026-10-24: edge smoothing for the HUD layer"). The layer is composited after the game's anti-aliasing, so
 // the game's own SMAA or DLSS never sees the HUD; this runs the same SMAA on the layer image instead.
 //

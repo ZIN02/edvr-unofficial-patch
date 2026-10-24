@@ -48,15 +48,15 @@
 - **System Map families (10-10, built, not flown):** `kMapCanvas` and `kMapSprite` (flat only; asked while GuiFocus 6, 7
   or 8 is open, on the HDR target) go into the flat UI layer like the HUD families, drawn at D x T after the upscale
   ("flat ui layer map:"); 10-22: the game-334473 Galaxy icon PS joins, and the Full System Scanner's tone is named too.
-- **Temporary:** `advanced.hud_edge_smoothing` (on | off, hidden; the A/B key for the HUD edge smoothing below, shipped as
-  the winning value when its flight settles it); the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
+- **Temporary:** the back-off trail log lines (10-15) go once the camera-suite HUD loop is fixed.
 - **Local flight, next locally:** 4b7bfec4 (SS 0.5 then about 0.65/UI 125) verified the rendering path; cleanup 02f50bd7 keeps
   the flown guards (88 CPU checks), no repeat flight needed. Keep codex/xess-flat separate pending the user's Windows full build.
 - **2026-10-22, the scanner's zoom (second fix built, not flown):** a one-ulp camera difference between HDR writers refused the map
   recovery's frames; the copy-branch waiver missed the scanner (flight 135701), now also at the admission by structure.
-- **2026-10-24, edge smoothing for the HUD layer (built, not flown):** below 4K the HUD's slanted edges showed hard steps: the
-  layer is composited after the anti-aliasing, so its T box was its only smoothing. SMAA 1x now runs over the layer's finished
-  content before the composite (`advanced.hud_edge_smoothing`, flat only; "flat ui layer smaa:" lines). Last entry.
+- **2026-10-24, HUD Anti-Aliasing (built; first look flown on a38597ab):** below 4K the HUD's slanted edges showed hard steps: the
+  layer is composited after the anti-aliasing, so its T box was its only smoothing. SMAA 1x over the layer's finished content
+  before the composite is now the user setting `fix.hud_antialiasing` (F8 "HUD Anti-Aliasing", flat Performance tab under UI
+  quality, default off; Sean 2026-10-24; "flat ui layer smaa:" lines). Owed: off/on at UI quality 100, full size. Last entry.
 - **Next on Epic:** fly SS 0.5 on the shipped build (the copy route under eced5813's
   admission change) and 100% at SS 1.0; then an Epic flight opening all three maps.
 
@@ -1051,7 +1051,8 @@ distributor panel: its diagonal runs show a step every pixel or two, where the g
   which smooths only after a trip through the main menu has the game lay the panel out again at 200. SMAA on the layer's image works on
   whatever the layer holds, so it covers both. If a flight shows the steps surviving the switch to 200 until the menu trip, that is H2 and the
   layer's size alone never reaches it.
-- Where. The flat adapter reads `advanced.hud_edge_smoothing` on every output copy and tells the layer (`uiLayerFlatSetEdgeSmoothing`) just
+- Where. The flat adapter reads the key (built as a hidden developer key, default on; it is `fix.hud_antialiasing`, default off, since the entry
+  at the end) on every output copy and tells the layer (`uiLayerFlatSetEdgeSmoothing`) just
   before `uiLayerComposite`. The layer takes the ask on entry and clears it, so the VR profiles, which never ask, composite exactly as before.
   With the ask, `compositeInner` runs SMAA 1x over the 8-bit layer into an R8G8B8A8 texture of the layer's size and binds that where the
   composite reads the layer. The composite shader is unchanged, and the multiply transmittance, when there is one, is read as before. Key off,
@@ -1078,17 +1079,44 @@ distributor panel: its diagonal runs show a step every pixel or two, where the g
   pass in the edge pass's place leaves it a staircase (the control). An all-clear layer comes out exactly (0, 0, 0, 1); straight bands across
   the layer, horizontal and vertical, white and dark, come out unchanged; the samplers come back and no view is left bound; a size change
   re-makes the targets; a failure at a size is told once and not retried there. `flat_weapon_admission_test` runs the whole adapter and layer on
-  WARP and holds the result: smoothed by default, raw with the key off, smoothed again with it on.
+  WARP and holds the result: smoothed by default, raw with the key off, smoothed again with it on (with the default now off: raw, then smoothed with the
+  key on, raw with it off again; the entry at the end).
 - Log. Once per creation: `flat ui layer smaa: ready at 2560x1440 -- edges R8G8, weights and output R8G8B8A8, 36.9 MB`. Once per distinct
   failure: `flat ui layer smaa: stood down at WxH -- <what failed> hr=0x%08X`. Every 30 s, whenever the window composited the layer:
   `flat ui layer smaa: key=on smoothed=N raw-key-off=M raw-fault=K size=WxH`. `smoothed` counts composites that read the SMAA output,
   `raw-key-off` those with the key off, `raw-fault` those that fell back; `key=` is the value the adapter read, so a key the flat allow-list
   lacked would show as `key=off`. A window with composites and all three counts 0 means the composite never reached the smoothing.
 - Flight. Flat, a display below 4K (2560x1440 is the case in hand), UI quality 100, in the cockpit. Look at the "RST" bracket in the power
-  distributor and the other diagonal edges, then change `advanced.hud_edge_smoothing` to off and on again live (edvr.ini, hot reload) and
+  distributor and the other diagonal edges, then change the key to off and on again live (F8, or edvr.ini with its hot reload) and
   compare both the bracket and the small labels and numbers: the smoothing must not soften the text. Then once at 200, to see whether anything
   stays stepped (H2: switch, look, go through the main menu, look again). Then open the Galaxy Map and the System Map, whose canvas and
   icons go through the same layer. In the log: one `ready` line at the layer's size; 30 s lines with `key=on smoothed` above 0 and `raw-fault=0`,
   and after the toggle `key=off raw-key-off` above 0; no `stood down`. Failures: `smoothed=0` with `key=on` and `raw-fault` above 0 (read the
   `stood down` line and its HRESULT); `key=off` with the key unset (the flat allow-list entry is missing); text visibly softer with the key on.
   Read the census's layer composite figure with the key on and off for the cost.
+
+## 2026-10-24: HUD Anti-Aliasing becomes an F8 setting
+
+- Decision (Sean, 2026-10-24). The A/B key is a user setting: `fix.hud_antialiasing = on | off`, default off, live, shown in the flat F8 panel as
+  "HUD Anti-Aliasing" on the Performance tab directly under UI quality (Sharp weapons now sits under it). It replaces `advanced.hud_edge_smoothing`
+  completely: that key never shipped in a release, so there is no migration and no fallback read. Off by default.
+- What changed. `flat_ui_layer.cpp` reads `fix.hud_antialiasing` (default false) before each composite; `flat_profile_keys.h` allow-lists it (unlisted, the
+  flat gate would read it off and the row could never turn the smoothing on); `edvr.ini` has a people-facing paragraph after `ui_quality` and the flat
+  sentence of the UI quality paragraph points at it; `menu_flat_rows.h` lists the row (seven rows now: with a blank line and the ten-line warning, the
+  card's eighteen lines exactly, which `menu.cpp` static_asserts). The row dims, and refuses a step, while `fix.ui_quality` is off or the flat
+  anti-aliasing is off, because the layer it smooths is live only with both on (`hudAntiAliasingRowDim`; UI quality is read as the layer reads it, the
+  mode as the Sharp weapons row's flat branch does), and its hint and refusal name the cause that applies. The 30 s `flat ui layer smaa:` line keeps its form.
+- Flat only in the menu. A [fix] row used to reach VR's Performance page by carrying `menu performance`. The new page token `menu flat_performance`
+  (`tools/gen_settings_schema.py`) names a page VR's menu builds none of, as `visual` and `debug` do, while the flat Performance tab is built from
+  `kFlatPageRows` whatever the token says. So the row is on the flat tab and not on VR's page. The generator refuses the token on a key that is not in
+  [fix] and on a key `kFlatPageRows` does not list (the row would be on no menu at all); its self-test covers both and the misspelt token.
+  Not done: the installer's settings window, VR selection, still lists every [fix] setting, this one included (the ini paragraph says it changes nothing in VR).
+- Tests. `flat_weapon_admission_test`: raw by default, smoothed with the key on, raw with it off, smoothed again. `flat_sharpen_test`: the row in
+  the table and its order, the gate, the dimming truth table and its pins in `menu.cpp`, the generated row on the page `flat_performance` directly under UI
+  quality, the flat tab ignoring the page token and VR's page being the `performance` rows. `sharp_weapons_test`: the table order, and Sharp weapons directly
+  under UI quality on VR's page. The GPU unit tests (`uiLayerSmaaGpuTests`) drive the pass directly and needed no change.
+- First look (not a verdict). The 14:37 flight of a38597ab (log `edvr_gfx_20261024_143340.log`, build matched), key on: every composite smoothed,
+  `raw-fault=0`. The layer was 3200x1800, so UI quality 125 and not 100. In Sean's screenshot, received downscaled to 2000x1125, the RST bracket and
+  the shallow slanted panel lines showed no steps and the small text was not softened.
+- Still owed. An off/on comparison at UI quality 100 at full resolution (2560x1440 is the case in hand), then the 200 switch and the main-menu trip (H1
+  against H2 above), the Galaxy Map and the System Map, and the layer composite's frame-time cost with the key on and off.

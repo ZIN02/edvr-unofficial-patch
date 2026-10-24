@@ -44,7 +44,7 @@ struct Window {
     uint64_t toneCandidates = 0, toneProven = 0, toneAdmitted = 0, toneReissued = 0, toneDeclined = 0, toneByShape = 0;
     uint64_t copies = 0, doorsArmed = 0, doorUntreated = 0, doorSize = 0;
     uint64_t composites = 0, compositeNone = 0, bindFailed = 0;
-    // The HUD layer's edge smoothing (advanced.hud_edge_smoothing, ui_layer_smaa.h): the layer composites by what they read -- the SMAA output, the raw
+    // The HUD layer's edge smoothing (fix.hud_antialiasing, ui_layer_smaa.h): the layer composites by what they read -- the SMAA output, the raw
     // layer because the key was off, the raw layer because the passes could not be had -- the key as the last composite read it, and the layer's size then.
     uint64_t edgeSmoothed = 0, edgeRawKeyOff = 0, edgeRawFault = 0;
     bool edgeKeyOn = false;
@@ -689,9 +689,10 @@ void flatUiLayerAtCopy(ID3D11DeviceContext* ctx, uint64_t frame, bool treated, u
     // The composite: this frame's HUD over the picture the copy reads (the resolve's, or the game's own after a refusal).
     const uint32_t region[4] = {0, 0, td.Width, td.Height};
     const float uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-    // The HUD layer's edge smoothing (advanced.hud_edge_smoothing, TEMPORARY): the key is read here, a frame at a time, so a change is live; the layer decides
-    // nothing, it does what the ask says and reports what it did. A key the flat allow-list does not carry reads off, and the 30 s line shows it.
-    const bool smooth = Config::get().getBool("advanced.hud_edge_smoothing", true);
+    // The HUD layer's edge smoothing (fix.hud_antialiasing, off by default; the F8 panel's HUD Anti-Aliasing row): the key is read here, a frame at a time, so a
+    // change is live; the layer decides nothing, it does what the ask says and reports what it did. A key the flat allow-list does not carry reads off, and the
+    // 30 s line shows it.
+    const bool smooth = Config::get().getBool("fix.hud_antialiasing", false);
     g_w.edgeKeyOn = smooth;
     uiLayerFlatSetEdgeSmoothing(smooth);
     // `treated`: the picture is the one EDVR's resolve made (unjittered), which the shield ripple reads at D minus the jitter; the game's own is left alone.
@@ -822,7 +823,7 @@ void flatUiLayerReport(uint64_t windowSeconds) {
         static_cast<unsigned long long>(w.compositeNone), static_cast<unsigned long long>(w.bindFailed),
         static_cast<unsigned long long>(w.writeBacks), static_cast<unsigned long long>(w.jitterPhase),
         static_cast<unsigned long long>(w.jitterZero), static_cast<unsigned long long>(w.toneByShape));
-    // The HUD layer's edge smoothing (advanced.hud_edge_smoothing, TEMPORARY), whenever the window composited the layer: the composites that read the SMAA
+    // The HUD layer's edge smoothing (fix.hud_antialiasing), whenever the window composited the layer: the composites that read the SMAA
     // output, those that read the raw layer because the key was off, those that fell back to it because the passes could not be had, the key as the last
     // composite read it and the layer's size. A window with composites and all three counts zero says the composite never reached the smoothing.
     if (w.composites || w.edgeSmoothed || w.edgeRawKeyOff || w.edgeRawFault)

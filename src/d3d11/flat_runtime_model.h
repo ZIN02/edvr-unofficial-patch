@@ -232,9 +232,11 @@ struct FlatRuntimeCameraWitness {
     bool cameraCurrent = false;   // flatRuntimeCameraCurrent of the first writer; a later writer's failing it is a conflict
     FlatWitnessConflict conflict = FlatWitnessConflict::None;
     FlatWitnessWriter offender;   // the writer that first raised `conflict` (q 0 for none, or for an explicit write)
+    bool offenderHasCamera = false;   // conflict == Camera and the offender bound readable camera rows: offenderCamera holds them
     unsigned char camera[kFlatCameraBytes]{};
+    unsigned char offenderCamera[kFlatCameraBytes]{};   // log only (the second-camera line); no decision reads it
 };
-static_assert(sizeof(FlatRuntimeCameraWitness) <= 256, "keep the camera witness table small: the prefix is rebuilt every frame");
+static_assert(sizeof(FlatRuntimeCameraWitness) <= 384, "keep the camera witness table small: the prefix is rebuilt every frame");
 constexpr uint32_t kFlatRuntimeWitnesses = 16;
 inline bool flatRuntimeWitnessSameCamera(const FlatRuntimeCameraWitness& a, const FlatRuntimeCameraWitness& b) {
     return a.hasCamera && b.hasCamera && a.b1 == b.b1 && a.cameraHash == b.cameraHash &&
@@ -430,6 +432,9 @@ inline void flatRuntimeNoteWitness(FlatRuntimePrefix& p, const FlatRuntimeDraw& 
     else if (!sameCamera) e->conflict = FlatWitnessConflict::Camera;
     else { e->lastWriteEpoch = k.writeEpoch; e->lastWriteSeq = k.writeSeq; return; }
     e->offender = flatRuntimeWitnessWriter(d, q, p.frame);   // this writer raised the conflict; the first reason is kept above
+    if (e->conflict == FlatWitnessConflict::Camera && k.camera) {   // kept so the log can say which camera the pass's CB2 carries
+        std::memcpy(e->offenderCamera, d.camera, kFlatCameraBytes); e->offenderHasCamera = true;
+    }
 }
 enum class FlatDeferredDonorRole : uint8_t { None, Pool, Witness };
 inline const char* flatDeferredDonorRoleName(FlatDeferredDonorRole r) {
@@ -559,6 +564,8 @@ struct FlatDeferredDonor {
     uint64_t entryFirstVs = 0, entryFirstPs = 0;
     bool entryHasCamera = false;
     FlatWitnessWriter offender;
+    // The entry's first camera and, for conflict == Camera, the offender's (null when absent). Log only: neither is ever a donor.
+    const unsigned char* entryCamera = nullptr, *offenderCamera = nullptr;
     // The first other entry on the depth that carried another camera (why == OtherCamera): its colour, b1 and camera hash.
     const void* vetoColor = nullptr, *vetoB1 = nullptr;
     uint64_t vetoHash = 0;
@@ -618,7 +625,8 @@ inline FlatDeferredDonor flatRuntimeDeferredDonor(const FlatRuntimePrefix& p,
         if(w.hasCamera && !seen)++out.witnessCameras;
     }
     if(e){out.entry=true;out.writers=e->writers;out.conflict=e->conflict;out.entryCameraHash=e->hasCamera?e->cameraHash:0;out.entryB1=e->b1;
-        out.entryFirst=e->first;out.entryFirstVs=e->firstVs;out.entryFirstPs=e->firstPs;out.entryHasCamera=e->hasCamera;out.offender=e->offender;}
+        out.entryFirst=e->first;out.entryFirstVs=e->firstVs;out.entryFirstPs=e->firstPs;out.entryHasCamera=e->hasCamera;out.offender=e->offender;
+        out.entryCamera=e->hasCamera?e->camera:nullptr;out.offenderCamera=e->offenderHasCamera?e->offenderCamera:nullptr;}
     if(p.witnessOverflow){out.why=FlatDeferredDonorWhy::Overflow;return out;}
     if(!e){
         out.why=FlatDeferredDonorWhy::NoEntry;

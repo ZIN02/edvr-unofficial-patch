@@ -166,4 +166,40 @@ inline bool flatExplainWholeOmission(const unsigned char* cameraBytes, const uns
     why = FlatDeferredReject{};
     return true;
 }
+
+// Log only. A deferred pass with no source record whose witness entry raised conflict=second-camera: two writers on the depth bound
+// different camera rows, and the witness keeps hashes, not bytes. This answers the three questions that decide what the second camera is,
+// from the 96 bytes of each and the pass's own CB2 (rows 10..16): which of them the CB2 matches under the strict relation (plain, and with
+// the frustum allowance the whole-camera repair's rematch uses), and how the two cameras differ (a handful of last-bit rounding differences
+// of the landed phase, or a different view). Nothing here is read by a decision.
+struct FlatSecondCameraReport {
+    FlatDeferredCameraMatch first = FlatDeferredCameraMatch::Unavailable, offender = FlatDeferredCameraMatch::Unavailable;
+    FlatDeferredCameraMatch firstScaled = FlatDeferredCameraMatch::Unavailable, offenderScaled = FlatDeferredCameraMatch::Unavailable;
+    FlatDeferredReject firstWhy, offenderWhy;   // the plain match's deciding check for each
+    bool compared = false;                      // both cameras present
+    unsigned differing = 0;                     // floats whose bits differ
+    unsigned firstDiff = 0;                     // index (0..23) of the first differing float
+    double maxAbs = 0, maxRel = 0;              // over the differing floats; rel = |a-b| / max(|a|,|b|)
+};
+inline FlatSecondCameraReport flatExplainSecondCamera(const unsigned char* first, const unsigned char* offender,
+                                                      const unsigned char* cb2) {
+    FlatSecondCameraReport r;
+    r.first=flatExplainDeferredMatch(first, cb2, false, "first", r.firstWhy);
+    r.offender=flatExplainDeferredMatch(offender, cb2, false, "offender", r.offenderWhy);
+    FlatDeferredReject scratch;
+    r.firstScaled=flatExplainDeferredMatch(first, cb2, true, "first-scaled", scratch);
+    r.offenderScaled=flatExplainDeferredMatch(offender, cb2, true, "offender-scaled", scratch);
+    if(first && offender) {
+        r.compared=true;
+        float a[24], b[24]; std::memcpy(a, first, sizeof(a)); std::memcpy(b, offender, sizeof(b));
+        for(unsigned i=0;i<24;++i) {
+            if(std::memcmp(&a[i], &b[i], 4)==0) continue;
+            if(!r.differing) r.firstDiff=i;
+            ++r.differing;
+            const double d=std::abs(double(a[i])-double(b[i])), m=std::fmax(std::abs(double(a[i])), std::abs(double(b[i])));
+            if(std::isfinite(d)) { if(d>r.maxAbs) r.maxAbs=d; if(m>0 && d/m>r.maxRel) r.maxRel=d/m; }
+        }
+    }
+    return r;
+}
 }

@@ -18699,5 +18699,15 @@ Open: what the two cameras are. The witness keeps a camera hash, not bytes. Hypo
 1. A real second view drawn into the same G-buffer (a planet or sky camera): the offender's camera hash differs and neither matches the lighting pass's CB2 (`relation` against each).
 2. The pass's own camera is the offender's and the first writer's is stale: CB2 matches the OFFENDER's camera strictly and not the first writer's.
 3. The two differ only by the landed-phase rounding of the 2026-10-24 entries: the cameras equal after dephasing.
-Instrument next: on a `second-camera` witness failure write both camera byte sets and the CB2 (as the whole-omission bytes line does), then run `flatMatchDeferredCamera` of CB2 against each.
 The Steam rig's installed build predates the translation fix and the probe; the maintainer's rig still shows the cycle on it.
+
+Instrument built (branch `claude/witness-second-camera-bytes`, log only, the witness decides exactly as before). The entry now keeps the offender's 96 camera bytes beside the first writer's
+(`FlatRuntimeCameraWitness::offenderCamera`, copied only when `conflict == Camera`), the donor hands both out, and `noteSecondCamera` (flat_runtime.cpp) writes three lines for a poolless
+`second-camera` entry, the first 8 two seconds apart and then once per 5 s:
+- `flat deferred second-camera:` both writers' pairs and camera hashes, the pass's `relation`, then `first-match` / `first-scaled` / `offender-match` / `offender-scaled` (CB2 against each camera under the
+  strict relation, plain and with the repair's frustum allowance) and `differing-floats` / `first-diff` / `max-abs` / `max-rel` between the two cameras.
+- `flat deferred second-camera check:` the deciding comparison of each plain match (stage/check, row, col, residual, bound).
+- `flat deferred second-camera bytes:` (first 8 only) the first camera, the offender's and CB2 rows 10..16 as hex, with the phase bits.
+Reading it: hypothesis 1 (a real second view) is `first-match` and `offender-match` both not `match` with a large `max-rel`; 2 (the offender is the pass's camera) is `offender-match=match` (or `offender-scaled`)
+and the first not; 3 (rounding only) is a `max-rel` near 1e-7 with one or two `differing-floats`. If the line never appears beside a `conflict=second-camera` witness line, the build lacks this branch.
+Rig: `flat_deferred_second_camera_tests.h` (entry and donor keep the bytes; the report equals the matcher on every capture the repair accepts; the logger is wired after the verdict and touches no draw).

@@ -540,6 +540,8 @@ struct State {
     uint64_t deferredWholeRejects = 0, deferredWholeRejectLastLog = 0;
     struct WholeRejectPhase { uint64_t key = 0; uint32_t bytesLogged = 0; };
     WholeRejectPhase deferredWholeRejectPhases[16]{};
+    uint64_t deferredSecondCameras = 0, deferredSecondCameraLastLog = 0;
+    uint32_t deferredSecondCamerasLogged = 0;
     bool deferredCameraNonzeroLogged = false;
     FlatCameraProbe cameraProbe{};
     struct CopyProvenanceSample {
@@ -2088,6 +2090,43 @@ static void noteWholeOmissionRefused(State& s, uint64_t frame, uint32_t q, unsig
             (unsigned long long)frame,width,height,bitsX,bitsY,donorHex,cb2Hex,(unsigned)kFlatCameraBytes,(unsigned)kFlatDeferredCameraBytes);
     }
 }
+// Log only. The witness line says two writers on the depth bound different cameras (conflict=second-camera) and keeps their hashes. This
+// says what the two cameras are: how each matches the pass's own CB2 under the strict relation, how they differ from each other, and for
+// the first lines the 96 + 96 + 112 bytes that reproduce it offline. It reads the entry the witness already holds and decides nothing; a
+// witness line with conflict=second-camera and no such line means this code did not run.
+static void noteSecondCamera(State& s, uint64_t frame, uint32_t q, unsigned width, unsigned height, const FlatDeferredDonor& donor,
+        const unsigned char* cb2, float phaseX, float phaseY, FlatDeferredCameraMatch relation) {
+    ++s.deferredSecondCameras;
+    const uint64_t now=GetTickCount64();
+    // The first 8 lines are 2 s apart (consecutive frames repeat one another); then the witness line's 5 s.
+    if(s.deferredSecondCamerasLogged && now-s.deferredSecondCameraLastLog<(s.deferredSecondCamerasLogged<8?2000u:5000u))return;
+    const bool bytesDue=++s.deferredSecondCamerasLogged<=8;
+    const auto report=flatExplainSecondCamera(donor.entryCamera,donor.offenderCamera,cb2);
+    uint32_t bitsX=0,bitsY=0;std::memcpy(&bitsX,&phaseX,4);std::memcpy(&bitsY,&phaseY,4);
+    const uint64_t offenderHash=donor.offenderCamera?flatCameraHash(donor.offenderCamera):0;
+    // Two lines: the 1200-byte line holds one of these, not both.
+    Log::get().note("flat deferred second-camera: frame=%llu q=%u size=%ux%u phase=(%.9g,%.9g) first-vs=%016llX first-ps=%016llX first-camera=%016llX offender-vs=%016llX offender-ps=%016llX offender-camera=%016llX cb2=%u relation=%s first-match=%s first-scaled=%s offender-match=%s offender-scaled=%s compared=%u differing-floats=%u first-diff=%u max-abs=%.6g max-rel=%.6g total=%llu; each writer's camera against this pass's CB2 under the strict relation (scaled: with the repair's frustum allowance) and against each other; log only, nothing is decided here",
+        (unsigned long long)frame,q,width,height,phaseX,phaseY,
+        (unsigned long long)donor.entryFirstVs,(unsigned long long)donor.entryFirstPs,(unsigned long long)donor.entryCameraHash,
+        (unsigned long long)donor.offender.vs,(unsigned long long)donor.offender.ps,(unsigned long long)offenderHash,cb2?1u:0u,
+        flatDeferredCameraMatchName(relation),
+        flatDeferredCameraMatchName(report.first),flatDeferredCameraMatchName(report.firstScaled),
+        flatDeferredCameraMatchName(report.offender),flatDeferredCameraMatchName(report.offenderScaled),
+        report.compared?1u:0u,report.differing,report.firstDiff,report.maxAbs,report.maxRel,(unsigned long long)s.deferredSecondCameras);
+    Log::get().note("flat deferred second-camera check: frame=%llu q=%u first=%s/%s row=%u col=%u residual=%.6g bound=%.6g offender=%s/%s row=%u col=%u residual=%.6g bound=%.6g; the strict match's deciding comparison for each camera, empty when it matched",
+        (unsigned long long)frame,q,report.firstWhy.stage,report.firstWhy.check,report.firstWhy.row,report.firstWhy.col,
+        report.firstWhy.residual,report.firstWhy.bound,report.offenderWhy.stage,report.offenderWhy.check,report.offenderWhy.row,
+        report.offenderWhy.col,report.offenderWhy.residual,report.offenderWhy.bound);
+    if(bytesDue) {
+        char firstHex[2*kFlatCameraBytes+1]="unavailable",offenderHex[2*kFlatCameraBytes+1]="unavailable",cb2Hex[2*kFlatDeferredCameraBytes+1]="unavailable";
+        if(donor.entryCamera)flatDeferredFailureHex(donor.entryCamera,kFlatCameraBytes,firstHex);
+        if(donor.offenderCamera)flatDeferredFailureHex(donor.offenderCamera,kFlatCameraBytes,offenderHex);
+        if(cb2)flatDeferredFailureHex(cb2,kFlatDeferredCameraBytes,cb2Hex);
+        Log::get().note("flat deferred second-camera bytes: frame=%llu size=%ux%u phase-bits=%08X/%08X first=%s offender=%s cb2=%s; the first writer's camera and the offender's (%u bytes each) and CB2 rows 10..16 (%u bytes)",
+            (unsigned long long)frame,width,height,bitsX,bitsY,firstHex,offenderHex,cb2Hex,(unsigned)kFlatCameraBytes,(unsigned)kFlatDeferredCameraBytes);
+    }
+    s.deferredSecondCameraLastLog=now;
+}
 const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDraw& draw) {
     auto& k=draw.key;
     if(k.format!=kFlatDeferredHdrFormat || k.vs!=kFlatDeferredHdrVs || k.ps!=kFlatDeferredHdrPs || k.camera)return nullptr;
@@ -2279,6 +2318,8 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
             flatDeferredCameraMatchName(match),draw.deferredHdrVerified?1u:0u,(unsigned long long)s.deferredWitnessCalls);
         witnessLastLog=now;
     }
+    if(!donor.poolRecords && donor.entry && donor.conflict==FlatWitnessConflict::Camera)
+        noteSecondCamera(s,requestedFrame,requestedQ,k.width,k.height,donor,copied?raw:nullptr,requestedPhaseX,requestedPhaseY,match);
     if(s.deferredCameraChecks<=8 ||
        (nonzero && !s.deferredCameraNonzeroLogged) || now-s.deferredCameraLastLog>=5000) {
         Log::get().note("flat deferred HDR camera: frame=%llu q=%u H=%p actual-b1=%p CB2=%p first=%u count=%u original=%u current=%u write-frame=%llu write-q=%u donor-b1=%p donor-last=%u donor-role=%s source=%p actual=%u input=%u relation=%s accepted=%u repair=%s missing-phase=%u prepared=%u warmed=%u phase=(%.9g,%.9g) checks=%llu accepted-total=%llu refused-total=%llu empty-gbuffer-total=%llu work=%s; actual H CB2 witness, donor identity separate; prepared admission awaits verified binding",

@@ -2,6 +2,7 @@
 
 ## Status
 
+- **State (2026-10-24, whole-camera repair refuses 4 of 8 phases):** a user's `edvr_gfx_20261024_134658` (v0.21.0, RTX 4060, 2560x1440 DLAA, in a station): from 13:55:57 one frame in four is refused `deferred-inverse-unproven`, all 107 captured failures `forward-mismatch`; the `6b8f62c1` repair accepts phases 1, 5, 6, 8 of the 8 and refuses 2, 3, 4, 7 with no line saying which check fails. Cause NOT FOUND. Log-only instrument `flat deferred whole-omission refused:` / `bytes:` BUILT on `claude/whole-omission-reject-reason`, NOT FLOWN (last entry). The user saw it clear once with `fix.optimized_stations` off, then return: unproven, noted.
 - **State (2026-10-22, scanners):** `edvr_gfx_20261022_101031`: in the Detailed Surface Scanner the source-free camera witness opened on the star's depth-only pre-pass (VS 0EE43D81E394E70C, PS null, no b1), so every jittered frame was refused `deferred-inverse-unproven` and a 4-frame cycle ran (refused, `engine-source-not-ready`, two warm-ups); the Full System Scanner had the same signature. Fix: the pair joins `flatProjectionB1Unread`; the witness line now names the entry's first writer and the writer that raised the conflict. FLOWN 11:25 (`edvr_gfx_20261022_112019`, d4abc498): not enough, the G-buffer holds no camera-bearing writer at all (`why=no-witness-entry`), same cycle (403 and 473 `door-refused-untreated` per 30 s). Rule: a lighting pass over a G-buffer the game cleared and nothing wrote since is neither verified nor failed (`why=empty-gbuffer`). FLOWN 13:07 (`edvr_gfx_20261022_130004`, a7a5f5ac): panels steady; that body had a witness, so the rule ran only on entry/exit frames: still to be seen on a body with none.
 - **State (2026-10-22 3D main menu, render below output):** FLOWN with the cause logger (`edvr_gfx_20261022_121507`): the stand-down is `missing-depth-or-dsv`, the DoF composite `20F383BB/BF2302BC` writing the f26 image the tone reads with no depth; DoF off fixed it (user). MERGED (CI green, 618f1454): the composite taken as the scene HDR's alias (`dofCompositeVerified`, `flat dof composite:` line); the user reports it works with DoF on (no log read yet). See "2026-10-22: the 3D main menu at render below output".
 - **State (2026-10-21 shuttle, supercruise/planetary):** `edvr_gfx_20261021_133402` (`v0.20.1-13-gdb52d367`, Arc B390, XeSS, 960×600) is the first paired capture of the deferred `forward-mismatch`: in all 31 witnesses CB2 rows 10..16 are the donor camera with the requested phase removed, so every nonzero frame is refused and AA runs unjittered. Whole-camera omission repair `6b8f62c1`: FLOWN 2026-10-21 14:10 in supercruise, PASS (`edvr_gfx_20261021_141041`; last entry). Planetary flight not yet flown on it. Why the game drops the phase there: open. Suit/weapon loadout screen (`edvr_gfx_20261021_143902`): no deferred donor (source-free scene, only `vrOnly`/unkeyed G-buffer pairs), fixed by the source-free camera witness, the b1-free pairs and the lit-scene rule, FLOWN 2026-10-21 18:00 PASS on `5ffb3644` (last entries).
@@ -18549,3 +18550,52 @@ ordinary scene frame, not with the menu's static-scene policy.
 
 - Risk if the menu is later treated: a rotating hologram can ghost (the loading
   screen's ghost, flat-loading-hologram-ghost-2026-10-09.md).
+
+### 2026-10-24: a 2560x1440 DLAA user, the whole-camera repair refuses four of eight phases (instrument built, not flown)
+
+Report (a user, v0.21.0, issue thread): fps "dropped to 60", AA broken, and the DLSS preset row no longer offers an automatic choice under
+DLAA. Main menu fine. `edvr_gfx_20261024_134658` (build 6ADB8BC7, game build 334925, RTX 4060 8 GB, flat, game SS 1.0 so render equals output at
+2560x1440, route `dlss-as-dlaa-supersample`, `temporal_aa_model = m`, `fix.optimized_stations = on`, in a station).
+
+Evidence.
+- LoadGame 13:54:44. From 13:55:57 to the log's end (about nine minutes) every 5 s window has 75 of 300 frames refused (`jitter failure census`),
+  as `deferred-inverse-unproven`, `compute-source-invalidated` and `relevant-observations-truncated` (105 windows, 7,669 frames each). The runtime
+  alternates `treated-jittered-hdr`, `treated-zero-jitter-hdr` and the refusal: the 4-frame cycle of 2026-10-22, here with a donor.
+- All 107 `flat deferred failure witness` lines are `forward-mismatch`, donor-role `pool` (`qualified-pool` in the ownership line). The
+  `6b8f62c1` whole-camera repair ran on 31 sampled frames (`repair=whole prepared=1`, `whole-executions` 7,767 by 14:04:33) and was refused on
+  25 (`repair=none prepared=0 warmed=0`), with no `deferred-whole-preparation-failed`: the refusal is inside `flatRepairDeferredWholeOmission` or its
+  gate, silently.
+- By jitter phase (the 8-phase Halton cycle): accepted (0, -0.1667), (0.125, 0.2778), (-0.125, -0.2778), (-0.4375, 0.3889); refused (-0.25, 0.1667),
+  (0.25, -0.3889), (-0.375, -0.0556), (0.375, 0.0556). Not a function of the phase's size. The 31 captures the repair was written on are all at
+  960x600; this is the first 2560x1440 log with the repair live.
+- The wake of the stand-down and the empty G-buffer rule both ran (`empty-gbuffer-total` 847 at 14:04:25, 98 `why=empty-gbuffer` witness lines), and the cycle
+  continued: this is not the scanner mechanism.
+- The user says the fault clears for a while when the view changes (map, or the head-look toggle). The log has that stretch: 14:00:22 to 14:00:47,
+  five windows with 0 failed frames; the HDR route's trigger is VS 20F383BB / PS FDB74215 (the DoF composite) at target 1280x720 into an
+  HDR of 2560x1440, and the only deferred camera line is `relation=match` at zero phase. The failures resume at 14:00:52 on phase
+  (0.25, -0.3889). So the fault lives in the primary view's deferred lighting pass, not in the session. The same user's F8 trials (13:55:22 to
+  13:55:34: AA modes, `fix.optimized_stations` off for 3 s and back on; 14:03:19 model k/l/m) did not change the cycle; "clear with optimized
+  stations off" is one unrepeated observation, not shown by this log.
+- The frame time is 16.68 ms (p50) from the main menu on (13:48 onward), before the refusals start. EDVR does not pace flat; the settings file
+  asks for a 75 Hz refresh and vsync. Not tied to the cycle.
+- The preset row: `fix.temporal_aa_model` offers k, l, m only since 2026-10-21 (no automatic), and `dlaaSafe` turns L and M into K under DLAA
+  (`dlaa.cpp`); the log says "DLAA, preset K". The row does not dim or say so under DLAA. By design, but silent.
+
+Ruled out: the 2026-10-22 empty G-buffer mechanism, because `empty-gbuffer-total` climbs while the cycle continues on a frame with a pool donor.
+Ruled out: a GPU or driver fault, because the log has no device-removed or reset line and VRAM held at 5573 of 7188 MB.
+
+Hypotheses, each with its signature in the new lines.
+1. A numeric bound in the dephase proof, derived at 960x600, refuses at this size for some phases: `stage=dephase`, `ratio` just over 1, the same
+   `check` and `row`/`col` on every refused phase.
+2. The strict re-match of the corrected rows fails: `stage=rematch`.
+3. The camera or CB2 is not the whole-camera omission in those frames at all (the station's veto changes what is drawn): `stage=match`, or
+   `dephase` with a large ratio.
+4. A gate: `stage=gate` or `repairable=0` with `qualified=1`.
+
+Instrument (BUILT on `claude/whole-omission-reject-reason`, NOT FLOWN): `flat deferred whole-omission refused:` names the stage, the check, the
+coefficient, the residual against its bound, the phase and the render size, for the first 32 refusals then once per 5 s;
+`flat deferred whole-omission bytes:` carries the donor camera and CB2 rows as hex for the first two refusals of each phase, which
+`tools/flat_temporal_test/flat_deferred_forward_omission_captures.h` can take as new captures. `flatExplainWholeOmission`
+(`src/d3d11/flat_deferred_reject.h`) mirrors the repair's checks without touching it; `flat_deferred_reject_tests.h` pins that the two agree on all 31
+captures, the 35 inverse-only captures and every negative the repair's rig uses. If the new code never ran: a `deferred-inverse-unproven` with
+`relation=forward-mismatch repair=none` and no `whole-omission refused` line.

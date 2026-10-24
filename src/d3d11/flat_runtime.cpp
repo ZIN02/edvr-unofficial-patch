@@ -58,6 +58,7 @@
 #include "flat_camera_table.h"
 #include "flat_hdr_projection_capture.h"
 #include "flat_deferred_camera.h"
+#include "flat_deferred_reject.h"
 #include "flat_deferred_failure_witness.h"
 #include "flat_query_cut.h"
 #include "flat_query_reads.h"
@@ -535,6 +536,10 @@ struct State {
     // The prepared clone this draw is about to execute rewrites the whole camera, not just the rays.
     bool deferredRepairWhole = false, deferredInverseLastWhole = false;
     uint64_t deferredWholeExecutions = 0;
+    // Log only: forward-mismatch frames the whole-camera repair refused, and which phases already had their bytes logged.
+    uint64_t deferredWholeRejects = 0, deferredWholeRejectLastLog = 0;
+    struct WholeRejectPhase { uint64_t key = 0; uint32_t bytesLogged = 0; };
+    WholeRejectPhase deferredWholeRejectPhases[16]{};
     bool deferredCameraNonzeroLogged = false;
     FlatCameraProbe cameraProbe{};
     struct CopyProvenanceSample {
@@ -2047,6 +2052,42 @@ void expireDeferredFailure(State& s,const char* event) {
         s.deferredFailureCapture.cancel();
     }
 }
+// Log only. A nonzero-phase deferred frame whose CB2 lacks the phase (relation forward-mismatch) that the whole-camera repair refused:
+// name the check that refused, with its residual and bound, and for the first frames of each phase the 96 + 112 bytes that reproduce it
+// offline. Reads nothing the repair did not already read and decides nothing. The lines appear only when the repair refuses, so a
+// `deferred-inverse-unproven` with relation=forward-mismatch repair=none and no such line means this code did not run.
+static void noteWholeOmissionRefused(State& s, uint64_t frame, uint32_t q, unsigned width, unsigned height,
+        const unsigned char* donorCamera, const unsigned char* cb2, const FlatProjectionJitter& jitter,
+        float phaseX, float phaseY, bool qualified, bool upstream, bool repairable) {
+    ++s.deferredWholeRejects;
+    FlatDeferredReject why;
+    const bool wouldAccept=flatExplainWholeOmission(donorCamera,cb2,jitter,why);
+    uint32_t bitsX=0,bitsY=0;std::memcpy(&bitsX,&phaseX,4);std::memcpy(&bitsY,&phaseY,4);
+    const uint64_t key=(uint64_t(bitsX)<<32)|bitsY;
+    State::WholeRejectPhase* slot=nullptr;
+    for(auto& p:s.deferredWholeRejectPhases)if(p.key==key){slot=&p;break;}
+    if(!slot)for(auto& p:s.deferredWholeRejectPhases)if(!p.key){p.key=key;slot=&p;break;}
+    const uint64_t now=GetTickCount64();
+    if(s.deferredWholeRejects<=32 || now-s.deferredWholeRejectLastLog>=5000) {
+        const double ratio=why.bound>0?why.residual/why.bound:0;
+        Log::get().note("flat deferred whole-omission refused: frame=%llu q=%u stage=%s check=%s row=%u col=%u residual=%.6g bound=%.6g ratio=%.4g phase=(%.9g,%.9g) ndc=(%.9g,%.9g) size=%ux%u qualified=%u upstream=%u repairable=%u explain-accepts=%u total=%llu; the repair's own checks in its own order, the first that failed; log only, nothing is decided here",
+            (unsigned long long)frame,q,why.stage,why.check,why.row,why.col,why.residual,why.bound,ratio,phaseX,phaseY,
+            jitter.ndcX,jitter.ndcY,width,height,qualified?1u:0u,upstream?1u:0u,repairable?1u:0u,wouldAccept?1u:0u,
+            (unsigned long long)s.deferredWholeRejects);
+        s.deferredWholeRejectLastLog=now;
+    }
+    if(slot && slot->bytesLogged<2) {
+        ++slot->bytesLogged;
+        static const char digits[]="0123456789ABCDEF";
+        char donorHex[2*kFlatCameraBytes+1],cb2Hex[2*kFlatDeferredCameraBytes+1];
+        for(unsigned i=0;i<kFlatCameraBytes;++i){donorHex[2*i]=digits[donorCamera[i]>>4];donorHex[2*i+1]=digits[donorCamera[i]&15];}
+        donorHex[2*kFlatCameraBytes]=0;
+        for(unsigned i=0;i<kFlatDeferredCameraBytes;++i){cb2Hex[2*i]=digits[cb2[i]>>4];cb2Hex[2*i+1]=digits[cb2[i]&15];}
+        cb2Hex[2*kFlatDeferredCameraBytes]=0;
+        Log::get().note("flat deferred whole-omission bytes: frame=%llu size=%ux%u phase-bits=%08X/%08X donor=%s cb2=%s; the donor camera (%u bytes) and CB2 rows 10..16 (%u bytes), the pair tools/flat_temporal_test captures hold",
+            (unsigned long long)frame,width,height,bitsX,bitsY,donorHex,cb2Hex,(unsigned)kFlatCameraBytes,(unsigned)kFlatDeferredCameraBytes);
+    }
+}
 const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDraw& draw) {
     auto& k=draw.key;
     if(k.format!=kFlatDeferredHdrFormat || k.vs!=kFlatDeferredHdrVs || k.ps!=kFlatDeferredHdrPs || k.camera)return nullptr;
@@ -2144,6 +2185,9 @@ const FlatProjectionBindingPlan* verifyDeferredHdrCamera(State& s, FlatRuntimeDr
     // the rays alone lack the phase (Inverse), or the whole camera does (Forward).
     const bool missingPhase=repairable && flatRepairDeferredMissingPhase(donor.camera,raw,jitter,certified);
     const bool wholeOmission=repairable && !missingPhase && flatRepairDeferredWholeOmission(donor.camera,raw,jitter,certified);
+    if(nonzero && match==FlatDeferredCameraMatch::Forward && !missingPhase && !wholeOmission)
+        noteWholeOmissionRefused(s,requestedFrame,requestedQ,k.width,k.height,donor.camera,raw,jitter,
+            requestedPhaseX,requestedPhaseY,qualified,flatCameraInjectUpstreamOwns(),repairable);
     const bool repairing=missingPhase || wholeOmission;
     const char* repairName=wholeOmission?"whole":missingPhase?"inverse":"none";
     const FlatProjectionBindingPlan* deferredPlan=nullptr;

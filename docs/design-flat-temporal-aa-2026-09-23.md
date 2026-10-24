@@ -18680,3 +18680,24 @@ with movement therefore needs the Motion source view (F8 Debug) screenshotted wh
 The frame time is 16.7 ms p50 from the main menu on again (p95 25 ms in play): a 60 Hz lock before any EDVR work; the settings file asks for 75 Hz with vsync, so the monitor mode or a driver cap is the first thing to ask.
 
 The UI layer reads `tone-proven` on every copy but `tone-admitted=0` and no composite; fix.ui_quality is 100 and the layer is not exercised in this view. Not a finding on its own.
+
+### 2026-10-24: the witness's second camera, reproduced on the Steam rig (census, not yet explained)
+
+A user's planet report (`edvr_gfx_20261024_163112`, v0.21.0, RTX 3070 Ti Laptop, render 1664x702): the cycle returns on the planet, 772 refused frames in 13 windows, now with
+`donor-role=none` and `why=witness-conflict`, not the forward-mismatch of the earlier entries (those are repaired there: `repair=whole` accepted 52 times, `repair=inverse` 33).
+The witness line names the pair every time: the entry's first writer VS 7B0DC42D / PS 0DF03E64 (a known world pair, typed origin role) with one camera, then
+VS 4435F2E50020E7F3 / PS 026709B54867F893 at the 4th q after it, `conflict=second-camera`, camera-bearing, epoch, ordered and trusted. The unknown-projection capture
+reads that VS as `forward-columns slot=1 row=270` (it does read b1) with a 30,456-byte PS the model cannot size (`unknown-opcode 61`), role `pre-world-structural`, and `planned=0`.
+
+Reproduced on the maintainer's Steam rig (`edvr_gfx_20261024_100625`, `v0.21.0-21-gf0d179e9-dirty`, 3840x2160 output, render 1920x1080, in the 3D main menu scene, before LoadGame): 14 witness lines
+`conflict=second-camera`, first writer CFCA8FFC / 8A08FF78, offender 4435F2E5 / 026709B5 in 13 of them (72BDD292 / F1670378 in the first). Census 1 (10:08:35, frames 14365 to 14366,
+`flat_trace_14370.bin`): on the 1920x1080 G-buffer (r=@85 d=@84) CFCA8FFC has 4 draws (q 1370 to 1431) and 4435F2E5 has 32 (q 1376 to 1451), interleaved in one pass, the latter
+indexed instanced with four bound views. The reducer (`flat_temporal_test --trace-chain`) reads frames 14367 to 14369 as `hdr-route-needs-render-at-least-output` (the HDR route needs render >= output; here it
+is half) and frame 14370 as `relevant-observations-truncated`: the same refusal chain. So the fault is not planet-specific, not tied to render size, and not the whole-camera omission.
+
+Open: what the two cameras are. The witness keeps a camera hash, not bytes. Hypotheses with the signature that settles each:
+1. A real second view drawn into the same G-buffer (a planet or sky camera): the offender's camera hash differs and neither matches the lighting pass's CB2 (`relation` against each).
+2. The pass's own camera is the offender's and the first writer's is stale: CB2 matches the OFFENDER's camera strictly and not the first writer's.
+3. The two differ only by the landed-phase rounding of the 2026-10-24 entries: the cameras equal after dephasing.
+Instrument next: on a `second-camera` witness failure write both camera byte sets and the CB2 (as the whole-omission bytes line does), then run `flatMatchDeferredCamera` of CB2 against each.
+The Steam rig's installed build predates the translation fix and the probe; the maintainer's rig still shows the cycle on it.

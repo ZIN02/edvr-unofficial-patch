@@ -454,7 +454,16 @@ def describe_cmd(ref, root):
 
 def expected_version(ref, root):
     """A git ref becomes `git describe`; anything else is taken literally,
-    so a version copied out of a release note works too."""
+    so a version copied out of a release note works too.
+
+    The order is the literal first: a version string like 0.14.1-93-gf78eba4
+    ends in an abbreviated commit hash that `git describe --always` happily
+    resolves in a clone that has the commit but not the tag the count came
+    from, so describing it returns a bare short hash (f78eba4e) that can never
+    match the log. A version-shaped expectation never reaches git; only a
+    ref that is not version-shaped does (HEAD, a tag, a branch)."""
+    if ref and re.search(r"g[0-9a-f]{7,}$", ref):
+        return ref
     import subprocess
     try:
         out = subprocess.run(describe_cmd(ref, root), capture_output=True,

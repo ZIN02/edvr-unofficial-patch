@@ -512,15 +512,28 @@ inline bool temporalRowsSameTurn(const float a[12], const float b[12]) {
 // back as the delta to use: the rows' own, or the last good carried. Both
 // eyes judge a frame against the same standing; it moves on once a frame, in
 // temporalCameraGateAdvance.
+//
+// boundScene: the chosen rows are the bound scene block's and the scene is
+// populated (the same two conditions the head-follow score trusts,
+// temporalCameraFollowScore). The scene camera is the head AND the ship
+// together, so under ship rotation its delta legitimately exceeds the head's
+// by the ship's own turn -- the 3-degree refusal fired on exactly those
+// frames, the last good delta was carried through the maneuver, and the far
+// field reprojected by a stale term (own hull past the split worst: its
+// error grows with distance from the eye). With the bound scene camera's
+// provenance already established by the chooser and the score, the refusal
+// would leave the world path carrying while the view turns; boundScene
+// accepts the rows' own delta instead. Without it the rule is as it was.
 inline TemporalCameraStep temporalCameraGateStep(TemporalCameraGate& g, const float prev[12],
                                                  const float now[12], double move,
-                                                 float diffDeg, float W[9], float tv[3]) {
+                                                 float diffDeg, float W[9], float tv[3],
+                                                 bool boundScene = false) {
     TemporalCameraStep s;
     s.jump = temporalOriginJump(move);
     if (s.jump) {
         for (int i = 0; i < 3; ++i) tv[i] = 0.0f;
     }
-    if (diffDeg > 3.0f) {
+    if (diffDeg > 3.0f && !boundScene) {
         s.verdict = TemporalCameraVerdict::Another;
     } else if (!g.refOwn && temporalRowsSameTurn(prev, now)) {
         s.verdict = TemporalCameraVerdict::Parked;

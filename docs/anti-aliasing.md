@@ -3,7 +3,7 @@
 ## Status
 
 *Restates the journal below; not new evidence -- update it whenever
-this doc changes. Last updated 2026-10-09 for the DLSS ceiling.*
+this doc changes. Last updated 2026-10-25 for the camera-gate fix.*
 
 - **State:** TAA/DLSS carries UI/smoke depth and station motion by
   default ("Current defaults", 2026-09-10). Feature A (the supersample
@@ -22,10 +22,10 @@ this doc changes. Last updated 2026-10-09 for the DLSS ceiling.*
 - **Open:**
   - Flat sharpening (`fix.render_sharpness`, ahead of the game's output
     copy; the UI never is): BUILT 2026-09-29, NOT FLOWN. See its section.
-  - The world path's rows after a drop: a parked camera's zero was
-    accepted as the view's delta and carried (eye run 050423). The gate
-    now refuses it. BUILT 2026-09-25, NOT FLOWN; its own doc is
-    camera-rows-carry-2026-09-25.md.
+  - The world path's rows after a drop: a parked camera's zero carried
+    (eye run 050423); the gate refuses it (camera-rows-carry-2026-09-25.md),
+    and 2026-10-25 the 3-degree refusal stopped firing on the bound scene
+    camera's own ship turn (last section). BUILT, NOT FLOWN.
   - The served floor: 0.5 FLOWN 16:27 (f05c84bf), not exercised (exactly
     on the floor: 2037x1969 -> 4074x3938 at 50%, standard scaling); 0.45
     still owed; signature in "The served floor".
@@ -2430,3 +2430,41 @@ a pixel-count model that the rule must not match; and the mutants in
 **State.** BUILT, NOT FLOWN. The next flight should show one `dlss ceiling:`
 line per output size, a `dlss modes` line for the cap, and the price line
 as DLSS rather than "own history".
+
+## The world path's camera gate under ship rotation (2026-10-25)
+
+**The report.** Own-ship geometry seen through the canopy smeared when the
+ship moved, worse the farther the structure was from the cockpit; clean
+during an entry glide. The far field's motion comes from the game's camera
+rows through the world path, so the symptom pointed at the rows' delta.
+
+**Cause, read from the code.** The world path's per-frame plausibility gate
+(`temporalCameraGateStep`, `src/common/temporal_math.h`) refuses a delta
+more than 3 degrees from the head's as "another camera's" and carries the
+last accepted one in its place. The scene camera is the head AND the ship
+together, so under ship rotation its legitimate delta exceeds the head's by
+the ship's own turn -- the refusal fired on exactly those frames, the
+world path carried a delta from before the maneuver, and every far
+structure reprojected by a stale term whose error grows with distance.
+During an entry glide the glide cone limits the ship's rotation, the delta
+stays inside 3 degrees, the gate never fires: the exception, exactly.
+
+**The fix.** The gate now takes the same trust the head-follow score
+already gives the bound scene camera in a populated scene
+(`temporalCameraFollowScore`: `sceneDraws >= kTemporalSceneDrawFloor &&
+boundRows` returns 30 outright). With the chosen rows the bound scene
+block's and the scene populated, the 3-degree refusal is skipped and the
+rows' own turning delta is taken; without either condition the rule is as
+it was (menus, auxiliary chains, sparse backdrops keep the detector). The
+jump and parked rules are untouched: a floating-origin jump still drops the
+translation, and rows that did not turn at all are still a parked camera's.
+`tools\temporal_test` holds it: the ship's 7-degree turn is accepted bound
+and refused unbound; the jump keeps the turn and drops the translation
+under the exemption; bound rows that did not turn are still parked.
+
+**State.** BUILT, NOT FLOWN. The flight reads the registration line during
+a ship turn: the "dropped as another camera's" count should fall to zero in
+a populated scene while the ship turns, and the world path's clip share
+during the turn should fall with it. The far field and the own hull past
+the split are the crops to watch; an entry glide is the control, where
+nothing should change.

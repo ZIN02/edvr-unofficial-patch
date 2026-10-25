@@ -82,8 +82,10 @@ corrupted. Do not regenerate the one-liner — extend the script.
 
 Every release's notes carry a `## Thanks` section built from
 `release_credits.py --thanks` and finished by hand. It names only the authors
-of PRs merged in the release; everyone who opened an issue or sent logs gets
-the tool's one general line and is not named. A person writes each sentence.
+of PRs merged in the release, and anyone the maintainer has approved by name in
+`tools\release_credits_approved.json` for a commit in the release. Everyone
+else who opened an issue or sent logs gets the tool's one general line and is
+not named. Add an entry to that file only on the maintainer's word. A person writes each sentence.
 People known only by an anonymised label ("user 2", "the reporter") are not
 named without the maintainer's consent.
 

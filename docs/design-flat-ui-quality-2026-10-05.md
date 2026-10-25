@@ -58,8 +58,7 @@
   Anti-Aliasing", flat Performance tab under UI quality, default off; "flat ui layer smaa:" lines). Seen working at 2560x1440 (15:43);
   nothing to do at 4K, where the edges already carry coverage ramps. Owed: the maps, and its frame-time cost.
 - **2026-10-25, the UI route's GPU timers (Plokhi; built, not flown):** none opened in flat, where nothing reads them. Last entry.
-- **Next on Epic:** fly SS 0.5 on the shipped build (the copy route under eced5813's
-  admission change) and 100% at SS 1.0; then an Epic flight opening all three maps.
+- **Next on Epic:** SS 0.5 on the shipped build (copy route, eced5813's admission change), 100% at SS 1.0, then all three maps.
 
 ## Purpose
 

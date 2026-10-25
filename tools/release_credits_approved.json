@@ -12,6 +12,12 @@
       "approved": "2026-10-24",
       "for": "issue #131, the closed-form stale-stamp window",
       "commits": ["01431ff5"]
+    },
+    {
+      "login": "Plokhi",
+      "approved": "2026-10-25",
+      "for": "finding the flat UI route's discarded GPU timers (measured on DXMT, macOS) and the guard that stops them",
+      "commits": ["361dddbe"]
     }
   ]
 }

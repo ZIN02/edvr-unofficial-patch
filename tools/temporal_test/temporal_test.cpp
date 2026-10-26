@@ -707,66 +707,6 @@ int main() {
         check(dropped.carried && !dropped.carriedJump && memcmp(tv, d1tv, sizeof(tv)) == 0,
               "a drop after a jump carries the translation before it (a jump carried: zero)");
     }
-    // ---- The bound scene camera under ship rotation. ----------------------
-    // The scene camera is the head and the ship together, so its delta can
-    // exceed the head's by the ship's own turn; the 3-degree refusal fired on
-    // exactly those frames and carried a stale delta through the maneuver
-    // (the far field and the own hull past the split smeared, worse with
-    // distance). With the rows the bound scene block's and the scene
-    // populated -- the chooser's provenance plus the follow score's floor --
-    // the rows' own turning delta is accepted; without either, as it was.
-    {
-        using edvr::TemporalCameraVerdict;
-        using edvr::temporalRotationAngleDeg;
-        const float still[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        float a0[12], a1[12], turn[12], far1[12];
-        rows34(0.0f, 0, 0, 0, a0);
-        rows34(1.0f, 0, 0, 1, a1);
-        rows34(8.0f, 0, 0, 2, turn);     // a ship turn: 7 degrees of camera
-        rows34(2.0f, 0, 0, 5001, far1);
-        float W[9], tv[3], ownW[9], ownTv[3], d1[9], d1tv[3], mvs[3];
-        edvr::TemporalCameraGate seed;
-        gateEye(seed, a0, a1, still, d1, d1tv);
-        (void)seed;   // the last good of the seed gate is not what this block reads
-        edvr::temporalWorldFromRows(a1, turn, ownW, ownTv, mvs);
-        // Establish the last good on the view's own rows.
-        edvr::TemporalCameraGate g;
-        gateEye(g, a0, a1, still, W, tv); edvr::temporalCameraGateAdvance(g, true);
-        // Without the exemption the ship turn is refused and the last good
-        // carried: the old rule, unchanged.
-        const auto old = gateEye(g, a1, turn, still, W, tv);
-        check(old.verdict == TemporalCameraVerdict::Another && old.carried && same9(W, d1),
-              "without the bound scene camera the ship's 7-degree turn is refused and carried");
-        // With it the rows' own delta is taken: no carry, no stale term.
-        edvr::TemporalCameraGate b;
-        gateEye(b, a0, a1, still, W, tv); edvr::temporalCameraGateAdvance(b, true);
-        float m2[3];
-        edvr::temporalWorldFromRows(a1, turn, W, tv, m2);
-        const auto ship = edvr::temporalCameraGateStep(b, a1, turn, 0.0,
-                                                      7.0f, W, tv, true);
-        check(ship.verdict == TemporalCameraVerdict::Own && !ship.carried && same9(W, ownW) &&
-              memcmp(tv, ownTv, sizeof(float) * 3) == 0,
-              "the bound scene camera's ship turn is accepted on its own delta");
-        edvr::temporalCameraGateAdvance(b, true);
-        // A floating-origin jump still drops the translation under the
-        // exemption: the rows' turn is kept, the 50 m step is not carried.
-        float jW[9], jTv[3], m3[3];
-        edvr::temporalWorldFromRows(turn, far1, jW, jTv, m3);
-        const auto jump = edvr::temporalCameraGateStep(b, turn, far1, 5001.0,
-                                                      0.5f, jW, jTv, true);
-        check(jump.verdict == TemporalCameraVerdict::Own && jump.jump &&
-              jTv[0] == 0.0f && jTv[1] == 0.0f && jTv[2] == 0.0f && same9(b.lastGoodC, jW),
-              "under the exemption a jump still keeps the turn and drops the translation");
-        // The parked rule still refuses rows that did not turn at all, even
-        // bound: a drop's leftover rows are not the ship turning.
-        edvr::TemporalCameraGate q;
-        q.refOwn = false;
-        float id[9], idTv[3], m4[3];
-        edvr::temporalWorldFromRows(a1, a1, id, idTv, m4);
-        const auto parked = edvr::temporalCameraGateStep(q, a1, a1, 0.0, 0.0f, id, idTv, true);
-        check(parked.verdict == TemporalCameraVerdict::Parked,
-              "bound scene rows that did not turn are still a parked camera's");
-    }
     // A synthetic 20-degree canted pair, with independent camera rotation
     // and translation. The reference poses are composed directly as the game
     // renders them; the helper sees only one chosen eye's rows per frame.

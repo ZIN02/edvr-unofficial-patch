@@ -3408,13 +3408,9 @@ void* temporalInner(void* srcTex, int eye, const float* bounds,
             // carried its zero into the next frame (2026-09-25). A jump frame
             // keeps the last plausible translation as its last-good, and a
             // carried figure over 50 m is counted so the invariant has a
-            // witness on the line. The bound scene camera in a populated
-            // scene is exempt from the 3-degree refusal (the same trust the
-            // head-follow score gives it): its delta is the head and the ship
-            // together, and a fast ship turn is not another camera.
+            // witness on the line.
             const TemporalCameraStep step = temporalCameraGateStep(
-                g_cameraGate, g_prevRows, g_curRows, move, diffDeg, worldDelta, tvCam,
-                g_curRowsBound && sceneDraws >= kTemporalSceneDrawFloor);
+                g_cameraGate, g_prevRows, g_curRows, move, diffDeg, worldDelta, tvCam);
             if (step.jump) {
                 ++g_camDropMove;
                 // The jump's frame, for the eye run's trace and the
